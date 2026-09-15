@@ -168,8 +168,27 @@ def _handle_stripe_checkout_completed(db: Session, data: dict, raw_payload: str)
 
     from app.backend.services.plan_entitlement_service import apply_verified_paid_plan
 
+    purchased_plan_id = (session_obj.get("metadata") or {}).get("plan_id")
+    if not purchased_plan_id:
+        _log_billing_event(
+            db, provider="stripe", event_type="checkout.session.completed",
+            tenant_id=tenant.id, raw_payload=raw_payload, result="error",
+            error_detail="checkout session missing immutable plan_id metadata",
+        )
+        db.commit()
+        return
+
     old_status = tenant.subscription_status
-    apply_verified_paid_plan(db, tenant)
+    try:
+        apply_verified_paid_plan(db, tenant, purchased_plan_id=int(purchased_plan_id))
+    except (TypeError, ValueError) as exc:
+        _log_billing_event(
+            db, provider="stripe", event_type="checkout.session.completed",
+            tenant_id=tenant.id, raw_payload=raw_payload, result="error",
+            error_detail=str(exc),
+        )
+        db.commit()
+        return
     tenant.subscription_updated_at = datetime.now(timezone.utc)
 
     _log_billing_event(
@@ -203,10 +222,10 @@ def _handle_stripe_invoice_paid(db: Session, data: dict, raw_payload: str):
         db.commit()
         return
 
-    from app.backend.services.plan_entitlement_service import apply_verified_paid_plan
+    from app.backend.services.plan_entitlement_service import mark_subscription_active
 
     old_status = tenant.subscription_status
-    apply_verified_paid_plan(db, tenant)
+    mark_subscription_active(db, tenant)
 
     # Update period dates from subscription lines
     period_start = sub_data.get("period_start")

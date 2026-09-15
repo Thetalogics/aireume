@@ -311,8 +311,36 @@ def test_stripe_provider_raises_when_stripe_not_installed(db):
     with patch("app.backend.services.billing.stripe_provider.stripe", None):
         with pytest.raises(RuntimeError, match="stripe"):
             provider.create_checkout_session(
-                tenant_id=1, plan="pro", success_url="", cancel_url=""
+                tenant_id=1, plan="pro", success_url="", cancel_url="", price_id="price_test"
             )
+
+
+def test_stripe_checkout_uses_mapped_price_and_plan_metadata():
+    from types import SimpleNamespace
+    from app.backend.services.billing.stripe_provider import StripeProvider
+
+    captured = {}
+
+    class FakeCheckout:
+        @staticmethod
+        def create(**kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(id="cs_test", url="https://checkout.test")
+
+    fake_stripe = SimpleNamespace(checkout=SimpleNamespace(Session=FakeCheckout))
+    provider = StripeProvider(api_key="sk_test_x")
+    with patch("app.backend.services.billing.stripe_provider.stripe", fake_stripe):
+        result = provider.create_checkout_session(
+            tenant_id=9,
+            plan="growth",
+            success_url="https://ok",
+            cancel_url="https://no",
+            price_id="price_growth_123",
+            extra_metadata={"plan_id": "42", "tenant_id": "9"},
+        )
+    assert captured["line_items"][0]["price"] == "price_growth_123"
+    assert captured["metadata"]["plan_id"] == "42"
+    assert result["session_id"] == "cs_test"
 
 
 # ─── Unit tests: RazorpayProvider (no real API calls) ────────────────────────

@@ -18,6 +18,11 @@ jobs:
       with:
         python-version: '3.11'
 
+    - name: Install xmlsec (python3-saml)
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y xmlsec1 libxmlsec1-dev libxml2-dev pkg-config
+
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
@@ -165,9 +170,10 @@ jobs:
         fetch-depth: 0
 
     - name: Secret scan (gitleaks)
-      uses: gitleaks/gitleaks-action@v2
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.24.3/gitleaks_8.24.3_linux_x64.tar.gz -o /tmp/gitleaks.tgz
+        tar -xzf /tmp/gitleaks.tgz -C /tmp gitleaks
+        /tmp/gitleaks detect --source . --verbose --redact --exit-code 1
 
     - name: Set up Python
       uses: actions/setup-python@v5

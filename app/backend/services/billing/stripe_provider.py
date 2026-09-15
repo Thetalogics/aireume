@@ -40,15 +40,23 @@ class StripeProvider(PaymentProvider):
         success_url: str,
         cancel_url: str,
         stripe_customer_id: str = "",
+        extra_metadata: Dict[str, Any] | None = None,
+        price_id: str | None = None,
     ) -> Dict[str, Any]:
         self._require_stripe()
+        resolved_price = (price_id or "").strip()
+        if not resolved_price.startswith("price_"):
+            raise ValueError("Stripe checkout requires a server-mapped price_ id")
+        metadata = {"tenant_id": str(tenant_id)}
+        if extra_metadata:
+            metadata.update({str(k): str(v) for k, v in extra_metadata.items() if v is not None})
         checkout_params: Dict[str, Any] = {
             "mode": "subscription",
             "payment_method_types": ["card"],
-            "line_items": [{"price": plan, "quantity": 1}],
+            "line_items": [{"price": resolved_price, "quantity": 1}],
             "success_url": success_url,
             "cancel_url": cancel_url,
-            "metadata": {"tenant_id": str(tenant_id)},
+            "metadata": metadata,
         }
         # Reuse an existing Stripe customer to avoid creating duplicates
         if stripe_customer_id:

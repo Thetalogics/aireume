@@ -48,6 +48,45 @@ async def test_tenant_a_ats_connection_cannot_push_tenant_b_candidate(db, seed_s
         client_cls.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_ats_rejects_screening_result_for_different_candidate(db, seed_subscription_plans):
+    from app.backend.models.db_models import ScreeningResult
+
+    tenant = Tenant(name="ATS Rel", slug="ats-rel")
+    db.add(tenant)
+    db.flush()
+    cand_a = Candidate(tenant_id=tenant.id, name="A", email="a@x.com")
+    cand_b = Candidate(tenant_id=tenant.id, name="B", email="b@x.com")
+    db.add_all([cand_a, cand_b])
+    db.flush()
+    result_b = ScreeningResult(
+        tenant_id=tenant.id,
+        candidate_id=cand_b.id,
+        resume_text="b",
+        jd_text="jd",
+        parsed_data="{}",
+        analysis_result="{}",
+    )
+    conn = ATSConnection(
+        tenant_id=tenant.id,
+        provider="generic",
+        label="Rel ATS",
+        base_url="https://example.test",
+        is_active=True,
+    )
+    db.add_all([result_b, conn])
+    db.commit()
+    db.refresh(result_b)
+    with patch("httpx.AsyncClient") as client_cls:
+        connector = ATSConnector(db)
+        result = await connector.push_candidate_status(
+            conn, cand_a.id, screening_result_id=result_b.id
+        )
+        assert result["success"] is False
+        assert result.get("http_status") == 404
+        client_cls.assert_not_called()
+
+
 def test_use_existing_requires_explicit_duplicate_candidate_when_hash_not_resolved(
     auth_client, db, seed_subscription_plans
 ):
@@ -71,6 +110,31 @@ def test_use_existing_candidate_must_belong_to_current_tenant(auth_client, db, s
         "job_description": _JD,
         "action": "use_existing",
         "candidate_id": str(foreign.id),
+    }
+    resp = auth_client.post("/api/analyze", files=files, data=data)
+    assert resp.status_code == 409
+
+
+def test_use_existing_requires_matching_resume_hash(auth_client, db, seed_subscription_plans):
+    import hashlib
+
+    admin = db.query(User).filter(User.email == "admin@testcorp.com").first()
+    other = Candidate(
+        tenant_id=admin.tenant_id,
+        name="HashMismatch",
+        email="hash-mismatch@testcorp.com",
+        resume_file_hash=hashlib.md5(b"stored-resume-bytes").hexdigest(),
+        raw_resume_text="stored",
+    )
+    db.add(other)
+    db.commit()
+    db.refresh(other)
+    allow_ad_hoc_screening(db, email="admin@testcorp.com")
+    files = {"resume": ("r.txt", b"hello resume python fastapi", "text/plain")}
+    data = {
+        "job_description": _JD,
+        "action": "use_existing",
+        "candidate_id": str(other.id),
     }
     resp = auth_client.post("/api/analyze", files=files, data=data)
     assert resp.status_code == 409
@@ -114,3 +178,33 @@ def test_use_existing_on_stream_requires_explicit_candidate(auth_client, db, see
     data = {"job_description": _JD, "action": "use_existing"}
     resp = auth_client.post("/api/analyze/stream", files=files, data=data)
     assert resp.status_code == 409
+
+
+def test_create_requisition_rejects_cross_tenant_recruiter_id(db, seed_subscription_plans):
+    from fastapi import HTTPException
+
+    a = Tenant(name="ReqA", slug="req-a")
+    b = Tenant(name="ReqB", slug="req-b")
+    db.add_all([a, b])
+    db.flush()
+    foreign = User(
+        tenant_id=b.id,
+        email="foreign-recruiter@x.com",
+        hashed_password=_hash_password("TestPass123!"),
+        role="recruiter",
+        is_active=True,
+        email_verified=True,
+    )
+    db.add(foreign)
+    db.commit()
+    db.refresh(foreign)
+    with pytest.raises(HTTPException) as exc:
+        create_requisition(
+            db,
+            tenant_id=a.id,
+            created_by=None,
+            title="Cross tenant ids",
+            jd_text=_JD,
+            assigned_recruiter_id=foreign.id,
+        )
+    assert exc.value.status_code in (400, 404)

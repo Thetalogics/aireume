@@ -64,6 +64,7 @@ class ATSConnector:
                 select(ScreeningResult).where(
                     ScreeningResult.id == screening_result_id,
                     ScreeningResult.tenant_id == connection.tenant_id,
+                    ScreeningResult.candidate_id == candidate.id,
                 )
             ).scalar_one_or_none()
             if screening is None:

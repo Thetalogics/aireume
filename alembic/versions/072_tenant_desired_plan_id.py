@@ -12,6 +12,14 @@ branch_labels = None
 depends_on = None
 
 
+def _desired_plan_fks(insp):
+    return [
+        fk
+        for fk in insp.get_foreign_keys("tenants")
+        if fk.get("constrained_columns") == ["desired_plan_id"] and fk.get("name")
+    ]
+
+
 def upgrade() -> None:
     bind = op.get_bind()
     insp = sa.inspect(bind)
@@ -23,6 +31,8 @@ def upgrade() -> None:
             "tenants",
             sa.Column("desired_plan_id", sa.Integer(), nullable=True),
         )
+        insp = sa.inspect(bind)
+    if not _desired_plan_fks(insp):
         op.create_foreign_key(
             "fk_tenants_desired_plan_id",
             "tenants",
@@ -38,6 +48,8 @@ def downgrade() -> None:
     if "tenants" not in insp.get_table_names():
         return
     cols = {c["name"] for c in insp.get_columns("tenants")}
-    if "desired_plan_id" in cols:
-        op.drop_constraint("fk_tenants_desired_plan_id", "tenants", type_="foreignkey")
-        op.drop_column("tenants", "desired_plan_id")
+    if "desired_plan_id" not in cols:
+        return
+    for fk in _desired_plan_fks(insp):
+        op.drop_constraint(fk["name"], "tenants", type_="foreignkey")
+    op.drop_column("tenants", "desired_plan_id")

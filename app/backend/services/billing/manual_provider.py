@@ -45,6 +45,8 @@ class ManualProvider(PaymentProvider):
         success_url: str,
         cancel_url: str,
         stripe_customer_id: str = "",
+        extra_metadata: Dict[str, Any] | None = None,
+        price_id: str | None = None,
     ) -> Dict[str, Any]:
         reference_id = f"manual_{uuid.uuid4().hex[:12]}"
         return {

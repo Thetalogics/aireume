@@ -16,8 +16,30 @@ _redis = None
 _redis_failed = False
 
 
-def _client():
+class RedisUnavailable(RuntimeError):
+    """Raised when a caller required Redis and it is not healthy."""
+
+
+def redis_is_healthy() -> bool:
+    url = os.getenv("REDIS_URL", "").strip()
+    if not url:
+        return False
+    try:
+        import redis
+        client = redis.Redis.from_url(
+            url, decode_responses=True, socket_connect_timeout=2, socket_timeout=2
+        )
+        client.ping()
+        return True
+    except Exception:
+        return False
+
+
+def _client(*, retry: bool = False):
     global _redis, _redis_failed
+    if retry:
+        _redis_failed = False
+        _redis = None
     if _redis_failed:
         return None
     if _redis is not None:
@@ -36,8 +58,15 @@ def _client():
         return None
 
 
-def cache_get(key: str) -> Any:
-    r = _client()
+def _redis_required():
+    client = _client(retry=True)
+    if client is None:
+        raise RedisUnavailable("Redis unavailable")
+    return client
+
+
+def cache_get(key: str, require_redis: bool = False) -> Any:
+    r = _redis_required() if require_redis else _client()
     if r is not None:
         raw = r.get(key)
         if raw is None:
@@ -58,8 +87,8 @@ def cache_get(key: str) -> Any:
         return val
 
 
-def cache_set(key: str, value: Any, ttl_seconds: int = 60) -> None:
-    r = _client()
+def cache_set(key: str, value: Any, ttl_seconds: int = 60, require_redis: bool = False) -> None:
+    r = _redis_required() if require_redis else _client()
     payload = json.dumps(value)
     if r is not None:
         r.setex(key, ttl_seconds, payload)
@@ -85,8 +114,8 @@ def cache_incr(key: str, ttl_seconds: int = 60) -> int:
         return val
 
 
-def cache_delete(key: str) -> None:
-    r = _client()
+def cache_delete(key: str, require_redis: bool = False) -> None:
+    r = _redis_required() if require_redis else _client()
     if r is not None:
         r.delete(key)
         return

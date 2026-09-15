@@ -70,27 +70,61 @@ def tenant_has_paid_entitlement(tenant: Optional[Tenant]) -> bool:
     return status in PAID_DUNNING_STATUSES
 
 
+def stripe_price_id_for_plan(plan: SubscriptionPlan) -> str:
+    """Map an internal plan to a server-controlled Stripe price_... id."""
+    import os
+
+    env_key = f"STRIPE_PRICE_{str(plan.name or '').upper().replace('-', '_')}"
+    mapped = os.getenv(env_key, "").strip()
+    if mapped.startswith("price_"):
+        return mapped
+    limits = parse_plan_limits(plan)
+    from_limits = str(limits.get("stripe_price_id") or "").strip()
+    if from_limits.startswith("price_"):
+        return from_limits
+    raise ValueError(f"No Stripe price mapped for plan {plan.name}")
+
+
 def start_paid_plan_checkout(db: Session, tenant: Tenant, plan: SubscriptionPlan) -> Dict[str, Any]:
     import os
     from app.backend.services.billing.factory import get_payment_provider
 
     frontend = os.getenv("FRONTEND_URL", "http://localhost:5173")
     provider = get_payment_provider(db)
+    tenant.desired_plan_id = plan.id
+    extra_metadata = {"tenant_id": str(tenant.id), "plan_id": str(plan.id)}
+    kwargs: Dict[str, Any] = {}
+    if provider.provider_name == "stripe":
+        kwargs["price_id"] = stripe_price_id_for_plan(plan)
+        kwargs["extra_metadata"] = extra_metadata
     return provider.create_checkout_session(
         tenant_id=tenant.id,
         plan=plan.name,
         success_url=f"{frontend}/billing/success",
         cancel_url=f"{frontend}/billing/cancel",
         stripe_customer_id=tenant.stripe_customer_id or "",
+        **kwargs,
     )
 
 
-def apply_verified_paid_plan(db: Session, tenant: Tenant) -> None:
-    """Promote desired paid plan after trusted checkout/invoice confirmation."""
+def apply_verified_paid_plan(db: Session, tenant: Tenant, purchased_plan_id: int) -> None:
+    """Activate the exact plan purchased by a verified checkout event."""
     from app.backend.services.feature_flag_service import invalidate_cache
 
-    if tenant.desired_plan_id:
-        tenant.plan_id = tenant.desired_plan_id
+    plan = db.query(SubscriptionPlan).filter(SubscriptionPlan.id == int(purchased_plan_id)).first()
+    if plan is None:
+        raise ValueError("Purchased plan not found")
+    tenant.plan_id = plan.id
+    tenant.desired_plan_id = plan.id
+    tenant.subscription_status = "active"
+    tenant.trial_ends_at = None
+    invalidate_cache(tenant_id=tenant.id)
+
+
+def mark_subscription_active(db: Session, tenant: Tenant) -> None:
+    """Renewal/invoice paid: keep the current plan, restore active status."""
+    from app.backend.services.feature_flag_service import invalidate_cache
+
     tenant.subscription_status = "active"
     tenant.trial_ends_at = None
     invalidate_cache(tenant_id=tenant.id)

@@ -7,10 +7,11 @@ import logging
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy import select
 
 from app.backend.db.database import get_db
 from app.backend.middleware.auth import get_current_user
-from app.backend.middleware.rbac import require_active_recruiter
+from app.backend.middleware.rbac import hm_assigned_candidate_ids_subquery, is_hiring_manager, require_active_recruiter
 from app.backend.models.db_models import Candidate, ScreeningResult, Tenant, User, RequisitionCandidate
 from app.backend.models.schemas import RescoreRequest
 from app.backend.services.audit_service import log_field_change, log_tenant_event
@@ -37,13 +38,14 @@ def get_analysis_history(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    results = (
+    query = (
         db.query(ScreeningResult)
         .filter(ScreeningResult.tenant_id == current_user.tenant_id)
-        .order_by(ScreeningResult.timestamp.desc())
-        .limit(100)
-        .all()
     )
+    if is_hiring_manager(current_user):
+        sub = hm_assigned_candidate_ids_subquery(db, current_user)
+        query = query.filter(ScreeningResult.candidate_id.in_(select(sub.c.candidate_id)))
+    results = query.order_by(ScreeningResult.timestamp.desc()).limit(100).all()
     def _safe_loads(data):
         try:
             return json.loads(data or "{}")

@@ -100,3 +100,32 @@ def test_hm_cannot_generic_update_requisition_scoring(auth_client, db, seed_subs
         json={"title": "Hacked requisition title"},
     )
     assert resp.status_code == 403
+
+
+def test_hm_history_hides_unassigned_candidate_results(auth_client, db, seed_subscription_plans):
+    admin, assigned, other, hm, req = _hm_setup(auth_client, db)
+    visible = ScreeningResult(
+        tenant_id=admin.tenant_id,
+        candidate_id=assigned.id,
+        resume_text="resume",
+        jd_text=_JD,
+        parsed_data="{}",
+        analysis_result="{}",
+    )
+    hidden = ScreeningResult(
+        tenant_id=admin.tenant_id,
+        candidate_id=other.id,
+        resume_text="resume",
+        jd_text=_JD,
+        parsed_data="{}",
+        analysis_result="{}",
+    )
+    db.add_all([visible, hidden])
+    db.commit()
+    db.refresh(visible)
+    db.refresh(hidden)
+    resp = auth_client.get("/api/history")
+    assert resp.status_code == 200
+    ids = [row.get("id") for row in resp.json()]
+    assert visible.id in ids
+    assert hidden.id not in ids

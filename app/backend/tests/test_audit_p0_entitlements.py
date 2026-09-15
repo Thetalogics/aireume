@@ -233,7 +233,7 @@ def test_checkout_webhook_applies_desired_paid_plan(db, seed_subscription_plans)
         db,
         {
             "object": {
-                "metadata": {"tenant_id": str(tenant.id)},
+                "metadata": {"tenant_id": str(tenant.id), "plan_id": str(growth.id)},
                 "customer": "cus_phase_a",
                 "subscription": "sub_phase_a",
             }
@@ -244,3 +244,35 @@ def test_checkout_webhook_applies_desired_paid_plan(db, seed_subscription_plans)
     assert tenant.plan_id == growth.id
     assert tenant.subscription_status == "active"
     assert tenant_has_feature(db, tenant.id, "requisitions") is True
+
+
+def test_checkout_webhook_activates_metadata_plan_not_mutated_desired(db, seed_subscription_plans):
+    from app.backend.services.billing.webhook_processor import _handle_stripe_checkout_completed
+
+    starter = _starter(db)
+    growth = _growth(db)
+    tenant = Tenant(
+        name="CheckoutRace",
+        slug="checkout-race",
+        plan_id=starter.id,
+        desired_plan_id=growth.id,
+        subscription_status="incomplete",
+    )
+    db.add(tenant)
+    db.commit()
+    db.refresh(tenant)
+    _handle_stripe_checkout_completed(
+        db,
+        {
+            "object": {
+                "metadata": {"tenant_id": str(tenant.id), "plan_id": str(starter.id)},
+                "customer": "cus_race",
+                "subscription": "sub_race",
+            }
+        },
+        "{}",
+    )
+    db.refresh(tenant)
+    assert tenant.plan_id == starter.id
+    assert tenant.desired_plan_id == starter.id
+    assert tenant.subscription_status == "active"

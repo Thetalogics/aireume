@@ -97,6 +97,16 @@ def upgrade() -> None:
 
     insp = _inspector()
 
+    # create_all uses live ORM metadata, so later-owned columns (tenants.desired_plan_id
+    # from 072) can appear here on a fresh database. Strip them so later revisions
+    # remain the source of truth for upgrade/downgrade.
+    if _table_exists(insp, "tenants") and "desired_plan_id" in _column_names(insp, "tenants"):
+        for fk in insp.get_foreign_keys("tenants"):
+            if fk.get("constrained_columns") == ["desired_plan_id"] and fk.get("name"):
+                op.drop_constraint(fk["name"], "tenants", type_="foreignkey")
+        op.drop_column("tenants", "desired_plan_id")
+        insp = _inspector()
+
     # ── candidates: add profile columns (skip if already present) ───────────
     if _table_exists(insp, "candidates"):
         cand_cols = _column_names(insp, "candidates")

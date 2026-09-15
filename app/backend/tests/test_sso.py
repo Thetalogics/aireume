@@ -32,6 +32,11 @@ _test_cert = (
     .sign(_test_key, hashes.SHA256())
 )
 _TEST_CERT_PEM = _test_cert.public_bytes(serialization.Encoding.PEM).decode()
+_TEST_KEY_PEM = _test_key.private_bytes(
+    encoding=serialization.Encoding.PEM,
+    format=serialization.PrivateFormat.PKCS8,
+    encryption_algorithm=serialization.NoEncryption(),
+).decode()
 
 
 # ─── Fixtures ─────────────────────────────────────────────────────────────────
@@ -129,6 +134,11 @@ def _build_saml_response(
                 <saml:Audience>https://aria.example.com/api/sso/metadata/sso-test-corp</saml:Audience>
             </saml:AudienceRestriction>
         </saml:Conditions>
+        <saml:AuthnStatement AuthnInstant="{now}" SessionIndex="{assertion_id}">
+            <saml:AuthnContext>
+                <saml:AuthnContextClassRef>urn:oasis:names:tc:SAML:2.0:ac:classes:PasswordProtectedTransport</saml:AuthnContextClassRef>
+            </saml:AuthnContext>
+        </saml:AuthnStatement>
         <saml:AttributeStatement>
             <saml:Attribute Name="email">
                 <saml:AttributeValue>{email}</saml:AttributeValue>

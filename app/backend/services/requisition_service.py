@@ -694,6 +694,34 @@ def create_requisition(
     **fields: Any,
 ) -> Requisition:
     intake = build_default_intake(title, jd_text)
+    recruiter_id = fields.get("assigned_recruiter_id")
+    on_behalf_id = fields.get("opened_on_behalf_of_hm_id")
+    if recruiter_id:
+        from app.backend.middleware.rbac import (
+            TENANT_ROLE_ADMIN,
+            TENANT_ROLE_RECRUITER,
+            TENANT_ROLE_TA_LEAD,
+            get_tenant_user_or_404,
+        )
+        get_tenant_user_or_404(
+            db,
+            tenant_id,
+            recruiter_id,
+            {TENANT_ROLE_ADMIN, TENANT_ROLE_TA_LEAD, TENANT_ROLE_RECRUITER},
+        )
+    if on_behalf_id:
+        from app.backend.middleware.rbac import (
+            TENANT_ROLE_ADMIN,
+            TENANT_ROLE_HIRING_MANAGER,
+            TENANT_ROLE_TA_LEAD,
+            get_tenant_user_or_404,
+        )
+        get_tenant_user_or_404(
+            db,
+            tenant_id,
+            on_behalf_id,
+            {TENANT_ROLE_HIRING_MANAGER, TENANT_ROLE_ADMIN, TENANT_ROLE_TA_LEAD},
+        )
     req = Requisition(
         tenant_id=tenant_id,
         title=title,
@@ -710,8 +738,8 @@ def create_requisition(
         required_skills_override=_json_dumps(fields.get("required_skills_override")),
         nice_to_have_skills_override=_json_dumps(fields.get("nice_to_have_skills_override")),
         created_by=created_by,
-        assigned_recruiter_id=fields.get("assigned_recruiter_id"),
-        opened_on_behalf_of_hm_id=fields.get("opened_on_behalf_of_hm_id"),
+        assigned_recruiter_id=recruiter_id,
+        opened_on_behalf_of_hm_id=on_behalf_id,
         routing_policy_json=_json_dumps(fields.get("routing_policy_json") or DEFAULT_ROUTING_POLICY),
     )
     db.add(req)

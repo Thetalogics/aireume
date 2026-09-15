@@ -404,6 +404,13 @@ async def analyze_endpoint(
 
     # Validate file content matches extension (magic bytes)
     _validate_file_content(content, resume.filename)
+    require_explicit_use_existing_candidate(
+        db,
+        current_user.tenant_id,
+        action,
+        candidate_id,
+        resume_file_hash=hashlib.md5(content).hexdigest(),
+    )
 
     # Read and validate JD file if provided
     jd_bytes = jd_name = None
@@ -793,6 +800,13 @@ async def analyze_stream_endpoint(
 
     # Validate file content matches extension (magic bytes)
     _validate_file_content(content, resume.filename)
+    require_explicit_use_existing_candidate(
+        db,
+        current_user.tenant_id,
+        action,
+        candidate_id,
+        resume_file_hash=hashlib.md5(content).hexdigest(),
+    )
 
     # Read JD file if provided
     jd_bytes = jd_name = None

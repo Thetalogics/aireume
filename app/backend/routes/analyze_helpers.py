@@ -1750,7 +1750,11 @@ def release_job_analysis_quota(db: Session, job) -> None:
 
 
 def require_explicit_use_existing_candidate(
-    db: Session, tenant_id: int, action: str | None, candidate_id: int | None
+    db: Session,
+    tenant_id: int,
+    action: str | None,
+    candidate_id: int | None,
+    resume_file_hash: str | None = None,
 ) -> None:
     from fastapi import HTTPException
     from app.backend.models.db_models import Candidate
@@ -1771,6 +1775,15 @@ def require_explicit_use_existing_candidate(
         raise HTTPException(
             status_code=409,
             detail="Candidate not found for use_existing",
+        )
+    if resume_file_hash is None:
+        return
+    stored = (existing.resume_file_hash or "").strip().lower()
+    incoming = resume_file_hash.strip().lower()
+    if not stored or stored != incoming:
+        raise HTTPException(
+            status_code=409,
+            detail="use_existing candidate does not match the uploaded resume",
         )
 
 

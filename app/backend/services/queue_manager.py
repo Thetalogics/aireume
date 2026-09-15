@@ -371,6 +371,8 @@ class QueueManager:
                 job.failed_at = datetime.now(timezone.utc)
                 job.error_message = "Worker timeout - job abandoned"
                 job.error_type = "WorkerTimeout"
+                from app.backend.routes.analyze_helpers import release_job_analysis_quota
+                release_job_analysis_quota(db, job)
         
         if stale_jobs:
             db.commit()

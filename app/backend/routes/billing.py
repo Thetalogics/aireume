@@ -12,8 +12,9 @@ from typing import Optional
 from app.backend.db.database import get_db
 from app.backend.middleware.auth import get_current_user, require_platform_admin
 from app.backend.middleware.rbac import is_tenant_admin
-from app.backend.models.db_models import User, Tenant, Invoice
+from app.backend.models.db_models import User, Tenant, Invoice, SubscriptionPlan
 from app.backend.services.billing.factory import get_payment_provider
+from app.backend.services.plan_entitlement_service import is_paid_plan, start_paid_plan_checkout
 from app.backend.services.billing.invoice_service import get_tenant_invoices, get_tenant_invoice_count, get_invoice_by_id
 from app.backend.services.billing.webhook_processor import process_webhook_event
 
@@ -80,13 +81,24 @@ def create_checkout_session(
     """Create a checkout session for the current user's tenant."""
     _require_billing_admin(current_user)
     tenant = db.query(Tenant).filter(Tenant.id == current_user.tenant_id).first()
+    if tenant is None:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    plan = (
+        db.query(SubscriptionPlan)
+        .filter(SubscriptionPlan.name == body.plan)
+        .first()
+    )
+    if plan and is_paid_plan(plan):
+        result = start_paid_plan_checkout(db, tenant, plan)
+        db.commit()
+        return result
     provider = get_payment_provider(db)
     result = provider.create_checkout_session(
         tenant_id=current_user.tenant_id,
         plan=body.plan,
         success_url=body.success_url,
         cancel_url=body.cancel_url,
-        stripe_customer_id=tenant.stripe_customer_id if tenant and tenant.stripe_customer_id else "",
+        stripe_customer_id=tenant.stripe_customer_id or "",
     )
     return result
 

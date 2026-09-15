@@ -62,29 +62,52 @@ def _saml_request_key(request_id: str) -> str:
     return f"saml:authn:{request_id}"
 
 
+def _saml_state_requires_redis() -> bool:
+    env = os.getenv("APP_ENV", os.getenv("ENVIRONMENT", "")).lower()
+    return env in ("production", "prod")
+
+
+def _saml_redis_or_raise() -> None:
+    from app.backend.services.shared_cache import redis_is_healthy
+
+    if _saml_state_requires_redis() and not redis_is_healthy():
+        raise ValueError("SSO is disabled: request state store is unavailable")
+
+
 def persist_saml_authn_request(request_id: str, tenant_id: int) -> None:
     from app.backend.services.shared_cache import cache_set
 
-    env = os.getenv("APP_ENV", os.getenv("ENVIRONMENT", "")).lower()
-    if env in ("production", "prod") and not os.getenv("REDIS_URL", "").strip():
-        raise ValueError("SSO is disabled: request state store is unavailable")
+    _saml_redis_or_raise()
     cache_set(
         _saml_request_key(request_id),
         {"tenant_id": int(tenant_id)},
         SAML_REQUEST_TTL_SECONDS,
+        require_redis=_saml_state_requires_redis(),
     )
+
+
+def peek_saml_authn_request(request_id: str, tenant_id: int) -> bool:
+    from app.backend.services.shared_cache import cache_get
+
+    _saml_redis_or_raise()
+    stored = cache_get(_saml_request_key(request_id), require_redis=_saml_state_requires_redis())
+    if not stored or not isinstance(stored, dict):
+        return False
+    return int(stored.get("tenant_id") or 0) == int(tenant_id)
 
 
 def consume_saml_authn_request(request_id: str, tenant_id: int) -> bool:
     from app.backend.services.shared_cache import cache_delete, cache_get
 
+    _saml_redis_or_raise()
+    require_redis = _saml_state_requires_redis()
     key = _saml_request_key(request_id)
-    stored = cache_get(key)
+    stored = cache_get(key, require_redis=require_redis)
     if not stored or not isinstance(stored, dict):
         return False
     if int(stored.get("tenant_id") or 0) != int(tenant_id):
         return False
-    cache_delete(key)
+    cache_delete(key, require_redis=require_redis)
     return True
 
 
@@ -144,6 +167,7 @@ def _http_request_for_acs(sso_config: SSOConfig, saml_response_b64: str) -> dict
 def authenticate_saml_response_with_onelogin(
     saml_response_b64: str,
     sso_config: SSOConfig,
+    request_id: str,
 ) -> None:
     """Cryptographic SAML verification pinned to the tenant IdP certificate."""
     try:
@@ -151,12 +175,14 @@ def authenticate_saml_response_with_onelogin(
     except ImportError as exc:
         raise ValueError("SAML Response signature verification failed") from exc
 
+    if not request_id:
+        raise ValueError("SAML InResponseTo is invalid or expired")
     try:
         auth = OneLogin_Saml2_Auth(
             _http_request_for_acs(sso_config, saml_response_b64),
             old_settings=_onelogin_settings(sso_config),
         )
-        auth.process_response()
+        auth.process_response(request_id=request_id)
     except ValueError:
         raise
     except Exception as exc:
@@ -164,7 +190,11 @@ def authenticate_saml_response_with_onelogin(
         raise ValueError("SAML Response signature verification failed") from exc
     errors = auth.get_errors()
     if errors or not auth.is_authenticated():
-        logger.warning("SAML verification failed: %s", errors or "not authenticated")
+        logger.warning(
+            "SAML verification failed: %s %s",
+            errors or "not authenticated",
+            auth.get_last_error_reason(),
+        )
         raise ValueError("SAML Response signature verification failed")
 
 
@@ -334,8 +364,6 @@ class SSOService:
         except Exception:
             raise ValueError("Invalid SAMLResponse base64 encoding")
 
-        authenticate_saml_response_with_onelogin(saml_response_b64, sso_config)
-
         try:
             root = ET.fromstring(response_xml)
         except ET.ParseError as exc:
@@ -344,6 +372,12 @@ class SSOService:
         in_response_to = (root.get("InResponseTo") or "").strip()
         if not in_response_to:
             raise ValueError("SAML Response missing InResponseTo")
+        if not peek_saml_authn_request(in_response_to, sso_config.tenant_id):
+            raise ValueError("SAML InResponseTo is invalid or expired")
+
+        authenticate_saml_response_with_onelogin(
+            saml_response_b64, sso_config, request_id=in_response_to
+        )
         if not consume_saml_authn_request(in_response_to, sso_config.tenant_id):
             raise ValueError("SAML InResponseTo is invalid or expired")
 
@@ -373,9 +407,10 @@ class SSOService:
             from app.backend.services.shared_cache import cache_get, cache_set
 
             replay_key = f"saml:assert:{sso_config.tenant_id}:{assertion_id}"
-            if cache_get(replay_key):
+            require_redis = _saml_state_requires_redis()
+            if cache_get(replay_key, require_redis=require_redis):
                 raise ValueError("SAML assertion has already been used")
-            cache_set(replay_key, 1, SAML_REQUEST_TTL_SECONDS)
+            cache_set(replay_key, 1, SAML_REQUEST_TTL_SECONDS, require_redis=require_redis)
 
         # Check Conditions (Audience & NotOnOrAfter)
         conditions = assertion.find(_ns_tag(SAML_ASSERTION_NS, "Conditions"))
