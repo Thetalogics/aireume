@@ -438,11 +438,13 @@ class TestSSOCallback:
         assert "Missing SAMLResponse" in resp.json()["detail"]
 
     def test_sso_callback_invalid_signature(self, client, sso_enabled_tenant):
+        from app.backend.services.sso_service import persist_saml_authn_request
+
         tenant, _ = sso_enabled_tenant
+        persist_saml_authn_request("ARIA123", tenant.id)
         saml_response = _build_saml_response(name_id="user@example.com", email="user@example.com")
-        # Signature verification should fail with a real but unmatching cert
+        # Unsigned fixture with a bound InResponseTo must fail cryptographic verification.
         resp = client.post(f"/api/sso/callback/{tenant.slug}", data={"SAMLResponse": saml_response})
-        # Our lightweight verifier returns False for missing/invalid signatures
         assert resp.status_code == 400
         assert "signature" in resp.json()["detail"].lower()
 
