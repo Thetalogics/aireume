@@ -1,8 +1,17 @@
 """
 Tests for per-tenant rate limiting middleware.
 """
+import time
+
 import pytest
+from starlette.applications import Starlette
+
 from app.backend.middleware.rate_limit import RateLimitMiddleware
+
+
+@pytest.fixture(autouse=True)
+def _enforce_rate_limits(monkeypatch):
+    monkeypatch.setenv("RATE_LIMIT_ENFORCE", "true")
 
 
 @pytest.fixture(autouse=True)
@@ -86,18 +95,33 @@ def test_unauthenticated_requests_not_rate_limited(client):
 
 def test_production_redis_failure_fail_closed(monkeypatch):
     """Production must not fall back to a per-worker in-memory bucket."""
-    from starlette.applications import Starlette
-
+    original = RateLimitMiddleware._instance
     monkeypatch.setenv("ENVIRONMENT", "production")
-    mw = RateLimitMiddleware(Starlette())
+    try:
+        mw = RateLimitMiddleware(Starlette(), register_instance=False)
 
-    def _boom(*_a, **_k):
-        raise RuntimeError("redis down")
+        def _boom(*_a, **_k):
+            raise RuntimeError("redis down")
 
-    monkeypatch.setattr("app.backend.services.shared_cache._client", lambda: object())
-    monkeypatch.setattr("app.backend.services.shared_cache.cache_incr", _boom)
+        monkeypatch.setattr("app.backend.services.shared_cache._client", lambda: object())
+        monkeypatch.setattr("app.backend.services.shared_cache.cache_incr", _boom)
 
-    allowed, retry_after = mw._consume_token(1, 60)
-    assert allowed is False
-    assert retry_after == -1
-    assert 1 not in mw.buckets
+        allowed, retry_after = mw._consume_token(1, 60)
+        assert allowed is False
+        assert retry_after == -1
+        assert 1 not in mw.buckets
+    finally:
+        RateLimitMiddleware._instance = original
+
+
+def test_standalone_middleware_does_not_contaminate_app_client(auth_client):
+    app_mw = RateLimitMiddleware._instance
+    assert app_mw is not None
+    throwaway = RateLimitMiddleware(Starlette())
+    throwaway.buckets["contaminate"] = {"tokens": 0.0, "last_refill": time.time()}
+    assert RateLimitMiddleware._instance is app_mw
+    assert "contaminate" not in app_mw.buckets
+    for _ in range(8):
+        resp = auth_client.get("/api/candidates")
+        assert resp.status_code != 429
+    assert RateLimitMiddleware._instance is app_mw

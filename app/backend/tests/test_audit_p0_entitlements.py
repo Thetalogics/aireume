@@ -276,3 +276,59 @@ def test_checkout_webhook_activates_metadata_plan_not_mutated_desired(db, seed_s
     assert tenant.plan_id == starter.id
     assert tenant.desired_plan_id == starter.id
     assert tenant.subscription_status == "active"
+
+
+def test_checkout_contract_maps_price_metadata_and_webhook_plan(db, seed_subscription_plans, monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from app.backend.models.db_models import PlatformConfig
+    from app.backend.services.billing.webhook_processor import _handle_stripe_checkout_completed
+    from app.backend.services.plan_entitlement_service import start_paid_plan_checkout
+
+    starter = _starter(db)
+    growth = _growth(db)
+    tenant = Tenant(
+        name="CheckoutContract",
+        slug="checkout-contract",
+        plan_id=starter.id,
+        subscription_status="incomplete",
+    )
+    db.add(tenant)
+    db.add(PlatformConfig(config_key="billing.active_provider", config_value="stripe"))
+    db.add(PlatformConfig(config_key="billing.stripe.api_key", config_value="sk_test_123"))
+    db.add(PlatformConfig(config_key="billing.stripe.webhook_secret", config_value="whsec_abc"))
+    db.commit()
+    db.refresh(tenant)
+    monkeypatch.setenv("STRIPE_PRICE_GROWTH", "price_growth_contract")
+    captured = {}
+
+    class FakeCheckout:
+        @staticmethod
+        def create(**kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(id="cs_contract", url="https://checkout.test/cs")
+
+    fake_stripe = SimpleNamespace(checkout=SimpleNamespace(Session=FakeCheckout))
+    with patch("app.backend.services.billing.stripe_provider.stripe", fake_stripe):
+        start_paid_plan_checkout(db, tenant, growth)
+    assert captured["line_items"][0]["price"] == "price_growth_contract"
+    assert captured["metadata"]["tenant_id"] == str(tenant.id)
+    assert captured["metadata"]["plan_id"] == str(growth.id)
+    tenant.desired_plan_id = starter.id
+    db.commit()
+    _handle_stripe_checkout_completed(
+        db,
+        {
+            "object": {
+                "metadata": captured["metadata"],
+                "customer": "cus_contract",
+                "subscription": "sub_contract",
+            }
+        },
+        "{}",
+    )
+    db.refresh(tenant)
+    assert tenant.plan_id == growth.id
+    assert tenant.subscription_status == "active"
+    assert tenant_has_feature(db, tenant.id, "requisitions") is True

@@ -5,9 +5,13 @@ on:
     branches: [ main, staging, production ]
   push:
     branches: [ main, staging, production ]
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
 
 jobs:
   test-backend:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
 
     steps:
@@ -42,6 +46,7 @@ jobs:
         fail_ci_if_error: false
 
   test-frontend:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
 
     steps:
@@ -79,6 +84,7 @@ jobs:
   # only the "Auth workflow (login page)" specs in real Chromium. Authenticated
   # E2E needs the full stack and is run manually/against staging, not here.
   test-e2e:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
 
     steps:
@@ -119,6 +125,7 @@ jobs:
   # before they reach a deploy (migrations run automatically via the container
   # entrypoint, so a broken chain would otherwise fail on production startup).
   migration-check:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -162,18 +169,50 @@ jobs:
         alembic -c alembic.ini downgrade -1
         alembic -c alembic.ini upgrade heads
 
-  security-scan:
+  secret-scan:
     runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
     steps:
     - uses: actions/checkout@v4
       with:
         fetch-depth: 0
 
-    - name: Secret scan (gitleaks)
+    - name: Secret scan (gitleaks, commit range)
       run: |
         curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.24.3/gitleaks_8.24.3_linux_x64.tar.gz -o /tmp/gitleaks.tgz
         tar -xzf /tmp/gitleaks.tgz -C /tmp gitleaks
-        /tmp/gitleaks detect --source . --verbose --redact --exit-code 1
+        if [ "${{ github.event_name }}" = "pull_request" ]; then
+          RANGE="${{ github.event.pull_request.base.sha }}..${{ github.sha }}"
+        else
+          BEFORE="${{ github.event.before }}"
+          if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            RANGE="${{ github.sha }}^..${{ github.sha }}"
+          else
+            RANGE="$BEFORE..${{ github.sha }}"
+          fi
+        fi
+        echo "Scanning $RANGE"
+        /tmp/gitleaks detect --source . --log-opts="$RANGE" --verbose --redact --exit-code 1 --config .gitleaks.toml
+
+  secret-scan-history:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Secret scan (gitleaks, full history)
+      run: |
+        curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.24.3/gitleaks_8.24.3_linux_x64.tar.gz -o /tmp/gitleaks.tgz
+        tar -xzf /tmp/gitleaks.tgz -C /tmp gitleaks
+        /tmp/gitleaks detect --source . --verbose --redact --exit-code 1 --config .gitleaks.toml
+
+  dependency-scan:
+    runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
+    steps:
+    - uses: actions/checkout@v4
 
     - name: Set up Python
       uses: actions/setup-python@v5
@@ -197,8 +236,14 @@ jobs:
           --ignore-vuln PYSEC-2026-3456 \
           --ignore-vuln PYSEC-2026-3457
 
+  filesystem-scan:
+    runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
+    steps:
+    - uses: actions/checkout@v4
+
     - name: Filesystem vulnerability scan (Trivy)
-      uses: aquasecurity/trivy-action@master
+      uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
       with:
         scan-type: fs
         scan-ref: .

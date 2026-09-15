@@ -1,0 +1,20 @@
+title = "ARIA gitleaks"
+
+[extend]
+useDefault = true
+
+# Historic JWT / Ollama / production DB credentials remain in git history and
+# must be rotated/revoked. Do not broadly ignore .env or docs. Only synthetic
+# fixtures and explicit documentation placeholders are allowlisted below.
+
+[[allowlists]]
+description = "Synthetic Stripe/Razorpay keys used only in backend tests"
+paths = ['''(^|/)app/backend/tests/''']
+regexes = [
+  '''sk_test_[A-Za-z0-9]+''',
+  '''whsec_[A-Za-z0-9]+''',
+]
+
+[[allowlists]]
+description = "Documentation bearer placeholder, not a credential"
+regexes = ['''Bearer YOUR_TOKEN''']

@@ -208,3 +208,151 @@ def test_create_requisition_rejects_cross_tenant_recruiter_id(db, seed_subscript
             assigned_recruiter_id=foreign.id,
         )
     assert exc.value.status_code in (400, 404)
+
+
+def test_create_requisition_rejects_cross_tenant_on_behalf_hm_id(db, seed_subscription_plans):
+    from fastapi import HTTPException
+
+    a = Tenant(name="ReqAHM", slug="req-a-hm")
+    b = Tenant(name="ReqBHM", slug="req-b-hm")
+    db.add_all([a, b])
+    db.flush()
+    foreign_hm = User(
+        tenant_id=b.id,
+        email="foreign-hm@x.com",
+        hashed_password=_hash_password("TestPass123!"),
+        role="hiring_manager",
+        is_active=True,
+        email_verified=True,
+    )
+    db.add(foreign_hm)
+    db.commit()
+    db.refresh(foreign_hm)
+    with pytest.raises(HTTPException) as exc:
+        create_requisition(
+            db,
+            tenant_id=a.id,
+            created_by=None,
+            title="Cross tenant HM",
+            jd_text=_JD,
+            opened_on_behalf_of_hm_id=foreign_hm.id,
+        )
+    assert exc.value.status_code in (400, 404)
+
+
+def test_create_requisition_rejects_wrong_role_on_behalf_hm_id(db, seed_subscription_plans):
+    from fastapi import HTTPException
+
+    tenant = Tenant(name="ReqRole", slug="req-role")
+    db.add(tenant)
+    db.flush()
+    recruiter = User(
+        tenant_id=tenant.id,
+        email="recruiter-not-hm@x.com",
+        hashed_password=_hash_password("TestPass123!"),
+        role="recruiter",
+        is_active=True,
+        email_verified=True,
+    )
+    db.add(recruiter)
+    db.commit()
+    db.refresh(recruiter)
+    with pytest.raises(HTTPException) as exc:
+        create_requisition(
+            db,
+            tenant_id=tenant.id,
+            created_by=recruiter.id,
+            title="Wrong role HM",
+            jd_text=_JD,
+            opened_on_behalf_of_hm_id=recruiter.id,
+        )
+    assert exc.value.status_code in (400, 404)
+
+
+def test_use_existing_matching_hash_succeeds_on_analyze(
+    auth_client, db, seed_subscription_plans, mock_hybrid_pipeline
+):
+    import hashlib
+    from io import BytesIO
+    from app.backend.tests.test_usage_enforcement import (
+        DOCX_HEADER,
+        LONG_JOB_DESCRIPTION,
+        RESUME_CONTENT,
+    )
+
+    admin = db.query(User).filter(User.email == "admin@testcorp.com").first()
+    content = DOCX_HEADER + RESUME_CONTENT
+    existing = Candidate(
+        tenant_id=admin.tenant_id,
+        name="HashMatch",
+        email="hash-match@testcorp.com",
+        resume_file_hash=hashlib.md5(content).hexdigest(),
+        raw_resume_text="stored resume",
+        parsed_skills='["python"]',
+    )
+    db.add(existing)
+    db.commit()
+    db.refresh(existing)
+    allow_ad_hoc_screening(db, email="admin@testcorp.com")
+    files = {
+        "resume": (
+            "test_resume.docx",
+            BytesIO(content),
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
+    }
+    data = {
+        "job_description": LONG_JOB_DESCRIPTION,
+        "action": "use_existing",
+        "candidate_id": str(existing.id),
+    }
+    resp = auth_client.post("/api/analyze", files=files, data=data)
+    assert resp.status_code == 200, resp.text
+
+
+def test_use_existing_matching_hash_succeeds_on_analyze_stream(
+    auth_client, db, seed_subscription_plans, mock_hybrid_pipeline
+):
+    import hashlib
+    from io import BytesIO
+    from unittest.mock import patch
+    from app.backend.tests.test_usage_enforcement import (
+        DOCX_HEADER,
+        LONG_JOB_DESCRIPTION,
+        RESUME_CONTENT,
+    )
+
+    admin = db.query(User).filter(User.email == "admin@testcorp.com").first()
+    content = DOCX_HEADER + RESUME_CONTENT
+    existing = Candidate(
+        tenant_id=admin.tenant_id,
+        name="HashMatchStream",
+        email="hash-match-stream@testcorp.com",
+        resume_file_hash=hashlib.md5(content).hexdigest(),
+        raw_resume_text="stored resume",
+        parsed_skills='["python"]',
+    )
+    db.add(existing)
+    db.commit()
+    db.refresh(existing)
+    allow_ad_hoc_screening(db, email="admin@testcorp.com")
+
+    async def _stream(*_a, **_k):
+        yield {"stage": "complete", "result": {"fit_score": 75, "candidate_name": "HashMatchStream"}}
+
+    files = {
+        "resume": (
+            "test_resume.docx",
+            BytesIO(content),
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
+    }
+    data = {
+        "job_description": LONG_JOB_DESCRIPTION,
+        "action": "use_existing",
+        "candidate_id": str(existing.id),
+    }
+    with patch("app.backend.routes.analyze.astream_hybrid_pipeline", _stream):
+        resp = auth_client.post("/api/analyze/stream", files=files, data=data)
+    assert resp.status_code == 200, resp.text
+    assert resp.status_code != 409

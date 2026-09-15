@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 import pytest
 
-from app.backend.models.db_models import SSOConfig, Tenant
+from app.backend.models.db_models import SSOConfig, Tenant, User
 from app.backend.services.sso_service import persist_saml_authn_request, sso_service
 from app.backend.tests.test_sso import _TEST_CERT_PEM, _build_saml_response
 
@@ -221,4 +221,19 @@ def test_real_signed_saml_rejected_with_attacker_cert(sso_tenant):
             ),
             config,
         )
+
+
+def test_sso_acs_callback_provisions_user_from_signed_response(client, db, sso_tenant):
+    tenant, _config = sso_tenant
+    persist_saml_authn_request("ARIA123", tenant.id)
+    saml = _signed_saml_b64(email="acs-user@example.com")
+    resp = client.post(
+        f"/api/sso/callback/{tenant.slug}",
+        data={"SAMLResponse": saml},
+        follow_redirects=False,
+    )
+    assert resp.status_code in (302, 303), resp.text
+    created = db.query(User).filter(User.email == "acs-user@example.com", User.tenant_id == tenant.id).first()
+    assert created is not None
+    assert created.role == "viewer"
 
