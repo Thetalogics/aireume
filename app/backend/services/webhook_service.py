@@ -5,11 +5,10 @@ import json
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
-from urllib.parse import urlparse
-import ipaddress
 from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 from app.backend.models.db_models import Webhook, WebhookDelivery
+from app.backend.services.url_safety import UnsafeURLError, safe_request, validate_public_url
 
 log = logging.getLogger(__name__)
 
@@ -25,9 +24,8 @@ def _sign_payload(payload_str: str, secret: str) -> str:
 
 def _send_webhook(url: str, payload: dict, secret: str) -> tuple[int, str, bool]:
     """Send HTTP POST to webhook URL. Returns (status_code, body, success)."""
-    import httpx
-
     payload_str = json.dumps(payload, default=str)
+    payload_bytes = payload_str.encode()
     signature = _sign_payload(payload_str, secret)
 
     headers = {
@@ -37,12 +35,21 @@ def _send_webhook(url: str, payload: dict, secret: str) -> tuple[int, str, bool]
     }
 
     try:
-        with httpx.Client(timeout=10.0) as client:
-            response = client.post(url, content=payload_str, headers=headers)
-            success = 200 <= response.status_code < 300
-            return response.status_code, response.text[:1000], success
+        response = safe_request(
+            "POST",
+            url,
+            require_https=True,
+            timeout=10.0,
+            content=payload_bytes,
+            headers=headers,
+        )
+        success = 200 <= response.status_code < 300
+        return response.status_code, response.text[:1000], success
+    except UnsafeURLError as e:
+        log.warning("Webhook delivery rejected: %s", str(e)[:1000])
+        return 0, str(e)[:1000], False
     except Exception as e:
-        log.warning("Webhook delivery failed to %s: %s", url, str(e))
+        log.warning("Webhook delivery failed: %s", str(e)[:1000])
         return 0, str(e)[:1000], False
 
 
@@ -160,26 +167,7 @@ def _dispatch_in_thread(db_session_factory, tenant_id, event, payload):
 def validate_webhook_url(url: str) -> tuple[bool, str]:
     """Validate webhook URL is safe for delivery."""
     try:
-        parsed = urlparse(url)
-    except Exception:
-        return False, "Invalid URL format"
-
-    if parsed.scheme not in ("https",):
-        return False, "Webhook URL must use HTTPS"
-
-    hostname = parsed.hostname
-    if not hostname:
-        return False, "URL must have a hostname"
-
-    # Reject localhost and private IPs
-    if hostname in ("localhost", "127.0.0.1", "0.0.0.0", "::1"):
-        return False, "Localhost URLs not allowed for webhooks"
-
-    try:
-        ip = ipaddress.ip_address(hostname)
-        if ip.is_private or ip.is_loopback or ip.is_reserved:
-            return False, "Private/reserved IP addresses not allowed"
-    except ValueError:
-        pass  # hostname is a domain, that's fine
-
+        validate_public_url(url, require_https=True)
+    except UnsafeURLError as e:
+        return False, str(e)
     return True, ""

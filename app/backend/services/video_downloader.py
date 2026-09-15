@@ -10,6 +10,8 @@ import httpx
 from pathlib import Path
 from urllib.parse import urlparse
 
+from app.backend.services.url_safety import UnsafeURLError, safe_request_async
+
 DOWNLOAD_TIMEOUT = 300      # 5 minutes for large files
 MAX_DOWNLOAD_BYTES = 500 * 1024 * 1024  # 500 MB
 
@@ -82,17 +84,18 @@ def transform_dropbox_url(url: str) -> str:
 async def resolve_zoom_url(url: str) -> str:
     """Try to extract the direct MP4 URL from a Zoom recording page."""
     try:
-        async with httpx.AsyncClient(timeout=20, follow_redirects=True, headers=BROWSER_HEADERS) as client:
-            resp = await client.get(url)
-            if resp.status_code == 200:
-                for pattern in [
-                    r'"viewMp4FileWithWatermark"\s*:\s*"([^"]+)"',
-                    r'"viewMp4Url"\s*:\s*"([^"]+)"',
-                    r'(https?://[^\s"\']+\.mp4[^\s"\']*)',
-                ]:
-                    m = re.search(pattern, resp.text)
-                    if m:
-                        return m.group(1).replace("\\u0026", "&")
+        resp = await safe_request_async("GET", url, timeout=20.0, headers=BROWSER_HEADERS)
+        if resp.status_code == 200:
+            for pattern in [
+                r'"viewMp4FileWithWatermark"\s*:\s*"([^"]+)"',
+                r'"viewMp4Url"\s*:\s*"([^"]+)"',
+                r'(https?://[^\s"\']+\.mp4[^\s"\']*)',
+            ]:
+                m = re.search(pattern, resp.text)
+                if m:
+                    return m.group(1).replace("\\u0026", "&")
+    except UnsafeURLError:
+        raise ValueError("URL is not allowed")
     except Exception:
         pass
     return url  # fall back to original
@@ -105,16 +108,18 @@ async def resolve_loom_url(url: str) -> str:
         return url
     video_id = m.group(1)
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            # Try the transcoded-url endpoint
-            resp = await client.get(
-                f"https://www.loom.com/v1/videos/{video_id}/transcoded-url",
-                headers={"Accept": "application/json"},
-            )
-            if resp.status_code == 200:
-                cdn = resp.json().get("url")
-                if cdn:
-                    return cdn
+        resp = await safe_request_async(
+            "GET",
+            f"https://www.loom.com/v1/videos/{video_id}/transcoded-url",
+            timeout=15.0,
+            headers={"Accept": "application/json"},
+        )
+        if resp.status_code == 200:
+            cdn = resp.json().get("url")
+            if cdn:
+                return cdn
+    except UnsafeURLError:
+        raise ValueError("URL is not allowed")
     except Exception:
         pass
     return url
@@ -176,49 +181,54 @@ async def download_video_from_url(url: str) -> tuple[bytes, str, str]:
 
 
 async def _http_download(url: str, platform: str) -> bytes:
-    """Stream-download a file, respecting size limit."""
+    """Download a file, respecting size limit."""
     try:
-        async with httpx.AsyncClient(
+        resp = await safe_request_async(
+            "GET",
+            url,
             timeout=DOWNLOAD_TIMEOUT,
-            follow_redirects=True,
+            max_bytes=MAX_DOWNLOAD_BYTES,
             headers=BROWSER_HEADERS,
-        ) as client:
-            async with client.stream("GET", url) as resp:
-                if resp.status_code == 401:
-                    raise ValueError(
-                        "This recording requires authentication. "
-                        "Ensure the sharing link is set to 'Anyone with the link can view' (no login required)."
-                    )
-                if resp.status_code == 403:
-                    raise ValueError(
-                        "Access denied. Make sure the recording is shared publicly without a password."
-                    )
-                if resp.status_code == 404:
-                    raise ValueError("Recording not found. The link may have expired or been removed.")
-                if resp.status_code != 200:
-                    raise ValueError(f"Failed to download recording (HTTP {resp.status_code}).")
+        )
+        if resp.status_code == 401:
+            raise ValueError(
+                "This recording requires authentication. "
+                "Ensure the sharing link is set to 'Anyone with the link can view' (no login required)."
+            )
+        if resp.status_code == 403:
+            raise ValueError(
+                "Access denied. Make sure the recording is shared publicly without a password."
+            )
+        if resp.status_code == 404:
+            raise ValueError("Recording not found. The link may have expired or been removed.")
+        if resp.status_code != 200:
+            raise ValueError(f"Failed to download recording (HTTP {resp.status_code}).")
 
-                content_type = resp.headers.get("content-type", "")
-                if "text/html" in content_type:
-                    raise ValueError(
-                        f"The URL returned a webpage instead of a video file. "
-                        f"For {platform_display_name(platform)} recordings, ensure:\n"
-                        "• The recording is shared publicly (no sign-in required)\n"
-                        "• For Zoom: use the direct share link from 'Cloud Recordings'\n"
-                        "• For Teams: use SharePoint → share → 'Anyone with the link'"
-                    )
+        content_type = resp.headers.get("content-type", "")
+        if "text/html" in content_type:
+            raise ValueError(
+                f"The URL returned a webpage instead of a video file. "
+                f"For {platform_display_name(platform)} recordings, ensure:\n"
+                "• The recording is shared publicly (no sign-in required)\n"
+                "• For Zoom: use the direct share link from 'Cloud Recordings'\n"
+                "• For Teams: use SharePoint → share → 'Anyone with the link'"
+            )
 
-                chunks, total = [], 0
-                async for chunk in resp.aiter_bytes(1024 * 1024):
-                    chunks.append(chunk)
-                    total += len(chunk)
-                    if total > MAX_DOWNLOAD_BYTES:
-                        raise ValueError(
-                            f"Recording exceeds the 500 MB download limit. "
-                            "Please trim the recording or upload the file directly."
-                        )
-                return b"".join(chunks)
+        body = resp.content
+        if len(body) > MAX_DOWNLOAD_BYTES:
+            raise ValueError(
+                "Recording exceeds the 500 MB download limit. "
+                "Please trim the recording or upload the file directly."
+            )
+        return body
 
+    except UnsafeURLError as e:
+        if "exceeds maximum size" in str(e):
+            raise ValueError(
+                "Recording exceeds the 500 MB download limit. "
+                "Please trim the recording or upload the file directly."
+            ) from e
+        raise ValueError("URL is not allowed") from e
     except httpx.TimeoutException:
         raise ValueError("Download timed out. The recording server is too slow. Try uploading the file directly.")
     except httpx.RequestError as e:

@@ -40,7 +40,7 @@ async def test_tenant_a_ats_connection_cannot_push_tenant_b_candidate(db, seed_s
     db.add(conn)
     db.commit()
 
-    with patch("httpx.AsyncClient") as client_cls:
+    with patch("app.backend.services.ats_connector.safe_request_async") as client_cls:
         connector = ATSConnector(db)
         result = await connector.push_candidate_status(conn, cand_b.id)
         assert result["success"] is False
@@ -77,7 +77,7 @@ async def test_ats_rejects_screening_result_for_different_candidate(db, seed_sub
     db.add_all([result_b, conn])
     db.commit()
     db.refresh(result_b)
-    with patch("httpx.AsyncClient") as client_cls:
+    with patch("app.backend.services.ats_connector.safe_request_async") as client_cls:
         connector = ATSConnector(db)
         result = await connector.push_candidate_status(
             conn, cand_a.id, screening_result_id=result_b.id

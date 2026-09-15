@@ -31,6 +31,8 @@ async def extract_jd_from_url(
         jd_text = await scrape_jd(body.url)
     except HTTPException:
         raise
+    except UnsafeURLError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except (ValueError, TypeError, KeyError) as e:
         logger.warning(
             "JD extraction failed for URL %s: %s", body.url, e,

@@ -12,7 +12,6 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -22,6 +21,7 @@ from app.backend.models.db_models import (
     Candidate,
     ScreeningResult,
 )
+from app.backend.services.url_safety import safe_request_async
 
 logger = logging.getLogger("aria.ats")
 
@@ -94,39 +94,40 @@ class ATSConnector:
         headers = adapter.get_headers(connection)
 
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.post(url, json=payload, headers=headers)
-                success = 200 <= resp.status_code < 300
-                response_body = resp.text[:2000]
+            resp = await safe_request_async(
+                "POST", url, timeout=30.0, headers=headers, json=payload
+            )
+            success = 200 <= resp.status_code < 300
+            response_body = resp.text[:2000]
 
-                self._log_sync(
-                    connection=connection,
-                    direction="push",
-                    entity_type="candidate_status",
-                    entity_id=external_id,
-                    candidate_id=candidate_id,
-                    screening_result_id=screening_result_id,
-                    payload=payload,
-                    response_status=resp.status_code,
-                    response_body=response_body,
-                    success=success,
-                )
+            self._log_sync(
+                connection=connection,
+                direction="push",
+                entity_type="candidate_status",
+                entity_id=external_id,
+                candidate_id=candidate_id,
+                screening_result_id=screening_result_id,
+                payload=payload,
+                response_status=resp.status_code,
+                response_body=response_body,
+                success=success,
+            )
 
-                if success:
-                    connection.last_sync_at = datetime.now(timezone.utc)
-                    connection.last_sync_status = "success"
-                    connection.last_error = None
-                else:
-                    connection.last_sync_status = "failed"
-                    connection.last_error = f"HTTP {resp.status_code}: {response_body[:200]}"
+            if success:
+                connection.last_sync_at = datetime.now(timezone.utc)
+                connection.last_sync_status = "success"
+                connection.last_error = None
+            else:
+                connection.last_sync_status = "failed"
+                connection.last_error = f"HTTP {resp.status_code}: {response_body[:200]}"
 
-                self.db.commit()
+            self.db.commit()
 
-                return {
-                    "success": success,
-                    "external_id": external_id,
-                    "error": None if success else f"HTTP {resp.status_code}",
-                }
+            return {
+                "success": success,
+                "external_id": external_id,
+                "error": None if success else f"HTTP {resp.status_code}",
+            }
 
         except Exception as e:
             logger.error("ATS push failed for connection %s: %s", connection.id, e)
@@ -163,35 +164,34 @@ class ATSConnector:
         headers = adapter.get_headers(connection)
 
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.get(url, headers=headers)
-                success = 200 <= resp.status_code < 300
-                response_body = resp.text[:2000]
+            resp = await safe_request_async("GET", url, timeout=30.0, headers=headers)
+            success = 200 <= resp.status_code < 300
+            response_body = resp.text[:2000]
 
-                external_status = None
-                if success:
-                    external_status = adapter.parse_pull_status(resp.json())
+            external_status = None
+            if success:
+                external_status = adapter.parse_pull_status(resp.json())
 
-                self._log_sync(
-                    connection=connection,
-                    direction="pull",
-                    entity_type="candidate_status",
-                    entity_id=external_id,
-                    payload=None,
-                    response_status=resp.status_code,
-                    response_body=response_body,
-                    success=success,
-                )
+            self._log_sync(
+                connection=connection,
+                direction="pull",
+                entity_type="candidate_status",
+                entity_id=external_id,
+                payload=None,
+                response_status=resp.status_code,
+                response_body=response_body,
+                success=success,
+            )
 
-                connection.last_sync_at = datetime.now(timezone.utc)
-                connection.last_sync_status = "success" if success else "failed"
-                self.db.commit()
+            connection.last_sync_at = datetime.now(timezone.utc)
+            connection.last_sync_status = "success" if success else "failed"
+            self.db.commit()
 
-                return {
-                    "success": success,
-                    "status": external_status,
-                    "error": None if success else f"HTTP {resp.status_code}",
-                }
+            return {
+                "success": success,
+                "status": external_status,
+                "error": None if success else f"HTTP {resp.status_code}",
+            }
 
         except Exception as e:
             logger.error("ATS pull failed for connection %s: %s", connection.id, e)
@@ -299,15 +299,21 @@ class ATSConnector:
         signature: str,
         body: bytes,
     ) -> bool:
-        """Verify HMAC signature of inbound ATS webhook."""
-        if not connection.webhook_secret:
-            return True  # No secret configured, allow
-        expected = hmac.new(
-            connection.webhook_secret.encode(),
-            body,
-            hashlib.sha256,
-        ).hexdigest()
-        return hmac.compare_digest(signature, expected)
+        """Verify HMAC signature of inbound ATS webhook. Fail closed if secret is blank."""
+        secret = (connection.webhook_secret or "").strip()
+        if not secret:
+            return False
+        expected = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+        provided = (signature or "").strip()
+        if provided.lower().startswith("sha256="):
+            provided = provided[7:]
+        try:
+            return hmac.compare_digest(
+                expected.encode("ascii"),
+                provided.encode("ascii"),
+            )
+        except (TypeError, UnicodeEncodeError, ValueError):
+            return False
 
     def _get_adapter(self, provider: str) -> "BaseATSAdapter":
         adapters = {
@@ -393,16 +399,15 @@ class BaseATSAdapter:
     async def fetch_open_requisitions(self, connection: ATSConnection) -> list[dict[str, Any]]:
         url = self.get_requisitions_endpoint(connection)
         headers = self.get_headers(connection)
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.get(url, headers=headers)
-            if resp.status_code >= 400:
-                logger.warning("ATS requisitions fetch failed HTTP %s for %s", resp.status_code, connection.provider)
-                return []
-            try:
-                payload = resp.json()
-            except Exception:
-                return []
-            return self.parse_requisitions_list(payload)
+        resp = await safe_request_async("GET", url, timeout=30.0, headers=headers)
+        if resp.status_code >= 400:
+            logger.warning("ATS requisitions fetch failed HTTP %s for %s", resp.status_code, connection.provider)
+            return []
+        try:
+            payload = resp.json()
+        except Exception:
+            return []
+        return self.parse_requisitions_list(payload)
 
 
 class GreenhouseAdapter(BaseATSAdapter):

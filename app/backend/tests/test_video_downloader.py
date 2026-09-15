@@ -148,13 +148,11 @@ class TestResolveZoomUrl:
         mock_resp.status_code = 200
         mock_resp.text = html
 
-        with patch("app.backend.services.video_downloader.httpx.AsyncClient") as MockClient:
-            mock_client = AsyncMock()
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=None)
-            mock_client.get = AsyncMock(return_value=mock_resp)
-            MockClient.return_value = mock_client
-
+        with patch(
+            "app.backend.services.video_downloader.safe_request_async",
+            new_callable=AsyncMock,
+            return_value=mock_resp,
+        ):
             result = _arun(
                 resolve_zoom_url("https://zoom.us/rec/share/abc123")
             )
@@ -167,26 +165,22 @@ class TestResolveZoomUrl:
         mock_resp.status_code = 200
         mock_resp.text = "<html>No video here</html>"
 
-        with patch("app.backend.services.video_downloader.httpx.AsyncClient") as MockClient:
-            mock_client = AsyncMock()
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=None)
-            mock_client.get = AsyncMock(return_value=mock_resp)
-            MockClient.return_value = mock_client
-
+        with patch(
+            "app.backend.services.video_downloader.safe_request_async",
+            new_callable=AsyncMock,
+            return_value=mock_resp,
+        ):
             result = _arun(resolve_zoom_url(original))
 
         assert result == original
 
     def test_falls_back_to_original_on_request_error(self):
         original = "https://zoom.us/rec/share/xyz"
-        with patch("app.backend.services.video_downloader.httpx.AsyncClient") as MockClient:
-            mock_client = AsyncMock()
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=None)
-            mock_client.get = AsyncMock(side_effect=Exception("Network error"))
-            MockClient.return_value = mock_client
-
+        with patch(
+            "app.backend.services.video_downloader.safe_request_async",
+            new_callable=AsyncMock,
+            side_effect=Exception("Network error"),
+        ):
             result = _arun(resolve_zoom_url(original))
 
         assert result == original
@@ -199,27 +193,17 @@ class TestHttpDownload:
         mock_resp = MagicMock()
         mock_resp.status_code = status
         mock_resp.headers = {"content-type": content_type}
-
-        async def fake_aiter_bytes(chunk_size=None):
-            yield content
-
-        mock_resp.aiter_bytes = fake_aiter_bytes
+        mock_resp.content = content
         return mock_resp
 
     def test_successful_download(self):
         mock_resp = self._make_mock_response(content=b"fake mp4 data")
 
-        with patch("app.backend.services.video_downloader.httpx.AsyncClient") as MockClient:
-            mock_cm = MagicMock()
-            mock_cm.__aenter__ = AsyncMock(return_value=mock_cm)
-            mock_cm.__aexit__ = AsyncMock(return_value=None)
-
-            mock_stream = MagicMock()
-            mock_stream.__aenter__ = AsyncMock(return_value=mock_resp)
-            mock_stream.__aexit__ = AsyncMock(return_value=None)
-            mock_cm.stream = MagicMock(return_value=mock_stream)
-            MockClient.return_value = mock_cm
-
+        with patch(
+            "app.backend.services.video_downloader.safe_request_async",
+            new_callable=AsyncMock,
+            return_value=mock_resp,
+        ):
             result = _arun(
                 _http_download("https://example.com/video.mp4", "direct")
             )
@@ -229,16 +213,11 @@ class TestHttpDownload:
     def test_401_raises_value_error_with_auth_message(self):
         mock_resp = self._make_mock_response(status=401)
 
-        with patch("app.backend.services.video_downloader.httpx.AsyncClient") as MockClient:
-            mock_cm = MagicMock()
-            mock_cm.__aenter__ = AsyncMock(return_value=mock_cm)
-            mock_cm.__aexit__ = AsyncMock(return_value=None)
-            mock_stream = MagicMock()
-            mock_stream.__aenter__ = AsyncMock(return_value=mock_resp)
-            mock_stream.__aexit__ = AsyncMock(return_value=None)
-            mock_cm.stream = MagicMock(return_value=mock_stream)
-            MockClient.return_value = mock_cm
-
+        with patch(
+            "app.backend.services.video_downloader.safe_request_async",
+            new_callable=AsyncMock,
+            return_value=mock_resp,
+        ):
             with pytest.raises(ValueError, match="authentication"):
                 _arun(
                     _http_download("https://example.com/video.mp4", "zoom")
@@ -247,16 +226,11 @@ class TestHttpDownload:
     def test_404_raises_value_error_with_not_found_message(self):
         mock_resp = self._make_mock_response(status=404)
 
-        with patch("app.backend.services.video_downloader.httpx.AsyncClient") as MockClient:
-            mock_cm = MagicMock()
-            mock_cm.__aenter__ = AsyncMock(return_value=mock_cm)
-            mock_cm.__aexit__ = AsyncMock(return_value=None)
-            mock_stream = MagicMock()
-            mock_stream.__aenter__ = AsyncMock(return_value=mock_resp)
-            mock_stream.__aexit__ = AsyncMock(return_value=None)
-            mock_cm.stream = MagicMock(return_value=mock_stream)
-            MockClient.return_value = mock_cm
-
+        with patch(
+            "app.backend.services.video_downloader.safe_request_async",
+            new_callable=AsyncMock,
+            return_value=mock_resp,
+        ):
             with pytest.raises(ValueError, match="[Nn]ot found|expired"):
                 _arun(
                     _http_download("https://example.com/missing.mp4", "direct")
@@ -265,16 +239,11 @@ class TestHttpDownload:
     def test_html_response_raises_value_error(self):
         mock_resp = self._make_mock_response(content=b"<html>Login</html>", content_type="text/html")
 
-        with patch("app.backend.services.video_downloader.httpx.AsyncClient") as MockClient:
-            mock_cm = MagicMock()
-            mock_cm.__aenter__ = AsyncMock(return_value=mock_cm)
-            mock_cm.__aexit__ = AsyncMock(return_value=None)
-            mock_stream = MagicMock()
-            mock_stream.__aenter__ = AsyncMock(return_value=mock_resp)
-            mock_stream.__aexit__ = AsyncMock(return_value=None)
-            mock_cm.stream = MagicMock(return_value=mock_stream)
-            MockClient.return_value = mock_cm
-
+        with patch(
+            "app.backend.services.video_downloader.safe_request_async",
+            new_callable=AsyncMock,
+            return_value=mock_resp,
+        ):
             with pytest.raises(ValueError, match="webpage|HTML|html"):
                 _arun(
                     _http_download("https://drive.google.com/file", "google_drive")

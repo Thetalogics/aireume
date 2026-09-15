@@ -2,7 +2,8 @@
 JD URL Scraper — extracts job description text from LinkedIn, Indeed, Naukri, and generic pages.
 """
 import re
-import httpx
+
+from app.backend.services.url_safety import safe_request_async
 
 try:
     from bs4 import BeautifulSoup
@@ -26,12 +27,11 @@ async def scrape_jd(url: str) -> str:
     if not _BS4_AVAILABLE:
         raise ImportError("beautifulsoup4 is required for URL extraction. Install it with: pip install beautifulsoup4 lxml")
 
-    async with httpx.AsyncClient(
-        headers=HEADERS, timeout=20.0, follow_redirects=True
-    ) as client:
-        resp = await client.get(url)
-        resp.raise_for_status()
-        html = resp.text
+    resp = await safe_request_async(
+        "GET", url, timeout=20.0, headers=HEADERS, max_bytes=8 * 1024 * 1024
+    )
+    resp.raise_for_status()
+    html = resp.text
 
     soup = BeautifulSoup(html, "lxml")  # noqa: F821
 

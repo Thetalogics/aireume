@@ -38,6 +38,7 @@ from app.backend.models.schemas import (
     ATSSyncLogOut,
 )
 from app.backend.services.ats_connector import ATSConnector
+from app.backend.services.url_safety import UnsafeURLError, validate_public_url
 
 logger = logging.getLogger("aria.ats")
 
@@ -47,6 +48,16 @@ router = APIRouter(prefix="/api/ats", tags=["ats"])
 def _require_admin(current_user: User) -> None:
     if current_user.role not in {"admin", "recruiter"}:
         raise HTTPException(status_code=403, detail="Admin or recruiter access required")
+
+
+def _validate_ats_urls(base_url, webhook_url):
+    try:
+        if base_url:
+            validate_public_url(base_url)
+        if webhook_url:
+            validate_public_url(webhook_url)
+    except UnsafeURLError as e:
+        raise HTTPException(status_code=400, detail="ATS URL is not allowed") from e
 
 
 def _serialize_connection(conn: ATSConnection) -> dict:
@@ -72,6 +83,7 @@ def create_connection(
 ):
     """Create a new ATS connection for the tenant."""
     _require_admin(current_user)
+    _validate_ats_urls(body.base_url, body.webhook_url)
 
     conn = ATSConnection(
         tenant_id=current_user.tenant_id,
@@ -142,6 +154,7 @@ def update_connection(
         raise HTTPException(status_code=404, detail="ATS connection not found")
 
     update_data = body.model_dump(exclude_unset=True)
+    _validate_ats_urls(update_data.get("base_url"), update_data.get("webhook_url"))
     for field, value in update_data.items():
         if field == "status_mapping_json" and isinstance(value, dict):
             value = json.dumps(value)
@@ -342,7 +355,7 @@ async def ats_inbound_webhook(
     signature = request.headers.get("X-ATS-Signature", "")
     connector = ATSConnector(db)
     if not connector.verify_inbound_webhook(conn, signature, body):
-        raise HTTPException(status_code=401, detail="Invalid webhook signature")
+        raise HTTPException(status_code=403, detail="Invalid webhook signature")
 
     try:
         payload = json.loads(body)
