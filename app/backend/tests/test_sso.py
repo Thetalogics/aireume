@@ -2,6 +2,7 @@
 Tests for SSO/SAML integration.
 """
 import base64
+import uuid
 import pytest
 from datetime import datetime, timezone, timedelta
 from xml.etree import ElementTree as ET
@@ -84,25 +85,34 @@ def sso_enabled_tenant(db, test_tenant):
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
-def _build_saml_response(name_id="user@example.com", email="user@example.com", issuer=None):
+def _build_saml_response(
+    name_id="user@example.com",
+    email="user@example.com",
+    issuer=None,
+    in_response_to="ARIA123",
+    assertion_id=None,
+    response_id=None,
+):
     """Build a minimal SAML Response XML and base64-encode it."""
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     not_before = (datetime.now(timezone.utc) - timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
     not_on_or_after = (datetime.now(timezone.utc) + timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
     issuer = issuer or "https://idp.example.com/entity"
+    assertion_id = assertion_id or f"ASSERT{uuid.uuid4().hex[:20].upper()}"
+    response_id = response_id or f"RESP{uuid.uuid4().hex[:20].upper()}"
     response_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"
                 xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion"
-                ID="RESPONSE123"
+                ID="{response_id}"
                 Version="2.0"
                 IssueInstant="{now}"
                 Destination="https://aria.example.com/api/sso/callback/sso-test-corp"
-                InResponseTo="ARIA123">
+                InResponseTo="{in_response_to}">
     <saml:Issuer>{issuer}</saml:Issuer>
     <samlp:Status>
         <samlp:StatusCode Value="urn:oasis:names:tc:SAML:2.0:status:Success"/>
     </samlp:Status>
-    <saml:Assertion ID="ASSERTION123"
+    <saml:Assertion ID="{assertion_id}"
                     Version="2.0"
                     IssueInstant="{now}">
         <saml:Issuer>{issuer}</saml:Issuer>
@@ -111,7 +121,7 @@ def _build_saml_response(name_id="user@example.com", email="user@example.com", i
             <saml:SubjectConfirmation Method="urn:oasis:names:tc:SAML:2.0:cm:bearer">
                 <saml:SubjectConfirmationData NotOnOrAfter="{not_on_or_after}"
                                               Recipient="https://aria.example.com/api/sso/callback/sso-test-corp"
-                                              InResponseTo="ARIA123"/>
+                                              InResponseTo="{in_response_to}"/>
             </saml:SubjectConfirmation>
         </saml:Subject>
         <saml:Conditions NotBefore="{not_before}" NotOnOrAfter="{not_on_or_after}">
@@ -456,27 +466,40 @@ class TestSSOService:
         assert "SAMLRequest=" in redirect_url
         assert request_id.startswith("ARIA")
 
-    def test_process_saml_response_no_signature_check(self, sso_enabled_tenant):
-        _, config = sso_enabled_tenant
-        saml_response = _build_saml_response(name_id="unit@example.com", email="unit@example.com")
-        attrs = sso_service.process_saml_response(saml_response, config, verify_signature=False)
+    def test_process_saml_response_requires_library_verification(self, sso_enabled_tenant):
+        tenant, config = sso_enabled_tenant
+        from app.backend.services.sso_service import persist_saml_authn_request
+
+        persist_saml_authn_request("ARIA123", tenant.id)
+        saml_response = _build_saml_response(
+            name_id="unit@example.com",
+            email="unit@example.com",
+            in_response_to="ARIA123",
+        )
+        with patch(
+            "app.backend.services.sso_service.authenticate_saml_response_with_onelogin"
+        ) as mock_auth:
+            mock_auth.return_value = None
+            attrs = sso_service.process_saml_response(saml_response, config)
         assert attrs["email"] == "unit@example.com"
         assert attrs["name_id"] == "unit@example.com"
 
     def test_process_saml_response_expired_assertion(self, sso_enabled_tenant):
-        _, config = sso_enabled_tenant
-        # Build response with expired assertion
+        tenant, config = sso_enabled_tenant
+        from app.backend.services.sso_service import persist_saml_authn_request
+
+        persist_saml_authn_request("ARIA123", tenant.id)
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         past = (datetime.now(timezone.utc) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
         response_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"
                 xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion"
-                ID="RESPONSE123" Version="2.0" IssueInstant="{now}">
+                ID="RESPONSE123" Version="2.0" IssueInstant="{now}" InResponseTo="ARIA123">
     <saml:Issuer>https://idp.example.com/entity</saml:Issuer>
     <samlp:Status>
         <samlp:StatusCode Value="urn:oasis:names:tc:SAML:2.0:status:Success"/>
     </samlp:Status>
-    <saml:Assertion ID="ASSERTION123" Version="2.0" IssueInstant="{now}">
+    <saml:Assertion ID="ASSERT-EXP-{tenant.id}" Version="2.0" IssueInstant="{now}">
         <saml:Issuer>https://idp.example.com/entity</saml:Issuer>
         <saml:Subject>
             <saml:NameID>user@example.com</saml:NameID>
@@ -485,8 +508,11 @@ class TestSSOService:
     </saml:Assertion>
 </samlp:Response>"""
         saml_response = base64.b64encode(response_xml.encode()).decode()
-        with pytest.raises(ValueError, match="expired"):
-            sso_service.process_saml_response(saml_response, config, verify_signature=False)
+        with patch(
+            "app.backend.services.sso_service.authenticate_saml_response_with_onelogin"
+        ):
+            with pytest.raises(ValueError, match="expired"):
+                sso_service.process_saml_response(saml_response, config)
 
     def test_get_or_create_user_creates_new(self, db, sso_enabled_tenant):
         tenant, config = sso_enabled_tenant

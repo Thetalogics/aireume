@@ -33,7 +33,12 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.backend.db.database import get_db
 from app.backend.middleware.auth import get_current_user, require_internal_service
-from app.backend.middleware.rbac import require_recruiter_or_admin
+from app.backend.middleware.rbac import (
+    is_hiring_manager,
+    require_candidate_read_access,
+    require_recruiter_or_admin,
+    restrict_to_hm_candidates,
+)
 from app.backend.models.db_models import (
     Candidate,
     RecruiterAutoTriggerConfig,
@@ -106,6 +111,27 @@ def _parse_scheduled_at(value: Optional[str]) -> Optional[datetime]:
         return dt
     except (ValueError, TypeError):
         return None
+
+
+def _load_interview_session_for_user(db: Session, current_user: User, session_id: int) -> VoiceScreeningSession:
+    session = db.execute(
+        select(VoiceScreeningSession)
+        .where(
+            VoiceScreeningSession.id == session_id,
+            VoiceScreeningSession.tenant_id == current_user.tenant_id,
+        )
+        .options(
+            selectinload(VoiceScreeningSession.candidate),
+            selectinload(VoiceScreeningSession.jd),
+        )
+    ).scalar_one_or_none()
+    if session is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+    if session.candidate_id:
+        require_candidate_read_access(db, current_user, session.candidate_id)
+    elif is_hiring_manager(current_user):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+    return session
 
 
 # ─── Session Management ───────────────────────────────────────────────────────
@@ -343,6 +369,9 @@ def list_interview_sessions(
         selectinload(VoiceScreeningSession.candidate),
         selectinload(VoiceScreeningSession.jd),
     )
+    query = restrict_to_hm_candidates(
+        query, VoiceScreeningSession.candidate_id, db, current_user
+    )
 
     if depth is not None:
         # DB stores quick/deep; standard maps to deep
@@ -387,20 +416,7 @@ def get_interview_session(
     db: Session = Depends(get_db),
 ):
     """Get a unified interview session detail with transcript."""
-    session = db.execute(
-        select(VoiceScreeningSession)
-        .where(
-            VoiceScreeningSession.id == session_id,
-            VoiceScreeningSession.tenant_id == current_user.tenant_id,
-        )
-        .options(
-            selectinload(VoiceScreeningSession.candidate),
-            selectinload(VoiceScreeningSession.jd),
-        )
-    ).scalar_one_or_none()
-
-    if session is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+    session = _load_interview_session_for_user(db, current_user, session_id)
 
     entries = db.execute(
         select(VoiceTranscriptEntry)
@@ -439,15 +455,7 @@ def get_interview_transcript(
     db: Session = Depends(get_db),
 ):
     """Return the transcript for an interview session."""
-    session = db.execute(
-        select(VoiceScreeningSession).where(
-            VoiceScreeningSession.id == session_id,
-            VoiceScreeningSession.tenant_id == current_user.tenant_id,
-        )
-    ).scalar_one_or_none()
-
-    if session is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+    session = _load_interview_session_for_user(db, current_user, session_id)
 
     entries = db.execute(
         select(VoiceTranscriptEntry)
@@ -561,15 +569,7 @@ def get_interview_scorecard(
     db: Session = Depends(get_db),
 ):
     """Return the scorecard for an interview session."""
-    session = db.execute(
-        select(VoiceScreeningSession).where(
-            VoiceScreeningSession.id == session_id,
-            VoiceScreeningSession.tenant_id == current_user.tenant_id,
-        )
-    ).scalar_one_or_none()
-
-    if session is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+    session = _load_interview_session_for_user(db, current_user, session_id)
 
     if session.interview_depth == "quick":
         assessment = _load_json(session.assessment_json, default=None)
@@ -1119,13 +1119,18 @@ def export_interview_sessions(
         )
 
     sessions = db.execute(
-        select(VoiceScreeningSession)
-        .where(VoiceScreeningSession.tenant_id == current_user.tenant_id)
-        .options(
-            selectinload(VoiceScreeningSession.candidate),
-            selectinload(VoiceScreeningSession.jd),
+        restrict_to_hm_candidates(
+            select(VoiceScreeningSession)
+            .where(VoiceScreeningSession.tenant_id == current_user.tenant_id)
+            .options(
+                selectinload(VoiceScreeningSession.candidate),
+                selectinload(VoiceScreeningSession.jd),
+            )
+            .order_by(VoiceScreeningSession.created_at.desc()),
+            VoiceScreeningSession.candidate_id,
+            db,
+            current_user,
         )
-        .order_by(VoiceScreeningSession.created_at.desc())
     ).scalars().all()
 
     output = io.StringIO()

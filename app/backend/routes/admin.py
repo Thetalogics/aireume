@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
@@ -61,6 +61,7 @@ class SuspendRequest(BaseModel):
 
 class ChangePlanRequest(BaseModel):
     plan_id: int
+    reason: str = Field(..., min_length=3)
 
 
 class AdjustUsageRequest(BaseModel):
@@ -539,6 +540,7 @@ def change_tenant_plan(
         "new_plan_id": new_plan.id,
         "new_plan_name": new_plan.name,
         "new_plan_display_name": new_plan.display_name,
+        "reason": body.reason,
     }
     if proration:
         audit_details["proration"] = proration

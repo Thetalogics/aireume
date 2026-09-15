@@ -118,6 +118,7 @@ from app.backend.routes.analyze_helpers import (
     _process_single_resume,
     _is_parse_failure_result,
     _check_and_increment_usage,
+    require_explicit_use_existing_candidate,
     _process_with_semaphore,
     _spawn_background_narrative,
 )
@@ -358,6 +359,7 @@ async def analyze_endpoint(
     scoring_weights: str = Form(None),
     skill_overrides: str = Form(None),
     action: str = Form(None),   # use_existing | update_profile | create_new | None
+    candidate_id: Optional[int] = Form(None),
     template_id: Optional[int] = Form(None),
     requisition_id: Optional[int] = Form(None),
     team_id: Optional[str] = Form(None),
@@ -386,6 +388,9 @@ async def analyze_endpoint(
         )
 
     _enforce_screening_mode(db, current_user.tenant_id, requisition_id)
+    require_explicit_use_existing_candidate(
+        db, current_user.tenant_id, action, candidate_id
+    )
 
     # ─── VALIDATE FILES FIRST (before incrementing usage) ─────────────────────
     # Validate file extension
@@ -484,21 +489,24 @@ async def analyze_endpoint(
 
     # Handle "use_existing" — skip re-analysis if candidate already in DB
     if action == "use_existing":
+        if not candidate_id:
+            raise HTTPException(
+                status_code=409,
+                detail="use_existing requires an explicit candidate_id",
+            )
         existing = (
             db.query(Candidate)
             .filter(
-                Candidate.resume_file_hash == file_hash,
-                Candidate.tenant_id        == current_user.tenant_id,
-            )
-            .first()
-        ) or (
-            db.query(Candidate)
-            .filter(
-                Candidate.email     == None,
+                Candidate.id == candidate_id,
                 Candidate.tenant_id == current_user.tenant_id,
             )
-            .first()  # fallback — will be refined below
+            .first()
         )
+        if not existing:
+            raise HTTPException(
+                status_code=409,
+                detail="Candidate not found for use_existing",
+            )
         # If found with stored profile, run scoring-only
         if existing and existing.raw_resume_text and existing.parsed_skills:
             parsed_data = {
@@ -733,6 +741,7 @@ async def analyze_stream_endpoint(
     scoring_weights: str = Form(None),
     skill_overrides: str = Form(None),
     action: str = Form(None),
+    candidate_id: Optional[int] = Form(None),
     template_id: Optional[int] = Form(None),
     requisition_id: Optional[int] = Form(None),
     team_id: Optional[str] = Form(None),
@@ -768,6 +777,9 @@ async def analyze_stream_endpoint(
         )
 
     _enforce_screening_mode(db, current_user.tenant_id, requisition_id)
+    require_explicit_use_existing_candidate(
+        db, current_user.tenant_id, action, candidate_id
+    )
 
     # ─── VALIDATE FILES FIRST (before incrementing usage) ─────────────────────
     # Validate file extension

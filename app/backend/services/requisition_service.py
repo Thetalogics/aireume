@@ -463,11 +463,21 @@ def assign_hiring_managers(
     primary_id: int | None,
     extra_ids: list[int] | None,
 ) -> None:
+    from app.backend.middleware.rbac import (
+        TENANT_ROLE_HIRING_MANAGER,
+        TENANT_ROLE_RECRUITER,
+        TENANT_ROLE_TA_LEAD,
+        TENANT_ROLE_ADMIN,
+        get_tenant_user_or_404,
+    )
+
     db.query(RequisitionHiringManager).filter(
         RequisitionHiringManager.requisition_id == req.id
     ).delete()
     seen: set[int] = set()
+    hm_roles = {TENANT_ROLE_HIRING_MANAGER, TENANT_ROLE_ADMIN, TENANT_ROLE_TA_LEAD}
     if primary_id:
+        get_tenant_user_or_404(db, req.tenant_id, primary_id, hm_roles)
         req.primary_hiring_manager_id = primary_id
         seen.add(primary_id)
         db.add(RequisitionHiringManager(
@@ -477,6 +487,7 @@ def assign_hiring_managers(
     for uid in all_ids:
         if uid in seen:
             continue
+        get_tenant_user_or_404(db, req.tenant_id, uid, hm_roles)
         seen.add(uid)
         db.add(RequisitionHiringManager(
             requisition_id=req.id, user_id=uid, is_primary=False,

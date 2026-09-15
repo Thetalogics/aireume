@@ -45,16 +45,34 @@ class ATSConnector:
         Returns: {"success": bool, "external_id": str|None, "error": str|None}
         """
         candidate = self.db.execute(
-            select(Candidate).where(Candidate.id == candidate_id)
+            select(Candidate).where(
+                Candidate.id == candidate_id,
+                Candidate.tenant_id == connection.tenant_id,
+            )
         ).scalar_one_or_none()
         if not candidate:
-            return {"success": False, "external_id": None, "error": "Candidate not found"}
+            return {
+                "success": False,
+                "external_id": None,
+                "error": "Candidate not found",
+                "http_status": 404,
+            }
 
         screening = None
         if screening_result_id:
             screening = self.db.execute(
-                select(ScreeningResult).where(ScreeningResult.id == screening_result_id)
+                select(ScreeningResult).where(
+                    ScreeningResult.id == screening_result_id,
+                    ScreeningResult.tenant_id == connection.tenant_id,
+                )
             ).scalar_one_or_none()
+            if screening is None:
+                return {
+                    "success": False,
+                    "external_id": None,
+                    "error": "Screening result not found",
+                    "http_status": 404,
+                }
 
         internal_status = status or (screening.status if screening else "pending")
 

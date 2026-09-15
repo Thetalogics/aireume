@@ -451,6 +451,11 @@ def update_req(
     db: Session = Depends(get_db),
 ):
     req = _load_req(db, req_id, current_user.tenant_id)
+    if is_hiring_manager(current_user):
+        raise HTTPException(
+            status_code=403,
+            detail="Hiring managers must use intake endpoints to update requisitions",
+        )
     require_requisition_write(current_user, req, db)
     if body.title is not None:
         req.title = body.title.strip()
@@ -493,8 +498,32 @@ def update_req(
     if body.assigned_recruiter_id is not None:
         if not can_assign_recruiters(current_user) and not can_manage_requisition(current_user, req):
             raise HTTPException(status_code=403, detail="Not allowed to assign recruiter")
+        from app.backend.middleware.rbac import (
+            TENANT_ROLE_ADMIN,
+            TENANT_ROLE_RECRUITER,
+            TENANT_ROLE_TA_LEAD,
+            get_tenant_user_or_404,
+        )
+        get_tenant_user_or_404(
+            db,
+            current_user.tenant_id,
+            body.assigned_recruiter_id,
+            {TENANT_ROLE_ADMIN, TENANT_ROLE_TA_LEAD, TENANT_ROLE_RECRUITER},
+        )
         req.assigned_recruiter_id = body.assigned_recruiter_id
     if body.opened_on_behalf_of_hm_id is not None:
+        from app.backend.middleware.rbac import (
+            TENANT_ROLE_ADMIN,
+            TENANT_ROLE_HIRING_MANAGER,
+            TENANT_ROLE_TA_LEAD,
+            get_tenant_user_or_404,
+        )
+        get_tenant_user_or_404(
+            db,
+            current_user.tenant_id,
+            body.opened_on_behalf_of_hm_id,
+            {TENANT_ROLE_HIRING_MANAGER, TENANT_ROLE_ADMIN, TENANT_ROLE_TA_LEAD},
+        )
         req.opened_on_behalf_of_hm_id = body.opened_on_behalf_of_hm_id
     if body.routing_policy_json is not None:
         req.routing_policy_json = json.dumps(body.routing_policy_json)

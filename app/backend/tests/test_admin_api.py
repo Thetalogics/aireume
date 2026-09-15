@@ -65,7 +65,7 @@ class TestPermissionChecks:
                 if "suspend" in url:
                     resp = auth_client.post(url, json={"reason": "test"})
                 elif "change-plan" in url:
-                    resp = auth_client.post(url, json={"plan_id": 1})
+                    resp = auth_client.post(url, json={"plan_id": 1, "reason": "unauthorized"})
                 elif "adjust-usage" in url:
                     resp = auth_client.post(url, json={"analyses_count": 0})
                 else:
@@ -238,7 +238,7 @@ class TestChangePlan:
 
         resp = platform_admin_client_with_plans.post(
             f"/api/admin/tenants/{tenant.id}/change-plan",
-            json={"plan_id": pro_plan.id},
+            json={"plan_id": pro_plan.id, "reason": "platform support override"},
         )
         assert resp.status_code == 200
         data = resp.json()
@@ -261,7 +261,7 @@ class TestChangePlan:
         """Returns 404 for non-existent tenant."""
         resp = platform_admin_client_with_plans.post(
             "/api/admin/tenants/99999/change-plan",
-            json={"plan_id": 1},
+            json={"plan_id": 1, "reason": "missing tenant"},
         )
         assert resp.status_code == 404
 
@@ -270,7 +270,7 @@ class TestChangePlan:
         tenant = db.query(Tenant).first()
         resp = platform_admin_client_with_plans.post(
             f"/api/admin/tenants/{tenant.id}/change-plan",
-            json={"plan_id": 99999},
+            json={"plan_id": 99999, "reason": "invalid plan"},
         )
         assert resp.status_code == 404
 

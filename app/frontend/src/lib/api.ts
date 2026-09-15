@@ -762,7 +762,7 @@ export async function getRequisitionsForPicker() {
   }))
 }
 
-function appendAnalyzeContext(formData, { requisitionId, templateId, skillOverrides, scoringWeights } = {}) {
+function appendAnalyzeContext(formData, { requisitionId, templateId, skillOverrides, scoringWeights, action, candidateId } = {}) {
   if (scoringWeights) {
     formData.append('scoring_weights', JSON.stringify(scoringWeights))
   }
@@ -773,6 +773,12 @@ function appendAnalyzeContext(formData, { requisitionId, templateId, skillOverri
   }
   if (skillOverrides) {
     formData.append('skill_overrides', JSON.stringify(skillOverrides))
+  }
+  if (action) {
+    formData.append('action', action)
+  }
+  if (candidateId) {
+    formData.append('candidate_id', String(candidateId))
   }
 }
 

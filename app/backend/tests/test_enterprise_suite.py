@@ -38,7 +38,7 @@ class TestTrialService:
         count = expire_trials(db)
         db.refresh(tenant)
         assert count >= 1
-        assert tenant.subscription_status == "past_due"
+        assert tenant.subscription_status == "expired"
 
 
 class TestCrmService:

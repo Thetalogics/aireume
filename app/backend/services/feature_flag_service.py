@@ -90,9 +90,9 @@ def is_feature_enabled(db: Session, tenant_id: int, feature_key: str) -> bool:
 
     tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
     plan = None
-    if tenant and tenant.plan_id is not None:
-        from app.backend.models.db_models import SubscriptionPlan
-        plan = db.query(SubscriptionPlan).filter(SubscriptionPlan.id == tenant.plan_id).first()
+    if tenant:
+        from app.backend.services.plan_entitlement_service import get_tenant_plan as _effective_plan
+        plan = _effective_plan(db, tenant_id)
 
     # 2. Plan-feature mapping
     if plan is not None:

@@ -291,13 +291,13 @@ class TestAdminChangePlan:
         assert response.status_code == 200
         data = response.json()
 
-        assert data["message"] == "Plan changed successfully"
-        assert data["previous_plan"] == "starter"
-        assert data["new_plan"] == "growth"
+        assert data["message"] == "Checkout required to activate paid plan"
+        assert data["desired_plan"] == "growth"
 
         tenant = db.query(Tenant).filter(Tenant.slug == "freecorp").first()
-        assert tenant.plan_id == growth_plan.id
-        assert tenant.subscription_status == "active"
+        assert tenant.desired_plan_id == growth_plan.id
+        starter = db.query(SubscriptionPlan).filter(SubscriptionPlan.name.in_(("starter", "free"))).first()
+        assert tenant.plan_id == starter.id
 
     def test_change_plan_enterprise_blocked(self, auth_client_with_free_plan, db, seed_subscription_plans):
         """Enterprise is sales-led — self-serve switch must be rejected."""

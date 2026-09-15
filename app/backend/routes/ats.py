@@ -205,8 +205,9 @@ async def push_to_ats(
     )
 
     if not result["success"]:
+        status_code = int(result.get("http_status") or status.HTTP_502_BAD_GATEWAY)
         raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
+            status_code=status_code,
             detail=f"ATS push failed: {result.get('error', 'unknown error')}",
         )
 

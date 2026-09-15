@@ -16,6 +16,7 @@ python-jose[cryptography]==3.4.0
 passlib[bcrypt]==1.7.4
 bcrypt==4.2.1
 cryptography>=43.0.0
+python3-saml==1.16.0
 
 # HTTP Client
 httpx==0.28.1

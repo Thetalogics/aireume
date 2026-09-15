@@ -32,6 +32,12 @@ from app.backend.models.db_models import Tenant, Candidate
 logger = logging.getLogger(__name__)
 
 
+class AnalysisQuotaExceeded(Exception):
+    def __init__(self, message: str):
+        super().__init__(message)
+        self.message = message
+
+
 # ============================================================================
 # Job Models (SQLAlchemy models for queue tables)
 # ============================================================================
@@ -126,6 +132,15 @@ class QueueManager:
                 else:
                     logger.info(f"Duplicate job found (in progress): {existing.id}, status={existing.status}")
                     return existing.id
+
+            from app.backend.routes.analyze_helpers import _check_and_increment_usage
+            allowed, message = _check_and_increment_usage(db, tenant_id, user_id or 0, 1)
+            if not allowed:
+                raise AnalysisQuotaExceeded(message or "Monthly analysis quota exceeded")
+
+            reserved_config = dict(job_config or {})
+            reserved_config["quota_reserved"] = True
+            job_config = reserved_config
             
             # Create artifact
             artifact = AnalysisArtifact(
@@ -289,6 +304,8 @@ class QueueManager:
                 
                 self.jobs_failed += 1
                 logger.error(f"Job permanently failed: {job.id}, retries exhausted")
+                from app.backend.routes.analyze_helpers import release_job_analysis_quota
+                release_job_analysis_quota(db, job)
                 try:
                     await self.move_to_dead_letter(
                         db,

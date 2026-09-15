@@ -47,20 +47,68 @@ def parse_plan_limits(plan: Optional[SubscriptionPlan]) -> Dict[str, Any]:
 
 
 DEFAULT_PLAN_NAMES = ("starter", "free")
+PAID_DUNNING_STATUSES = frozenset({"active", "past_due"})
+
+
+def is_paid_plan(plan: Optional[SubscriptionPlan]) -> bool:
+    if plan is None:
+        return False
+    try:
+        return int(plan.price_monthly or 0) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def tenant_has_paid_entitlement(tenant: Optional[Tenant]) -> bool:
+    """Paid features require verified trial or provider-backed subscription state."""
+    if tenant is None:
+        return False
+    status = (tenant.subscription_status or "").lower()
+    if status == "trialing":
+        from app.backend.services.trial_service import is_trial_active
+        return is_trial_active(tenant)
+    return status in PAID_DUNNING_STATUSES
+
+
+def start_paid_plan_checkout(db: Session, tenant: Tenant, plan: SubscriptionPlan) -> Dict[str, Any]:
+    import os
+    from app.backend.services.billing.factory import get_payment_provider
+
+    frontend = os.getenv("FRONTEND_URL", "http://localhost:5173")
+    provider = get_payment_provider(db)
+    return provider.create_checkout_session(
+        tenant_id=tenant.id,
+        plan=plan.name,
+        success_url=f"{frontend}/billing/success",
+        cancel_url=f"{frontend}/billing/cancel",
+        stripe_customer_id=tenant.stripe_customer_id or "",
+    )
+
+
+def apply_verified_paid_plan(db: Session, tenant: Tenant) -> None:
+    """Promote desired paid plan after trusted checkout/invoice confirmation."""
+    from app.backend.services.feature_flag_service import invalidate_cache
+
+    if tenant.desired_plan_id:
+        tenant.plan_id = tenant.desired_plan_id
+    tenant.subscription_status = "active"
+    tenant.trial_ends_at = None
+    invalidate_cache(tenant_id=tenant.id)
 
 
 def get_tenant_plan(db: Session, tenant_id: int) -> Optional[SubscriptionPlan]:
     tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
+    default = get_default_plan(db)
     if not tenant:
-        return None
+        return default
+    plan = None
     if tenant.plan_id:
         plan = db.query(SubscriptionPlan).filter(SubscriptionPlan.id == tenant.plan_id).first()
-        if plan:
-            return plan
-    return db.query(SubscriptionPlan).filter(
-        SubscriptionPlan.name.in_(DEFAULT_PLAN_NAMES),
-        SubscriptionPlan.is_active == True,
-    ).first()
+    if plan and is_paid_plan(plan) and not tenant_has_paid_entitlement(tenant):
+        return default
+    if plan:
+        return plan
+    return default
 
 
 def get_default_plan(db: Session) -> Optional[SubscriptionPlan]:

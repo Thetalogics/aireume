@@ -29,7 +29,7 @@ class SubscriptionPlan(Base):
     created_at   = Column(DateTime(timezone=True), server_default=func.now())
     updated_at   = Column(DateTime(timezone=True), onupdate=func.now())
 
-    tenants = relationship("Tenant", back_populates="plan")
+    tenants = relationship("Tenant", back_populates="plan", foreign_keys="Tenant.plan_id")
     plan_features = relationship("PlanFeature", back_populates="plan", cascade="all, delete-orphan")
 
 
@@ -41,6 +41,7 @@ class Tenant(Base):
     slug          = Column(String(100), unique=True, nullable=False)
     contact_email = Column(String(255), nullable=True)
     plan_id       = Column(Integer, ForeignKey("subscription_plans.id"), nullable=True)
+    desired_plan_id = Column(Integer, ForeignKey("subscription_plans.id"), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     # ── Subscription & Usage Tracking ─────────────────────────────────────────
@@ -81,7 +82,8 @@ class Tenant(Base):
     brand_primary_color = Column(String(20), nullable=True)
     brand_favicon_url   = Column(String(500), nullable=True)
 
-    plan         = relationship("SubscriptionPlan", back_populates="tenants")
+    plan         = relationship("SubscriptionPlan", back_populates="tenants", foreign_keys=[plan_id])
+    desired_plan = relationship("SubscriptionPlan", foreign_keys=[desired_plan_id])
     users        = relationship("User", back_populates="tenant")
     candidates   = relationship("Candidate", back_populates="tenant")
     templates    = relationship("RoleTemplate", back_populates="tenant")

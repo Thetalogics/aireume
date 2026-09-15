@@ -1635,15 +1635,13 @@ def _check_and_increment_usage(db: Session, tenant_id: int, user_id: int, quanti
     - Uses SAVEPOINT to isolate quota-check failure from the rest of the session
       (avoids full rollback that would lose other pending session state)
     """
+    from app.backend.services.plan_entitlement_service import get_tenant_plan
+
     tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
     if not tenant:
         return False, "Tenant not found"
     
-    # Get plan limits (read-only, no side effects)
-    plan = tenant.plan
-    if not plan:
-        from app.backend.services.plan_entitlement_service import get_default_plan
-        plan = get_default_plan(db)
+    plan = get_tenant_plan(db, tenant_id)
     
     analyses_limit = None
     if plan:
@@ -1725,6 +1723,55 @@ def _check_and_increment_usage(db: Session, tenant_id: int, user_id: int, quanti
     
     return True, ""
 
+
+def _release_analysis_quota(db: Session, tenant_id: int, quantity: int = 1) -> None:
+    db.execute(
+        update(Tenant)
+        .where(
+            Tenant.id == tenant_id,
+            Tenant.analyses_count_this_month >= quantity,
+        )
+        .values(analyses_count_this_month=Tenant.analyses_count_this_month - quantity)
+        .execution_options(synchronize_session=False)
+    )
+
+
+def release_job_analysis_quota(db: Session, job) -> None:
+    """Release a reserved analysis unit when a queued job is cancelled or permanently failed."""
+    from sqlalchemy.orm.attributes import flag_modified
+
+    cfg = dict(job.job_config or {})
+    if not cfg.get("quota_reserved") or cfg.get("quota_released"):
+        return
+    _release_analysis_quota(db, job.tenant_id, 1)
+    cfg["quota_released"] = True
+    job.job_config = cfg
+    flag_modified(job, "job_config")
+
+
+def require_explicit_use_existing_candidate(
+    db: Session, tenant_id: int, action: str | None, candidate_id: int | None
+) -> None:
+    from fastapi import HTTPException
+    from app.backend.models.db_models import Candidate
+
+    if action != "use_existing":
+        return
+    if not candidate_id:
+        raise HTTPException(
+            status_code=409,
+            detail="use_existing requires an explicit candidate_id",
+        )
+    existing = (
+        db.query(Candidate)
+        .filter(Candidate.id == candidate_id, Candidate.tenant_id == tenant_id)
+        .first()
+    )
+    if not existing:
+        raise HTTPException(
+            status_code=409,
+            detail="Candidate not found for use_existing",
+        )
 
 
 # ─── Batch resume analysis ────────────────────────────────────────────────────

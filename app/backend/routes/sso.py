@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.backend.db.database import get_db
 from app.backend.models.db_models import Tenant, User, SSOConfig
-from app.backend.services.sso_service import sso_service
+from app.backend.services.sso_service import is_sso_trust_ready, sso_service
 from app.backend.routes.auth import (
     _create_token,
     _create_auth_response,
@@ -44,7 +44,7 @@ def get_sso_config_public(tenant_slug: str, db: Session = Depends(get_db)):
         return {"enabled": False, "enforced": False}
 
     sso_config = db.query(SSOConfig).filter(SSOConfig.tenant_id == tenant.id).first()
-    if not sso_config or not sso_config.is_active:
+    if not sso_config or not sso_config.is_active or not is_sso_trust_ready(sso_config):
         return {"enabled": False, "enforced": False}
 
     return {
@@ -62,6 +62,8 @@ def sso_login(tenant_slug: str, db: Session = Depends(get_db)):
     Generates a SAML AuthnRequest and redirects to the IdP.
     """
     sso_config, tenant = _get_sso_config_or_404(db, tenant_slug)
+    if not is_sso_trust_ready(sso_config):
+        raise HTTPException(status_code=403, detail="SSO is disabled: IdP certificate is not configured")
 
     if not sso_config.sp_entity_id or not sso_config.sp_acs_url:
         # Auto-generate SP settings if missing
@@ -91,9 +93,7 @@ def sso_callback(
         raise HTTPException(status_code=400, detail="Missing SAMLResponse")
 
     try:
-        user_attrs = sso_service.process_saml_response(
-            SAMLResponse, sso_config, verify_signature=True
-        )
+        user_attrs = sso_service.process_saml_response(SAMLResponse, sso_config)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 

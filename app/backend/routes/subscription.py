@@ -460,7 +460,14 @@ def admin_change_plan(
     db: Session = Depends(get_db),
     admin: User = Depends(require_admin)
 ):
-    """Admin: Change subscription plan (useful for testing plan features)."""
+    """Tenant admin: set desired plan. Paid plans require checkout, not a direct grant."""
+    from app.backend.services.feature_flag_service import invalidate_cache
+    from app.backend.services.plan_entitlement_service import (
+        get_default_plan,
+        is_paid_plan,
+        start_paid_plan_checkout,
+    )
+
     tenant = db.query(Tenant).filter(Tenant.id == admin.tenant_id).first()
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
@@ -476,14 +483,35 @@ def admin_change_plan(
         )
 
     old_plan_name = tenant.plan.name if tenant.plan else "none"
+
+    if is_paid_plan(new_plan):
+        tenant.desired_plan_id = new_plan.id
+        if tenant.plan_id is None:
+            default = get_default_plan(db)
+            if default is not None:
+                tenant.plan_id = default.id
+        checkout = start_paid_plan_checkout(db, tenant, new_plan)
+        db.commit()
+        invalidate_cache(tenant_id=tenant.id)
+        return {
+            "message": "Checkout required to activate paid plan",
+            "previous_plan": old_plan_name,
+            "desired_plan": new_plan.name,
+            "new_plan_display": new_plan.display_name,
+            "checkout": checkout,
+            "reference_id": checkout.get("reference_id"),
+            "checkout_url": checkout.get("checkout_url") or checkout.get("url"),
+        }
+
     tenant.plan_id = plan_id
+    tenant.desired_plan_id = plan_id
     tenant.subscription_status = "active"
     tenant.current_period_start = datetime.now(timezone.utc)
     tenant.current_period_end = datetime.now(timezone.utc).replace(year=datetime.now(timezone.utc).year + 1)
     tenant.subscription_updated_at = datetime.now(timezone.utc)
     db.commit()
+    invalidate_cache(tenant_id=tenant.id)
 
-    # Webhook dispatch — never let webhook failure affect plan change
     try:
         from app.backend.services.webhook_service import dispatch_event_background
         from app.backend.db.database import SessionLocal

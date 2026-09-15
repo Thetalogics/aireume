@@ -224,6 +224,14 @@ async def select_onboarding_plan(
     Selects a subscription plan during onboarding.
     Only works during onboarding (tenant.onboarding_completed is False).
     """
+    from app.backend.middleware.rbac import is_tenant_admin
+    from app.backend.services.feature_flag_service import invalidate_cache
+    from app.backend.services.plan_entitlement_service import (
+        get_default_plan,
+        is_paid_plan,
+        start_paid_plan_checkout,
+    )
+
     tenant = db.query(Tenant).filter(Tenant.id == current_user.tenant_id).first()
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
@@ -236,17 +244,7 @@ async def select_onboarding_plan(
     if not plan:
         raise HTTPException(status_code=400, detail="Invalid or inactive plan")
 
-    tenant.plan_id = plan.id
-
-    # Start self-serve trial for paid plans (no immediate payment required)
-    if plan.price_monthly and plan.price_monthly > 0 and plan.name != "enterprise":
-        from app.backend.services.trial_service import start_trial
-        start_trial(db, tenant, plan_name=plan.name)
-
-    db.commit()
-    db.refresh(tenant)
-
-    return {
+    payload = {
         "success": True,
         "plan": {
             "id": plan.id,
@@ -254,6 +252,29 @@ async def select_onboarding_plan(
             "display_name": plan.display_name,
         },
     }
+
+    if is_paid_plan(plan):
+        if not is_tenant_admin(current_user):
+            raise HTTPException(status_code=403, detail="Only tenant admins can select a paid plan")
+        tenant.desired_plan_id = plan.id
+        if tenant.plan_id is None:
+            default = get_default_plan(db)
+            if default is not None:
+                tenant.plan_id = default.id
+        checkout = start_paid_plan_checkout(db, tenant, plan)
+        payload["checkout"] = checkout
+        payload["reference_id"] = checkout.get("reference_id")
+        payload["checkout_url"] = checkout.get("checkout_url") or checkout.get("url")
+        payload["effective_plan"] = "starter"
+    else:
+        tenant.plan_id = plan.id
+        tenant.desired_plan_id = plan.id
+
+    db.commit()
+    db.refresh(tenant)
+    invalidate_cache(tenant_id=tenant.id)
+
+    return payload
 
 
 @router.post("/complete")

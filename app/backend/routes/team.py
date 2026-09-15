@@ -15,7 +15,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.backend.db.database import get_db
 from app.backend.middleware.auth import get_current_user, require_admin, require_active_subscription
-from app.backend.middleware.rbac import require_recruiter_or_admin
+from app.backend.middleware.rbac import require_candidate_read_access, require_recruiter_or_admin
 from app.backend.models.db_models import Comment, JdCache, RoleTemplate, ScreeningResult, TeamMember, TeamSkillProfile, Tenant, User
 from app.backend.models.schemas import CommentCreate, CommentOut, InviteRequest
 from app.backend.routes.auth import _hash_password
@@ -180,6 +180,8 @@ def get_comments(
     ).first()
     if not result:
         raise HTTPException(status_code=404, detail="Result not found")
+    if result.candidate_id:
+        require_candidate_read_access(db, current_user, result.candidate_id)
 
     comments = db.query(Comment).filter(Comment.result_id == result_id).order_by(Comment.created_at).all()
     return [
@@ -206,6 +208,8 @@ def add_comment(
     ).first()
     if not result:
         raise HTTPException(status_code=404, detail="Result not found")
+    if result.candidate_id:
+        require_candidate_read_access(db, current_user, result.candidate_id)
 
     comment = Comment(result_id=result_id, user_id=current_user.id, text=body.text)
     db.add(comment)

@@ -1,22 +1,17 @@
-"""
-Lightweight SAML 2.0 service for SSO authentication.
-
-This is a simplified implementation using only Python stdlib + cryptography.
-For production hardening, consider swapping to python3-saml or pysaml2.
-"""
+"""SAML 2.0 SSO: python3-saml verification, pinned IdP cert, Redis request binding."""
 import base64
 import logging
+import os
 import uuid
 import zlib
 import secrets
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlparse
 from xml.etree import ElementTree as ET
 from typing import Optional
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import padding
-from cryptography.exceptions import InvalidSignature
 from sqlalchemy.orm import Session
 
 from app.backend.models.db_models import SSOConfig, User, Tenant
@@ -54,56 +49,123 @@ def _parse_x509_cert(pem_str: str) -> x509.Certificate:
     return x509.load_pem_x509_certificate(pem.encode())
 
 
-def _verify_signature(signed_xml_bytes: bytes, cert_pem: str) -> bool:
-    """
-    Simplified SAML signature verification.
+SAML_REQUEST_TTL_SECONDS = 600
 
-    This performs a best-effort RSA-SHA256 signature verification on the
-    first <ds:Signature> element found in the XML.  It is sufficient for
-    basic SAML IdP trust but does NOT implement full SAML spec canonical
-    form (C14N).  Harden this when migrating to python3-saml.
-    """
+
+def is_sso_trust_ready(sso_config: SSOConfig) -> bool:
+    cert = (getattr(sso_config, "idp_certificate", None) or "").strip()
+    sso_url = (getattr(sso_config, "idp_sso_url", None) or "").strip()
+    return bool(cert and sso_url)
+
+
+def _saml_request_key(request_id: str) -> str:
+    return f"saml:authn:{request_id}"
+
+
+def persist_saml_authn_request(request_id: str, tenant_id: int) -> None:
+    from app.backend.services.shared_cache import cache_set
+
+    env = os.getenv("APP_ENV", os.getenv("ENVIRONMENT", "")).lower()
+    if env in ("production", "prod") and not os.getenv("REDIS_URL", "").strip():
+        raise ValueError("SSO is disabled: request state store is unavailable")
+    cache_set(
+        _saml_request_key(request_id),
+        {"tenant_id": int(tenant_id)},
+        SAML_REQUEST_TTL_SECONDS,
+    )
+
+
+def consume_saml_authn_request(request_id: str, tenant_id: int) -> bool:
+    from app.backend.services.shared_cache import cache_delete, cache_get
+
+    key = _saml_request_key(request_id)
+    stored = cache_get(key)
+    if not stored or not isinstance(stored, dict):
+        return False
+    if int(stored.get("tenant_id") or 0) != int(tenant_id):
+        return False
+    cache_delete(key)
+    return True
+
+
+def _idp_cert_body(pem_str: str) -> str:
+    return (
+        pem_str.replace("-----BEGIN CERTIFICATE-----", "")
+        .replace("-----END CERTIFICATE-----", "")
+        .replace("\r", "")
+        .replace("\n", "")
+        .replace(" ", "")
+        .strip()
+    )
+
+
+def _onelogin_settings(sso_config: SSOConfig) -> dict:
+    return {
+        "strict": True,
+        "debug": False,
+        "sp": {
+            "entityId": sso_config.sp_entity_id or "",
+            "assertionConsumerService": {
+                "url": sso_config.sp_acs_url or "",
+                "binding": "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST",
+            },
+            "NameIDFormat": "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress",
+            "x509cert": "",
+            "privateKey": "",
+        },
+        "idp": {
+            "entityId": sso_config.idp_entity_id or "",
+            "singleSignOnService": {
+                "url": sso_config.idp_sso_url or "",
+                "binding": "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect",
+            },
+            "x509cert": _idp_cert_body(sso_config.idp_certificate or ""),
+        },
+        "security": {
+            "wantAssertionsSigned": True,
+            "wantMessagesSigned": False,
+            "wantAttributeStatement": False,
+            "rejectUnsolicitedResponsesWithInResponseTo": True,
+        },
+    }
+
+
+def _http_request_for_acs(sso_config: SSOConfig, saml_response_b64: str) -> dict:
+    parsed = urlparse(sso_config.sp_acs_url or "http://localhost/api/sso/callback")
+    return {
+        "https": "on" if parsed.scheme == "https" else "off",
+        "http_host": parsed.netloc or "localhost",
+        "script_name": parsed.path or "/",
+        "get_data": {},
+        "post_data": {"SAMLResponse": saml_response_b64},
+    }
+
+
+def authenticate_saml_response_with_onelogin(
+    saml_response_b64: str,
+    sso_config: SSOConfig,
+) -> None:
+    """Cryptographic SAML verification pinned to the tenant IdP certificate."""
     try:
-        root = ET.fromstring(signed_xml_bytes)
-        sig_elem = root.find(f".//{_ns_tag(XMLDSIG_NS, 'Signature')}")
-        if sig_elem is None:
-            return False
+        from onelogin.saml2.auth import OneLogin_Saml2_Auth
+    except ImportError as exc:
+        raise ValueError("SAML Response signature verification failed") from exc
 
-        signed_info = sig_elem.find(_ns_tag(XMLDSIG_NS, "SignedInfo"))
-        signature_value = sig_elem.find(_ns_tag(XMLDSIG_NS, "SignatureValue"))
-        key_info = sig_elem.find(_ns_tag(XMLDSIG_NS, "KeyInfo"))
-
-        if signed_info is None or signature_value is None:
-            return False
-
-        # Prefer certificate from SAML response itself, fallback to configured cert
-        cert_text = None
-        if key_info is not None:
-            x509_data = key_info.find(_ns_tag(XMLDSIG_NS, "X509Data"))
-            if x509_data is not None:
-                x509_cert = x509_data.find(_ns_tag(XMLDSIG_NS, "X509Certificate"))
-                if x509_cert is not None and x509_cert.text:
-                    cert_text = x509_cert.text.strip()
-
-        cert = _parse_x509_cert(cert_text or cert_pem)
-        pubkey = cert.public_key()
-
-        sig_b64 = signature_value.text.strip() if signature_value.text else ""
-        signature = base64.b64decode(sig_b64)
-
-        # Reconstruct SignedInfo bytes (naive — should use C14N in production)
-        signed_info_bytes = ET.tostring(signed_info, encoding="utf-8")
-        pubkey.verify(
-            signature,
-            signed_info_bytes,
-            padding.PKCS1v15(),
-            hashes.SHA256(),
+    try:
+        auth = OneLogin_Saml2_Auth(
+            _http_request_for_acs(sso_config, saml_response_b64),
+            old_settings=_onelogin_settings(sso_config),
         )
-        return True
-    except InvalidSignature:
-        return False
-    except Exception:
-        return False
+        auth.process_response()
+    except ValueError:
+        raise
+    except Exception as exc:
+        logger.warning("SAML verification failed: %s", type(exc).__name__)
+        raise ValueError("SAML Response signature verification failed") from exc
+    errors = auth.get_errors()
+    if errors or not auth.is_authenticated():
+        logger.warning("SAML verification failed: %s", errors or "not authenticated")
+        raise ValueError("SAML Response signature verification failed")
 
 
 # ─── SAML Request / Response helpers ──────────────────────────────────────────
@@ -236,19 +298,19 @@ class SSOService:
 
     def generate_saml_request(self, sso_config: SSOConfig) -> tuple[str, str]:
         """
-        Generate SAML AuthnRequest, return (redirect_url, request_id).
-
-        The request is deflate + base64 encoded and appended to the IdP SSO URL
-        as a SAMLRequest query parameter.
+        Generate SAML AuthnRequest, persist request id for ACS binding,
+        return (redirect_url, request_id).
         """
+        if not is_sso_trust_ready(sso_config):
+            raise ValueError("SSO is disabled: IdP certificate is not configured")
         request_id = f"ARIA{uuid.uuid4().hex[:24].upper()}"
+        persist_saml_authn_request(request_id, sso_config.tenant_id)
         authn_xml = _build_authn_request(
             sp_entity_id=sso_config.sp_entity_id,
             acs_url=sso_config.sp_acs_url,
             request_id=request_id,
         )
-        # Deflate + Base64 encode (SAML Redirect binding)
-        compressed = zlib.compress(authn_xml)[2:-4]  # strip zlib header/footer
+        compressed = zlib.compress(authn_xml)[2:-4]
         saml_request_b64 = base64.b64encode(compressed).decode()
 
         sep = "&" if "?" in sso_config.idp_sso_url else "?"
@@ -261,35 +323,29 @@ class SSOService:
         sso_config: SSOConfig,
         verify_signature: bool = True,
     ) -> dict:
-        """
-        Validate and parse SAML Response, return user attributes dict.
+        """Validate SAML Response with python3-saml, request binding, and replay protection."""
+        if verify_signature is False:
+            raise ValueError("SAML Response signature verification failed")
+        if not is_sso_trust_ready(sso_config):
+            raise ValueError("SSO is disabled: IdP certificate is not configured")
 
-        Returns:
-            {
-                "email": str,
-                "name": str | None,
-                "name_id": str,
-                "first_name": str | None,
-                "last_name": str | None,
-            }
-        Raises:
-            ValueError: if response is invalid, expired, or signature fails.
-        """
         try:
             response_xml = base64.b64decode(saml_response_b64)
         except Exception:
             raise ValueError("Invalid SAMLResponse base64 encoding")
 
-        # Best-effort signature verification
-        if verify_signature and sso_config.idp_certificate:
-            sig_ok = _verify_signature(response_xml, sso_config.idp_certificate)
-            if not sig_ok:
-                raise ValueError("SAML Response signature verification failed")
+        authenticate_saml_response_with_onelogin(saml_response_b64, sso_config)
 
         try:
             root = ET.fromstring(response_xml)
         except ET.ParseError as exc:
             raise ValueError(f"Invalid SAML Response XML: {exc}")
+
+        in_response_to = (root.get("InResponseTo") or "").strip()
+        if not in_response_to:
+            raise ValueError("SAML Response missing InResponseTo")
+        if not consume_saml_authn_request(in_response_to, sso_config.tenant_id):
+            raise ValueError("SAML InResponseTo is invalid or expired")
 
         # Check for error status
         status_elem = root.find(_ns_tag(SAML_PROTOCOL_NS, "Status"))
@@ -300,11 +356,26 @@ class SSOService:
                 if "Success" not in code:
                     raise ValueError(f"SAML error status: {code}")
 
+        issuer_elem = root.find(_ns_tag(SAML_ASSERTION_NS, "Issuer"))
+        if issuer_elem is None:
+            issuer_elem = root.find(f".//{_ns_tag(SAML_ASSERTION_NS, 'Issuer')}")
+        issuer = (issuer_elem.text or "").strip() if issuer_elem is not None else ""
+        if sso_config.idp_entity_id and issuer and issuer != sso_config.idp_entity_id:
+            raise ValueError("SAML issuer mismatch")
+
         # Find Assertion
         assertion = root.find(_ns_tag(SAML_ASSERTION_NS, "Assertion"))
         if assertion is None:
-            # Some IdPs nest assertion inside EncryptedAssertion — not supported yet
             raise ValueError("No SAML Assertion found in response")
+
+        assertion_id = (assertion.get("ID") or "").strip()
+        if assertion_id:
+            from app.backend.services.shared_cache import cache_get, cache_set
+
+            replay_key = f"saml:assert:{sso_config.tenant_id}:{assertion_id}"
+            if cache_get(replay_key):
+                raise ValueError("SAML assertion has already been used")
+            cache_set(replay_key, 1, SAML_REQUEST_TTL_SECONDS)
 
         # Check Conditions (Audience & NotOnOrAfter)
         conditions = assertion.find(_ns_tag(SAML_ASSERTION_NS, "Conditions"))

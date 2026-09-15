@@ -166,9 +166,10 @@ def _handle_stripe_checkout_completed(db: Session, data: dict, raw_payload: str)
     if subscription_id and not tenant.stripe_subscription_id:
         tenant.stripe_subscription_id = subscription_id
 
-    # Mark subscription active on successful checkout
+    from app.backend.services.plan_entitlement_service import apply_verified_paid_plan
+
     old_status = tenant.subscription_status
-    tenant.subscription_status = "active"
+    apply_verified_paid_plan(db, tenant)
     tenant.subscription_updated_at = datetime.now(timezone.utc)
 
     _log_billing_event(
@@ -202,8 +203,10 @@ def _handle_stripe_invoice_paid(db: Session, data: dict, raw_payload: str):
         db.commit()
         return
 
+    from app.backend.services.plan_entitlement_service import apply_verified_paid_plan
+
     old_status = tenant.subscription_status
-    tenant.subscription_status = "active"
+    apply_verified_paid_plan(db, tenant)
 
     # Update period dates from subscription lines
     period_start = sub_data.get("period_start")

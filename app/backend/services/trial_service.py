@@ -46,7 +46,9 @@ def start_trial(
 
 
 def expire_trials(db: Session) -> int:
-    """Mark expired trials as past_due. Returns count updated."""
+    """End unconverted trials: free plan fallback, not payment dunning."""
+    from app.backend.services.plan_entitlement_service import get_default_plan
+
     now = datetime.now(timezone.utc)
     expired = (
         db.query(Tenant)
@@ -58,9 +60,12 @@ def expire_trials(db: Session) -> int:
         )
         .all()
     )
+    default_plan = get_default_plan(db)
     for tenant in expired:
-        tenant.subscription_status = "past_due"
+        tenant.subscription_status = "expired"
         tenant.suspended_reason = "Trial expired — upgrade to continue"
+        if default_plan is not None:
+            tenant.plan_id = default_plan.id
     if expired:
         db.commit()
     return len(expired)

@@ -264,7 +264,7 @@ class TestChangePlanProration:
 
         resp = platform_admin_client_with_plans.post(
             f"/api/admin/tenants/{tenant.id}/change-plan",
-            json={"plan_id": enterprise_plan.id},
+            json={"plan_id": enterprise_plan.id, "reason": "proration upgrade test"},
         )
         assert resp.status_code == 200
         data = resp.json()
@@ -297,7 +297,7 @@ class TestChangePlanProration:
 
         resp = platform_admin_client_with_plans.post(
             f"/api/admin/tenants/{tenant.id}/change-plan",
-            json={"plan_id": pro_plan.id},
+            json={"plan_id": pro_plan.id, "reason": "proration change-plan test"},
         )
         assert resp.status_code == 200
         data = resp.json()
@@ -315,7 +315,7 @@ class TestChangePlanProration:
 
         resp = platform_admin_client_with_plans.post(
             f"/api/admin/tenants/{tenant.id}/change-plan",
-            json={"plan_id": pro_plan.id},
+            json={"plan_id": pro_plan.id, "reason": "proration change-plan test"},
         )
         assert resp.status_code == 200
         data = resp.json()
@@ -348,7 +348,7 @@ class TestChangePlanProration:
 
         resp = platform_admin_client_with_plans.post(
             f"/api/admin/tenants/{tenant.id}/change-plan",
-            json={"plan_id": same_price_plan.id},
+            json={"plan_id": same_price_plan.id, "reason": "proration same-price test"},
         )
         assert resp.status_code == 200
         data = resp.json()
@@ -365,7 +365,7 @@ class TestChangePlanProration:
 
         resp = platform_admin_client_with_plans.post(
             f"/api/admin/tenants/{tenant.id}/change-plan",
-            json={"plan_id": pro_plan.id},
+            json={"plan_id": pro_plan.id, "reason": "proration change-plan test"},
         )
         assert resp.status_code == 200
         db.refresh(tenant)

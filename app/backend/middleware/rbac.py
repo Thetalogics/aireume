@@ -76,6 +76,74 @@ def require_candidate_read_access(db: Session, user: User, candidate_id: int) ->
         raise HTTPException(status_code=404, detail="Candidate not found")
 
 
+def apply_hm_candidate_scope(query, db: Session, user: User):
+    """Restrict a Candidate query to HM-assigned requisitions when role is HM."""
+    if get_tenant_role(user) != TENANT_ROLE_HIRING_MANAGER:
+        return query
+    from sqlalchemy import select
+    from app.backend.models.db_models import Candidate, RequisitionCandidate, RequisitionHiringManager
+
+    assigned_req_ids = (
+        db.query(Requisition.id)
+        .outerjoin(RequisitionHiringManager, RequisitionHiringManager.requisition_id == Requisition.id)
+        .filter(
+            Requisition.tenant_id == user.tenant_id,
+            (Requisition.primary_hiring_manager_id == user.id)
+            | (RequisitionHiringManager.user_id == user.id),
+        )
+        .distinct()
+        .subquery()
+    )
+    hm_candidate_ids = (
+        db.query(RequisitionCandidate.candidate_id)
+        .filter(RequisitionCandidate.requisition_id.in_(select(assigned_req_ids.c.id)))
+        .distinct()
+        .subquery()
+    )
+    return query.filter(Candidate.id.in_(select(hm_candidate_ids.c.candidate_id)))
+
+
+def hm_assigned_candidate_ids_subquery(db: Session, user: User):
+    from sqlalchemy import select
+    from app.backend.models.db_models import RequisitionCandidate, RequisitionHiringManager
+
+    assigned_req_ids = (
+        db.query(Requisition.id)
+        .outerjoin(RequisitionHiringManager, RequisitionHiringManager.requisition_id == Requisition.id)
+        .filter(
+            Requisition.tenant_id == user.tenant_id,
+            (Requisition.primary_hiring_manager_id == user.id)
+            | (RequisitionHiringManager.user_id == user.id),
+        )
+        .distinct()
+        .subquery()
+    )
+    return (
+        db.query(RequisitionCandidate.candidate_id)
+        .filter(RequisitionCandidate.requisition_id.in_(select(assigned_req_ids.c.id)))
+        .distinct()
+        .subquery()
+    )
+
+
+def restrict_to_hm_candidates(stmt, candidate_id_column, db: Session, user: User):
+    if get_tenant_role(user) != TENANT_ROLE_HIRING_MANAGER:
+        return stmt
+    from sqlalchemy import select
+
+    sub = hm_assigned_candidate_ids_subquery(db, user)
+    return stmt.where(candidate_id_column.in_(select(sub.c.candidate_id)))
+
+
+def get_tenant_user_or_404(db: Session, tenant_id: int, user_id: int, allowed_roles: set[str] | None = None) -> User:
+    user = db.query(User).filter(User.id == user_id, User.tenant_id == tenant_id, User.is_active == True).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found in this tenant")
+    if allowed_roles is not None and get_tenant_role(user) not in allowed_roles:
+        raise HTTPException(status_code=400, detail="User does not have the required role")
+    return user
+
+
 def is_ta_lead(user: User) -> bool:
     return get_tenant_role(user) == TENANT_ROLE_TA_LEAD
 

@@ -32,6 +32,7 @@ from app.backend.services.queue_manager import (
     AnalysisResult,
     AnalysisArtifact,
     JobMetrics,
+    AnalysisQuotaExceeded,
 )
 
 logger = logging.getLogger(__name__)
@@ -110,6 +111,8 @@ async def submit_analysis_job(
         }
     except HTTPException:
         raise
+    except AnalysisQuotaExceeded as e:
+        raise HTTPException(status_code=403, detail=e.message) from e
     except (ValueError, TypeError, json.JSONDecodeError, KeyError) as e:
         logger.warning(
             "Failed to submit job: %s", e,
@@ -218,6 +221,8 @@ async def submit_analysis_file(
         }
     except ValueError as e:
         raise HTTPException(status_code=400, detail="Could not queue this file. Check the file and try again.")
+    except AnalysisQuotaExceeded as e:
+        raise HTTPException(status_code=403, detail=e.message) from e
     except (TypeError, json.JSONDecodeError, KeyError) as e:
         logger.warning(
             "Failed to submit file job: %s", e,
@@ -646,6 +651,8 @@ async def cancel_job(
     
     job.status = 'cancelled'
     job.completed_at = datetime.now(timezone.utc)
+    from app.backend.routes.analyze_helpers import release_job_analysis_quota
+    release_job_analysis_quota(db, job)
     db.commit()
     
     return {

@@ -23,7 +23,7 @@ from typing import Optional
 from app.backend.db.database import get_db, get_read_db
 from app.backend.middleware.auth import get_current_user, require_admin, require_feature
 from app.backend.middleware.rbac import require_recruiter_or_admin, require_active_recruiter
-from app.backend.models.db_models import Candidate, ScreeningResult, CandidateNote, User, RoleTemplate, HiringOutcome, FieldAuditLog
+from app.backend.models.db_models import Candidate, ScreeningResult, CandidateNote, User, RoleTemplate, HiringOutcome, FieldAuditLog, RequisitionCandidate
 from app.backend.models.schemas import CandidateNameUpdate, AnalyzeJdRequest, CandidateSkillCompareRequest
 from app.backend.services.audit_service import log_field_change
 from app.backend.services.interview_kit_generator import refresh_interview_questions_in_analysis
@@ -93,29 +93,8 @@ def list_candidates(
         )
 
     query = db.query(Candidate).filter(Candidate.tenant_id == current_user.tenant_id)
-
-    from app.backend.middleware.rbac import get_tenant_role, is_hiring_manager, TENANT_ROLE_HIRING_MANAGER
-    from app.backend.models.db_models import Requisition, RequisitionCandidate, RequisitionHiringManager
-
-    if get_tenant_role(current_user) == TENANT_ROLE_HIRING_MANAGER:
-        assigned_req_ids = (
-            db.query(Requisition.id)
-            .outerjoin(RequisitionHiringManager, RequisitionHiringManager.requisition_id == Requisition.id)
-            .filter(
-                Requisition.tenant_id == current_user.tenant_id,
-                (Requisition.primary_hiring_manager_id == current_user.id)
-                | (RequisitionHiringManager.user_id == current_user.id),
-            )
-            .distinct()
-            .subquery()
-        )
-        hm_candidate_ids = (
-            db.query(RequisitionCandidate.candidate_id)
-            .filter(RequisitionCandidate.requisition_id.in_(select(assigned_req_ids.c.id)))
-            .distinct()
-            .subquery()
-        )
-        query = query.filter(Candidate.id.in_(hm_candidate_ids))
+    from app.backend.middleware.rbac import apply_hm_candidate_scope
+    query = apply_hm_candidate_scope(query, db, current_user)
 
     if requisition_id is not None:
         req_candidate_ids = (
@@ -323,6 +302,8 @@ def search_candidates(
         search_fields = all_fields
 
     query = db.query(Candidate).filter(Candidate.tenant_id == current_user.tenant_id)
+    from app.backend.middleware.rbac import apply_hm_candidate_scope
+    query = apply_hm_candidate_scope(query, db, current_user)
 
     like_term = f"%{q}%"
     from sqlalchemy import or_
@@ -378,6 +359,10 @@ def get_screening_result(
 
     if not result:
         raise HTTPException(status_code=404, detail="Result not found")
+
+    if result.candidate_id:
+        from app.backend.middleware.rbac import require_candidate_read_access
+        require_candidate_read_access(db, current_user, result.candidate_id)
 
     candidate = result.candidate
     role_template = result.role_template
