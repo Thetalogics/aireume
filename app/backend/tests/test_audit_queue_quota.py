@@ -65,6 +65,7 @@ async def test_stale_permanent_failure_releases_reserved_quota(db, seed_subscrip
     await QueueManager().recover_stale_jobs(db)
     db.refresh(tenant)
     db.refresh(job)
-    assert job.status == "failed"
+    # Exhausted stale jobs are DLQ'd (AUD-020) after quota is released (AUD-005).
+    assert job.status == "dead_letter"
     assert tenant.analyses_count_this_month == 3
     assert job.job_config.get("quota_released") is True
