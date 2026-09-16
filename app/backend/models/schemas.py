@@ -1523,6 +1523,8 @@ class ATSConnectionOut(BaseModel):
     tenant_id: int
     provider: str
     label: str
+    api_key_configured: bool = False
+    webhook_secret_configured: bool = False
     base_url: Optional[str] = None
     webhook_url: Optional[str] = None
     is_active: bool

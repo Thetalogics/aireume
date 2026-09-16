@@ -38,6 +38,7 @@ async def prepare_file_for_queue(
     scoring_weights: dict | None = None,
     skill_overrides: dict | None = None,
     template_id: int | None = None,
+    requisition_id: int | None = None,
     priority: int = 7,
 ) -> dict[str, Any]:
     """Parse resume file and enqueue a background analysis job."""
@@ -74,6 +75,10 @@ async def prepare_file_for_queue(
         priority=priority,
         job_config=job_config,
         parsed_resume_cache=cache,
+        requisition_id=requisition_id,
+        scoring_weights=scoring_weights,
+        skill_overrides=skill_overrides,
+        role_template_id=template_id,
     )
 
     return {
@@ -93,11 +98,13 @@ async def complete_queue_job(job_id, db: Session) -> bool:
     from app.backend.models.db_models import AnalysisArtifact, AnalysisJob, AnalysisResult, Candidate
     from app.backend.routes.analyze import (
         _get_or_create_candidate,
+        _link_to_requisition,
         _process_single_resume,
         _spawn_background_narrative,
         _store_candidate_profile,
         _upsert_screening_result,
     )
+    from app.backend.services.screening_command import command_from_dict
     import time
 
     job = db.query(AnalysisJob).filter(AnalysisJob.id == job_id).first()
@@ -110,9 +117,11 @@ async def complete_queue_job(job_id, db: Session) -> bool:
 
     start_time = time.time()
     job_config = job.job_config or {}
-    scoring_weights = job_config.get("scoring_weights")
-    skill_overrides = job_config.get("skill_overrides")
-    template_id = job_config.get("template_id")
+    cmd = command_from_dict(job_config["command"]) if job_config.get("command") else None
+    scoring_weights = (cmd.scoring_weights if cmd else None) or job_config.get("scoring_weights")
+    skill_overrides = (cmd.skill_overrides if cmd else None) or job_config.get("skill_overrides")
+    template_id = (cmd.role_template_id if cmd else None) or job_config.get("template_id")
+    requisition_id = cmd.requisition_id if cmd else None
     filename = job_config.get("filename") or artifact.resume_filename
 
     cache = artifact.parsed_resume_cache or {}
@@ -180,15 +189,29 @@ async def complete_queue_job(job_id, db: Session) -> bool:
         analysis_result=json.dumps(raw, default=_json_default),
         narrative_status="pending",
         pipeline_result=raw,
+        requisition_id=requisition_id,
     )
 
     screening_result_id = db_result.id
+    if requisition_id and job.user_id:
+        _link_to_requisition(db, requisition_id, job.tenant_id, candidate_id, screening_result_id, job.user_id)
     _spawn_background_narrative(raw, screening_result_id, job.tenant_id)
 
     job_config["screening_result_id"] = screening_result_id
     job_config["filename"] = filename
     job.job_config = job_config
     job.candidate_id = candidate_id
+
+    existing_result = db.query(AnalysisResult).filter(AnalysisResult.job_id == job.id).first()
+    if existing_result:
+        job.status = "completed"
+        job.completed_at = datetime.now(timezone.utc)
+        job.result_id = existing_result.id
+        job.progress_percent = 100
+        job.processing_stage = "complete"
+        db.commit()
+        log.info("Queue job %s already had AnalysisResult → screening_result_id=%s", job_id, screening_result_id)
+        return True
 
     analysis_result = AnalysisResult(
         job_id=job.id,

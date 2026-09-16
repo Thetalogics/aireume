@@ -332,3 +332,56 @@ def test_checkout_contract_maps_price_metadata_and_webhook_plan(db, seed_subscri
     assert tenant.plan_id == growth.id
     assert tenant.subscription_status == "active"
     assert tenant_has_feature(db, tenant.id, "requisitions") is True
+
+
+def test_subscription_get_uses_effective_plan_not_stored_paid_plan_id(
+    auth_client_with_free_plan, db, seed_subscription_plans
+):
+    """Unpaid tenant with paid plan_id must see starter limits, not growth."""
+    from app.backend.routes.subscription import _get_plan_limits
+
+    tenant = db.query(Tenant).filter(Tenant.slug == "freecorp").first()
+    starter = _starter(db)
+    growth = _growth(db)
+    tenant.plan_id = growth.id
+    tenant.subscription_status = "incomplete"
+    db.commit()
+    db.refresh(tenant)
+
+    effective = get_tenant_plan(db, tenant.id)
+    assert effective.id == starter.id
+    assert tenant.plan_id == growth.id
+
+    resp = auth_client_with_free_plan.get("/api/subscription")
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    starter_limits = _get_plan_limits(starter)
+    growth_limits = _get_plan_limits(growth)
+    assert data["current_plan"]["plan"]["name"] in ("starter", "free")
+    assert data["usage"]["analyses_limit"] == starter_limits["analyses_per_month"]
+    assert data["usage"]["analyses_limit"] != growth_limits["analyses_per_month"]
+    assert data["current_plan"]["plan"]["limits"]["batch_size"] == starter_limits["batch_size"]
+
+
+def test_check_usage_uses_effective_plan_not_stored_paid_plan_id(
+    auth_client_with_free_plan, db, seed_subscription_plans
+):
+    """Unpaid tenant with growth plan_id must get starter limits from check_usage."""
+    from app.backend.routes.subscription import _get_plan_limits
+
+    tenant = db.query(Tenant).filter(Tenant.slug == "freecorp").first()
+    starter = _starter(db)
+    growth = _growth(db)
+    tenant.plan_id = growth.id
+    tenant.subscription_status = "incomplete"
+    db.commit()
+
+    assert get_tenant_plan(db, tenant.id).id == starter.id
+
+    resp = auth_client_with_free_plan.get("/api/subscription/check/resume_analysis?quantity=1")
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    starter_limits = _get_plan_limits(starter)
+    growth_limits = _get_plan_limits(growth)
+    assert data["limit"] == starter_limits["analyses_per_month"]
+    assert data["limit"] != growth_limits["analyses_per_month"]

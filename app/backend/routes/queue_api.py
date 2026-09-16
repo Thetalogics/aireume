@@ -34,6 +34,7 @@ from app.backend.services.queue_manager import (
     JobMetrics,
     AnalysisQuotaExceeded,
 )
+from app.backend.services.screening_command import CrossTenantRequisitionError
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +97,7 @@ async def submit_analysis_job(
             candidate_id=candidate_id,
             user_id=current_user.id,
             priority=priority,
+            requisition_id=requisition_id,
         )
 
         # Store content_hash on the newly created job
@@ -111,6 +113,8 @@ async def submit_analysis_job(
         }
     except HTTPException:
         raise
+    except CrossTenantRequisitionError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except AnalysisQuotaExceeded as e:
         raise HTTPException(status_code=403, detail=e.message) from e
     except (ValueError, TypeError, json.JSONDecodeError, KeyError) as e:
@@ -213,12 +217,15 @@ async def submit_analysis_file(
             scoring_weights=weights,
             skill_overrides=overrides,
             template_id=tpl_id,
+            requisition_id=requisition_id,
             priority=priority,
         )
         return {
             **result,
             "message": "Analysis job submitted successfully",
         }
+    except CrossTenantRequisitionError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=400, detail="Could not queue this file. Check the file and try again.")
     except AnalysisQuotaExceeded as e:
@@ -290,9 +297,12 @@ async def submit_analysis_batch(
                 scoring_weights=weights,
                 skill_overrides=overrides,
                 template_id=tpl_id,
+                requisition_id=requisition_id,
                 priority=priority,
             )
             jobs.append({**result, "batch_id": batch_id})
+        except CrossTenantRequisitionError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
         except (ValueError, TypeError, json.JSONDecodeError, KeyError, OSError, RuntimeError, SQLAlchemyError) as e:
             error_code = "VALIDATION_ERROR"
             if isinstance(e, OSError):

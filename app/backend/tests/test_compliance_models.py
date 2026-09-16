@@ -83,11 +83,13 @@ class TestIdempotencyKey:
     def test_primary_key_dedupes(self, db, tenant):
         expiry = datetime.now(timezone.utc) + timedelta(hours=24)
         db.add(IdempotencyKey(key="idem-1", tenant_id=tenant.id,
-                              endpoint="/api/analyze", response_status=200,
+                              endpoint="/api/analyze", request_fingerprint="a" * 64,
+                              response_status=200,
                               response_body={"ok": True}, expires_at=expiry))
         db.commit()
         db.add(IdempotencyKey(key="idem-1", tenant_id=tenant.id,
-                              endpoint="/api/analyze", expires_at=expiry))
+                              endpoint="/api/analyze", request_fingerprint="b" * 64,
+                              expires_at=expiry))
         with pytest.raises(IntegrityError):
             db.commit()
         db.rollback()

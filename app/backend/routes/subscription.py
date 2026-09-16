@@ -222,14 +222,10 @@ def get_my_subscription(
     _ensure_monthly_reset(tenant)
     db.commit()
     
-    # Get current plan
-    plan = tenant.plan
+    from app.backend.services.plan_entitlement_service import get_tenant_plan
+    plan = get_tenant_plan(db, tenant.id)
     if not plan:
-        # Fallback to free plan if no plan assigned
-        from app.backend.services.plan_entitlement_service import get_default_plan
-        plan = get_default_plan(db)
-        if not plan:
-            raise HTTPException(status_code=500, detail="No subscription plan found")
+        raise HTTPException(status_code=500, detail="No subscription plan found")
     
     limits = _get_plan_limits(plan)
     
@@ -313,11 +309,9 @@ def check_usage(
     _ensure_monthly_reset(tenant)
     db.commit()
     
-    plan = tenant.plan
-    if not plan:
-        from app.backend.services.plan_entitlement_service import get_default_plan
-        plan = get_default_plan(db)
-    
+    from app.backend.services.plan_entitlement_service import get_tenant_plan
+
+    plan = get_tenant_plan(db, tenant.id)
     if not plan:
         return UsageCheckResponse(
             allowed=False,
@@ -553,8 +547,9 @@ def record_usage(
         # Ensure monthly reset
         _ensure_monthly_reset(tenant)
         
-        # Check plan limits
-        plan = tenant.plan
+        from app.backend.services.plan_entitlement_service import get_tenant_plan
+
+        plan = get_tenant_plan(db, tenant_id)
         if plan:
             limits = _get_plan_limits(plan)
             analyses_limit = limits.get("analyses_per_month", 20)

@@ -66,6 +66,7 @@ from app.backend.services.interview_kit_generator import refresh_interview_quest
 from app.backend.services.weight_mapper import convert_to_new_schema
 from app.backend.services.skill_matcher import JD_CACHE_VERSION
 from app.backend.routes.subscription import _ensure_monthly_reset, _get_plan_limits, record_usage
+from app.backend.services.plan_entitlement_service import get_tenant_plan
 from app.backend.services.billing.quota import check_quota
 from app.backend.services.outcome_service import compute_skill_patterns
 from app.backend.services.team_service import get_team_profile
@@ -1351,8 +1352,9 @@ async def batch_analyze_chunked_endpoint(
     # Get tenant's plan for batch size limit
     tenant = db.query(Tenant).filter(Tenant.id == current_user.tenant_id).first()
     max_batch_size = MAX_BATCH_SIZE
-    if tenant and tenant.plan:
-        limits = _get_plan_limits(tenant.plan)
+    plan = get_tenant_plan(db, tenant.id) if tenant else None
+    if plan:
+        limits = _get_plan_limits(plan)
         plan_batch_limit = limits.get("batch_size", MAX_BATCH_SIZE)
         max_batch_size = min(max_batch_size, plan_batch_limit)
 
@@ -1651,8 +1653,9 @@ async def batch_analyze_stream_endpoint(
     # Get tenant's plan for batch size limit
     tenant = db.query(Tenant).filter(Tenant.id == current_user.tenant_id).first()
     max_batch_size = MAX_BATCH_SIZE
-    if tenant and tenant.plan:
-        limits = _get_plan_limits(tenant.plan)
+    plan = get_tenant_plan(db, tenant.id) if tenant else None
+    if plan:
+        limits = _get_plan_limits(plan)
         plan_batch_limit = limits.get("batch_size", MAX_BATCH_SIZE)
         max_batch_size = min(max_batch_size, plan_batch_limit)
 
@@ -1969,8 +1972,9 @@ async def batch_analyze_endpoint(
     # Get tenant's plan for batch size limit
     tenant = db.query(Tenant).filter(Tenant.id == current_user.tenant_id).first()
     max_batch_size = MAX_BATCH_SIZE  # Use module constant
-    if tenant and tenant.plan:
-        limits = _get_plan_limits(tenant.plan)
+    plan = get_tenant_plan(db, tenant.id) if tenant else None
+    if plan:
+        limits = _get_plan_limits(plan)
         plan_batch_limit = limits.get("batch_size", MAX_BATCH_SIZE)
         max_batch_size = min(max_batch_size, plan_batch_limit)
     

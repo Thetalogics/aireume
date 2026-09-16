@@ -9,7 +9,7 @@ Blocks:
 """
 import ipaddress
 import socket
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, urlunparse
 
 import httpx
 
@@ -78,21 +78,166 @@ def validate_public_url(url: str, *, require_https: bool = False) -> str:
     if host.lower() in {"localhost", "ip6-localhost", "metadata.google.internal"}:
         raise UnsafeURLError("URL host is not allowed")
 
-    # Resolve all A/AAAA records and ensure every one is public
+    resolve_public_ips(host)
+    return url
+
+
+def resolve_public_ips(host: str) -> list[str]:
+    """Resolve A/AAAA records once; return unique public IPs in lookup order."""
     try:
         addr_infos = socket.getaddrinfo(host, None)
     except socket.gaierror:
         raise UnsafeURLError("URL host could not be resolved")
 
-    resolved_ips = {info[4][0] for info in addr_infos}
-    if not resolved_ips:
+    unique: list[str] = []
+    seen: set[str] = set()
+    for info in addr_infos:
+        ip_str = info[4][0]
+        if ip_str in seen:
+            continue
+        seen.add(ip_str)
+        unique.append(ip_str)
+    if not unique:
         raise UnsafeURLError("URL host could not be resolved")
-
-    for ip_str in resolved_ips:
+    for ip_str in unique:
         if not _is_public_ip(ip_str):
             raise UnsafeURLError("URL host resolves to a private or reserved address")
+    return unique
 
-    return url
+
+def pinned_request_url(url: str, ip: str) -> str:
+    """Rewrite URL host to a literal IP, keeping scheme, port, path, and query."""
+    parsed = urlparse(url)
+    host = f"[{ip}]" if ":" in ip else ip
+    netloc = f"{host}:{parsed.port}" if parsed.port is not None else host
+    return urlunparse(
+        (parsed.scheme, netloc, parsed.path, parsed.params, parsed.query, parsed.fragment)
+    )
+
+
+def _headers_with_host(headers: dict | None, host: str) -> dict:
+    merged = {k: v for k, v in (headers or {}).items() if k.lower() != "host"}
+    merged["Host"] = host
+    return merged
+
+
+_PIN_RETRY_ERRORS = (httpx.ConnectError, httpx.ConnectTimeout)
+
+
+def _pinned_request_kwargs(
+    method: str,
+    url: str,
+    *,
+    headers: dict | None,
+    content: bytes | None,
+    json: dict | None,
+) -> tuple[list[str], dict]:
+    parsed = urlparse(url)
+    host = parsed.hostname
+    if not host:
+        raise UnsafeURLError("URL has no host")
+    ips = resolve_public_ips(host)
+    kwargs = _request_kwargs(
+        method,
+        url,
+        headers=_headers_with_host(headers, host),
+        content=content,
+        json=json,
+    )
+    kwargs["extensions"] = {"sni_hostname": host}
+    return ips, kwargs
+
+
+def _read_limited(response: httpx.Response, max_bytes: int) -> bytes:
+    buf = bytearray()
+    for chunk in response.iter_bytes(chunk_size=65536):
+        if len(buf) + len(chunk) > max_bytes:
+            response.close()
+            raise UnsafeURLError("Response body exceeds maximum size")
+        buf.extend(chunk)
+    return bytes(buf)
+
+
+async def _aread_limited(response: httpx.Response, max_bytes: int) -> bytes:
+    buf = bytearray()
+    async for chunk in response.aiter_bytes(chunk_size=65536):
+        if len(buf) + len(chunk) > max_bytes:
+            await response.aclose()
+            raise UnsafeURLError("Response body exceeds maximum size")
+        buf.extend(chunk)
+    return bytes(buf)
+
+
+_STRIP_BUFFERED_HEADERS = frozenset({
+    "content-encoding",
+    "content-length",
+    "transfer-encoding",
+})
+
+
+def _buffered_response(response: httpx.Response, buf: bytes) -> httpx.Response:
+    headers = {
+        k: v
+        for k, v in response.headers.items()
+        if k.lower() not in _STRIP_BUFFERED_HEADERS
+    }
+    return httpx.Response(
+        response.status_code,
+        headers=headers,
+        content=buf,
+        request=response.request,
+    )
+
+
+def _stream_call_args(kwargs: dict) -> tuple[str, str, dict]:
+    kwargs = dict(kwargs)
+    method = kwargs.pop("method")
+    url = kwargs.pop("url")
+    return method, url, kwargs
+
+
+def _issue_pinned_request(client, method: str, url: str, *, headers, content, json, max_bytes: int):
+    ips, base_kwargs = _pinned_request_kwargs(
+        method, url, headers=headers, content=content, json=json
+    )
+    last_exc: Exception | None = None
+    for ip in ips:
+        kwargs = dict(base_kwargs)
+        kwargs["url"] = pinned_request_url(url, ip)
+        method_kw, pin_url, rest = _stream_call_args(kwargs)
+        try:
+            with client.stream(method_kw, pin_url, **rest) as response:
+                buf = _read_limited(response, max_bytes)
+                return _buffered_response(response, buf)
+        except _PIN_RETRY_ERRORS as exc:
+            last_exc = exc
+            continue
+    if last_exc is not None:
+        raise last_exc
+    raise UnsafeURLError("URL host could not be resolved")
+
+
+async def _issue_pinned_request_async(
+    client, method: str, url: str, *, headers, content, json, max_bytes: int
+):
+    ips, base_kwargs = _pinned_request_kwargs(
+        method, url, headers=headers, content=content, json=json
+    )
+    last_exc: Exception | None = None
+    for ip in ips:
+        kwargs = dict(base_kwargs)
+        kwargs["url"] = pinned_request_url(url, ip)
+        method_kw, pin_url, rest = _stream_call_args(kwargs)
+        try:
+            async with client.stream(method_kw, pin_url, **rest) as response:
+                buf = await _aread_limited(response, max_bytes)
+                return _buffered_response(response, buf)
+        except _PIN_RETRY_ERRORS as exc:
+            last_exc = exc
+            continue
+    if last_exc is not None:
+        raise last_exc
+    raise UnsafeURLError("URL host could not be resolved")
 
 
 def _is_hop_unsafe_header(name: str) -> bool:
@@ -173,8 +318,6 @@ def _next_hop(
     redirects_used: int,
     seen: set[str],
 ) -> str | None:
-    if len(response.content) > max_bytes:
-        raise UnsafeURLError("Response body exceeds maximum size")
     if response.status_code not in _REDIRECT_STATUSES:
         return None
     if redirects_used >= MAX_REDIRECTS:
@@ -209,8 +352,14 @@ def safe_request(
             if current in seen:
                 raise UnsafeURLError("Redirect loop detected")
             seen.add(current)
-            resp = client.request(
-                **_request_kwargs(method, current, headers=headers, content=content, json=json)
+            resp = _issue_pinned_request(
+                client,
+                method,
+                current,
+                headers=headers,
+                content=content,
+                json=json,
+                max_bytes=max_bytes,
             )
             nxt = _next_hop(
                 current,
@@ -249,8 +398,14 @@ async def safe_request_async(
             if current in seen:
                 raise UnsafeURLError("Redirect loop detected")
             seen.add(current)
-            resp = await client.request(
-                **_request_kwargs(method, current, headers=headers, content=content, json=json)
+            resp = await _issue_pinned_request_async(
+                client,
+                method,
+                current,
+                headers=headers,
+                content=content,
+                json=json,
+                max_bytes=max_bytes,
             )
             nxt = _next_hop(
                 current,

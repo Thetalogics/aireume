@@ -23,6 +23,7 @@ from app.backend.models.db_models import (
     Webhook,
 )
 from app.backend.services.audit_service import log_audit
+from app.backend.services.integration_secrets import encrypt_secret
 from app.backend.services.invite_service import send_team_invite_email
 
 
@@ -160,7 +161,7 @@ def register_tenant_ops(router: APIRouter) -> None:
         for conn in db.query(ATSConnection).filter(ATSConnection.tenant_id == tenant_id).all():
             conn.api_key = None
             conn.api_secret = None
-            conn.webhook_secret = secrets.token_urlsafe(32)
+            conn.webhook_secret = encrypt_secret(secrets.token_urlsafe(32))
             rotated += 1
         db.commit()
         log_audit(

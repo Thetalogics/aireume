@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../.
 # Set testing mode so JWT secret enforcement bypasses for tests
 os.environ.setdefault("TESTING", "true")
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-for-testing-only")
+os.environ.setdefault("INTEGRATION_MASTER_KEY", "0" * 64)
 # LLM model names are env-only in application code; tests set defaults here.
 os.environ.setdefault("OLLAMA_MODEL", "qwen2.5:7b")
 os.environ.setdefault("OLLAMA_MODEL_BACKEND", "qwen2.5:7b")

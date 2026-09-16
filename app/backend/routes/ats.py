@@ -38,7 +38,18 @@ from app.backend.models.schemas import (
     ATSSyncLogOut,
 )
 from app.backend.services.ats_connector import ATSConnector
+from app.backend.services.integration_secrets import encrypt_secret, secret_configured
 from app.backend.services.url_safety import UnsafeURLError, validate_public_url
+
+_SECRET_FIELDS = ("api_key", "api_secret", "webhook_secret")
+
+
+def _store_secret(value):
+    if value is None:
+        return None
+    if isinstance(value, str) and value.startswith("enc:v"):
+        return value
+    return encrypt_secret(value)
 
 logger = logging.getLogger("aria.ats")
 
@@ -62,6 +73,10 @@ def _validate_ats_urls(base_url, webhook_url):
 
 def _serialize_connection(conn: ATSConnection) -> dict:
     data = ATSConnectionOut.model_validate(conn).model_dump()
+    data["api_key_configured"] = secret_configured(conn.api_key)
+    data["webhook_secret_configured"] = secret_configured(conn.webhook_secret)
+    for field in _SECRET_FIELDS:
+        data.pop(field, None)
     mapping = conn.status_mapping_json
     if mapping:
         try:
@@ -89,11 +104,11 @@ def create_connection(
         tenant_id=current_user.tenant_id,
         provider=body.provider,
         label=body.label,
-        api_key=body.api_key,
-        api_secret=body.api_secret,
+        api_key=_store_secret(body.api_key),
+        api_secret=_store_secret(body.api_secret),
         base_url=body.base_url,
         webhook_url=body.webhook_url,
-        webhook_secret=body.webhook_secret,
+        webhook_secret=_store_secret(body.webhook_secret),
         sync_direction=body.sync_direction,
         status_mapping_json=json.dumps(body.status_mapping_json) if body.status_mapping_json else None,
     )
@@ -158,6 +173,8 @@ def update_connection(
     for field, value in update_data.items():
         if field == "status_mapping_json" and isinstance(value, dict):
             value = json.dumps(value)
+        if field in _SECRET_FIELDS:
+            value = _store_secret(value)
         setattr(conn, field, value)
 
     db.commit()

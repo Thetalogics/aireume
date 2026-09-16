@@ -29,12 +29,11 @@ def process_dunning_retries():
 def recover_stale_jobs():
     """Single stale-job recovery path — delegates entirely to QueueManager."""
     import asyncio
-    from app.backend.services.queue_manager import QueueManager
+    from app.backend.services.queue_manager import get_queue_manager
 
     db = SessionLocal()
     try:
-        mgr = QueueManager()
-        asyncio.run(mgr.recover_stale_jobs(db))
+        asyncio.run(get_queue_manager().recover_stale_jobs(db))
     except Exception as exc:
         logger.error("Stale job recovery failed: %s", exc, exc_info=True)
         db.rollback()

@@ -11,6 +11,7 @@ This module provides a robust, scalable queue system with:
 """
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import logging
@@ -26,8 +27,9 @@ from sqlalchemy import select, update, and_, or_, func
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 
-from app.backend.db.database import SessionLocal, Base
-from app.backend.models.db_models import Tenant, Candidate
+from app.backend.db import database as _database
+from app.backend.db.database import Base
+from app.backend.models.db_models import Tenant, Candidate, Requisition
 
 logger = logging.getLogger(__name__)
 
@@ -70,10 +72,12 @@ class QueueManager:
         self.current_job_id: Optional[uuid.UUID] = None
         
         # Configuration
-        self.max_concurrent_jobs = int(os.getenv("QUEUE_MAX_CONCURRENT", "10"))
+        self.max_concurrent_jobs = max(1, min(32, int(os.getenv("QUEUE_MAX_CONCURRENT", "10"))))
+        self._job_semaphore = asyncio.Semaphore(self.max_concurrent_jobs)
         self.poll_interval_seconds = int(os.getenv("QUEUE_POLL_INTERVAL", "2"))
-        self.heartbeat_interval_seconds = int(os.getenv("QUEUE_HEARTBEAT_INTERVAL", "30"))
+        self.heartbeat_interval_seconds = float(os.getenv("QUEUE_HEARTBEAT_INTERVAL", "30"))
         self.stale_job_timeout_seconds = int(os.getenv("QUEUE_STALE_TIMEOUT", "600"))  # 10 min
+        self._heartbeat_tasks: set[asyncio.Task] = set()
         
         # Retry configuration
         self.retry_delays = [60, 300, 900]  # 1min, 5min, 15min
@@ -101,6 +105,12 @@ class QueueManager:
         priority: int = 5,
         job_config: Optional[Dict[str, Any]] = None,
         parsed_resume_cache: Optional[Dict[str, Any]] = None,
+        requisition_id: Optional[int] = None,
+        scoring_weights: Optional[Dict[str, Any]] = None,
+        skill_overrides: Optional[Dict[str, Any]] = None,
+        role_template_id: Optional[int] = None,
+        db: Optional[Session] = None,
+        reuse_artifact_id: Optional[uuid.UUID] = None,
     ) -> uuid.UUID:
         """
         Add a new analysis job to the queue.
@@ -111,12 +121,51 @@ class QueueManager:
         Raises:
             IntegrityError: If duplicate job already exists
         """
-        db = SessionLocal()
+        from app.backend.services.screening_command import (
+            ALGORITHM_VERSION_DEFAULT,
+            ArtifactUnavailable,
+            CrossTenantRequisitionError,
+            ScreeningCommand,
+            analysis_fingerprint,
+            command_to_dict,
+        )
+
+        owns_session = db is None
+        if owns_session:
+            db = _database.SessionLocal()
         try:
             # Compute hashes for deduplication
             resume_hash = self.compute_hash(resume_text)
             jd_hash = self.compute_hash(jd_text)
-            input_hash = self.compute_hash(resume_hash, jd_hash, str(tenant_id))
+
+            criteria_version = None
+            resolved_template_id = role_template_id
+            if requisition_id is not None:
+                req = db.query(Requisition).filter(
+                    Requisition.id == requisition_id,
+                    Requisition.tenant_id == tenant_id,
+                ).first()
+                if not req:
+                    raise CrossTenantRequisitionError("Requisition not found")
+                criteria_version = req.current_criteria_version
+                if resolved_template_id is None:
+                    resolved_template_id = req.legacy_role_template_id
+
+            cmd = ScreeningCommand(
+                schema_version="v1",
+                tenant_id=tenant_id,
+                user_id=user_id or 0,
+                resume_hash=resume_hash,
+                jd_hash=jd_hash,
+                algorithm_version=ALGORITHM_VERSION_DEFAULT,
+                candidate_id=candidate_id,
+                requisition_id=requisition_id,
+                role_template_id=resolved_template_id,
+                criteria_version=criteria_version,
+                scoring_weights=scoring_weights,
+                skill_overrides=skill_overrides,
+            )
+            input_hash = analysis_fingerprint(cmd)
             
             # Check if identical job already exists and is not failed
             existing = db.query(AnalysisJob).filter(
@@ -140,24 +189,35 @@ class QueueManager:
 
             reserved_config = dict(job_config or {})
             reserved_config["quota_reserved"] = True
+            reserved_config["command"] = command_to_dict(cmd)
             job_config = reserved_config
             
-            # Create artifact
-            artifact = AnalysisArtifact(
-                tenant_id=tenant_id,
-                resume_filename=resume_filename,
-                resume_size_bytes=len(resume_text.encode()),
-                resume_hash=resume_hash,
-                resume_text=resume_text,
-                resume_text_length=len(resume_text),
-                jd_hash=jd_hash,
-                jd_text=jd_text,
-                jd_size_bytes=len(jd_text.encode()),
-                expires_at=datetime.now(timezone.utc) + timedelta(days=30),  # Keep for 30 days
-                parsed_resume_cache=parsed_resume_cache,
-            )
-            db.add(artifact)
-            db.flush()
+            if reuse_artifact_id is not None:
+                artifact = db.query(AnalysisArtifact).filter(
+                    AnalysisArtifact.id == reuse_artifact_id,
+                    AnalysisArtifact.tenant_id == tenant_id,
+                ).first()
+                if not artifact:
+                    raise ArtifactUnavailable("Analysis artifact is unavailable")
+            else:
+                artifact = AnalysisArtifact(
+                    tenant_id=tenant_id,
+                    resume_filename=resume_filename,
+                    resume_size_bytes=len(resume_text.encode()),
+                    resume_hash=resume_hash,
+                    resume_text=resume_text,
+                    resume_text_length=len(resume_text),
+                    jd_hash=jd_hash,
+                    jd_text=jd_text,
+                    jd_size_bytes=len(jd_text.encode()),
+                    expires_at=datetime.now(timezone.utc) + timedelta(days=30),
+                    parsed_resume_cache=parsed_resume_cache,
+                )
+                db.add(artifact)
+                db.flush()
+
+            cmd.artifact_id = str(artifact.id)
+            job_config["command"] = command_to_dict(cmd)
             
             # Create job
             job = AnalysisJob(
@@ -172,7 +232,10 @@ class QueueManager:
                 job_config=job_config,
             )
             db.add(job)
-            db.commit()
+            if owns_session:
+                db.commit()
+            else:
+                db.flush()
             
             logger.info(f"Job enqueued: {job.id}, priority={priority}, tenant={tenant_id}")
             return job.id
@@ -180,11 +243,11 @@ class QueueManager:
         except IntegrityError as e:
             db.rollback()
             logger.warning(f"Duplicate job detected: {e}")
-            # Return existing job ID
             existing = db.query(AnalysisJob).filter(AnalysisJob.input_hash == input_hash).first()
             return existing.id if existing else None
         finally:
-            db.close()
+            if owns_session:
+                db.close()
     
     async def get_next_job(self, db: Session) -> Optional[AnalysisJob]:
         """
@@ -215,7 +278,7 @@ class QueueManager:
             job.worker_id = self.worker_id
             job.started_at = datetime.now(timezone.utc)
             job.worker_heartbeat = datetime.now(timezone.utc)
-            job.leased_until = datetime.now(timezone.utc) + timedelta(minutes=10)
+            job.leased_until = datetime.now(timezone.utc) + timedelta(seconds=self.stale_job_timeout_seconds)
             db.commit()
             
             logger.info(f"Claimed job: {job.id}, priority={job.priority}, retry_count={job.retry_count}")
@@ -223,11 +286,18 @@ class QueueManager:
         return job
     
     async def update_heartbeat(self, job_id: uuid.UUID, db: Session):
-        """Update worker heartbeat to show job is still being processed."""
+        """Update worker heartbeat and renew the processing lease."""
+        now = datetime.now(timezone.utc)
         db.execute(
             update(AnalysisJob)
-            .where(AnalysisJob.id == job_id)
-            .values(worker_heartbeat=datetime.now(timezone.utc))
+            .where(
+                AnalysisJob.id == job_id,
+                AnalysisJob.status == "processing",
+            )
+            .values(
+                worker_heartbeat=now,
+                leased_until=now + timedelta(seconds=self.stale_job_timeout_seconds),
+            )
         )
         db.commit()
     
@@ -239,7 +309,32 @@ class QueueManager:
             True if successful, False if failed
         """
         start_time = time.time()
-        
+        stop = asyncio.Event()
+
+        async def _beat():
+            while not stop.is_set():
+                try:
+                    await asyncio.wait_for(stop.wait(), timeout=self.heartbeat_interval_seconds)
+                    break
+                except asyncio.TimeoutError:
+                    hb_db = _database.SessionLocal()
+                    try:
+                        await self.update_heartbeat(job.id, hb_db)
+                    finally:
+                        hb_db.close()
+
+        beat_task = asyncio.create_task(_beat())
+        self._heartbeat_tasks.add(beat_task)
+        try:
+            return await self._process_job_body(job, db, start_time)
+        finally:
+            stop.set()
+            beat_task.cancel()
+            self._heartbeat_tasks.discard(beat_task)
+            with contextlib.suppress(asyncio.CancelledError):
+                await beat_task
+
+    async def _process_job_body(self, job: AnalysisJob, db: Session, start_time: float) -> bool:
         try:
             artifact = db.query(AnalysisArtifact).filter(AnalysisArtifact.id == job.artifact_id).first()
             if not artifact:
@@ -338,45 +433,68 @@ class QueueManager:
     async def recover_stale_jobs(self, db: Session):
         """
         Recover jobs that have been processing for too long (worker died).
+
+        Uses a conditional UPDATE so concurrent recoveries increment retry_count
+        at most once per job (second UPDATE matches 0 rows).
         """
         stale_threshold = datetime.now(timezone.utc) - timedelta(seconds=self.stale_job_timeout_seconds)
-        
-        stale_jobs = db.query(AnalysisJob).filter(
-            AnalysisJob.status == 'processing',
-            AnalysisJob.worker_heartbeat < stale_threshold
-        ).all()
-
         now = datetime.now(timezone.utc)
-        leased_jobs = db.query(AnalysisJob).filter(
-            AnalysisJob.status == "processing",
-            AnalysisJob.leased_until != None,
-            AnalysisJob.leased_until < now,
-        ).all()
-        seen_ids = {job.id for job in stale_jobs}
-        for job in leased_jobs:
-            if job.id not in seen_ids:
-                stale_jobs.append(job)
-                seen_ids.add(job.id)
-        
+        stale_cond = or_(
+            AnalysisJob.worker_heartbeat < stale_threshold,
+            and_(AnalysisJob.leased_until.isnot(None), AnalysisJob.leased_until < now),
+        )
+
+        stale_jobs = (
+            db.query(AnalysisJob)
+            .filter(AnalysisJob.status == "processing", stale_cond)
+            .all()
+        )
+
+        recovered = 0
         for job in stale_jobs:
-            logger.warning(f"Recovering stale job: {job.id}, worker={job.worker_id}, last_heartbeat={job.worker_heartbeat}")
-            
+            logger.warning(
+                "Recovering stale job: %s, worker=%s, last_heartbeat=%s",
+                job.id,
+                job.worker_id,
+                job.worker_heartbeat,
+            )
             if job.retry_count < job.max_retries:
-                job.status = 'retrying'
-                job.retry_count += 1
-                job.next_retry_at = datetime.now(timezone.utc) + timedelta(seconds=60)
-                job.worker_id = None
+                values = {
+                    "status": "retrying",
+                    "retry_count": job.retry_count + 1,
+                    "next_retry_at": now + timedelta(seconds=60),
+                    "worker_id": None,
+                }
             else:
-                job.status = 'failed'
-                job.failed_at = datetime.now(timezone.utc)
-                job.error_message = "Worker timeout - job abandoned"
-                job.error_type = "WorkerTimeout"
+                values = {
+                    "status": "failed",
+                    "failed_at": now,
+                    "error_message": "Worker timeout - job abandoned",
+                    "error_type": "WorkerTimeout",
+                }
+            result = db.execute(
+                update(AnalysisJob)
+                .where(
+                    AnalysisJob.id == job.id,
+                    AnalysisJob.status == "processing",
+                    AnalysisJob.retry_count == job.retry_count,
+                    stale_cond,
+                )
+                .values(**values)
+                .execution_options(synchronize_session=False)
+            )
+            if result.rowcount != 1:
+                continue
+            recovered += 1
+            db.expire(job)
+            if values["status"] == "failed":
+                db.refresh(job)
                 from app.backend.routes.analyze_helpers import release_job_analysis_quota
                 release_job_analysis_quota(db, job)
-        
-        if stale_jobs:
+
+        if recovered:
             db.commit()
-            logger.info(f"Recovered {len(stale_jobs)} stale jobs")
+            logger.info("Recovered %s stale jobs", recovered)
 
     # ─── Dead Letter Queue Operations ───────────────────────────────────────────
 
@@ -392,6 +510,7 @@ class QueueManager:
         """
         Move a failed job to the dead letter queue after all retries exhausted.
         """
+        original_input_hash = job.input_hash
         dlq_job = DeadLetterJob(
             original_job_id=job.id,
             tenant_id=job.tenant_id,
@@ -400,7 +519,8 @@ class QueueManager:
             job_type=job.job_type,
             resume_hash=job.resume_hash,
             jd_hash=job.jd_hash,
-            input_hash=job.input_hash,
+            input_hash=original_input_hash,
+            artifact_id=job.artifact_id,
             job_config=job.job_config,
             failure_reason=failure_reason,
             failure_type=error_type,
@@ -413,9 +533,12 @@ class QueueManager:
         
         db.add(dlq_job)
         
-        # Mark original job as dead-lettered
+        # Mark original job as dead-lettered and free unique fingerprint for replay.
         job.status = 'dead_letter'
         job.failed_at = datetime.now(timezone.utc)
+        job.input_hash = hashlib.sha256(
+            f"dead_letter:{job.id}:{original_input_hash}".encode()
+        ).hexdigest()
         
         db.commit()
         logger.warning("Moved job %s to dead letter queue: %s", job.id, failure_reason)
@@ -456,6 +579,8 @@ class QueueManager:
 
     async def retry_dead_letter_job(self, db: Session, dlq_job_id: uuid.UUID) -> Optional[AnalysisJob]:
         """Retry a dead letter job by creating a new analysis job."""
+        from app.backend.services.screening_command import ArtifactUnavailable, command_from_dict
+
         dlq_job = db.query(DeadLetterJob).filter(DeadLetterJob.id == dlq_job_id).first()
         
         if not dlq_job:
@@ -463,69 +588,121 @@ class QueueManager:
         
         if dlq_job.status != 'pending':
             raise ValueError(f"Cannot retry dead letter job with status: {dlq_job.status}")
-        
-        # Create new job from dead letter job
-        new_job = AnalysisJob(
+
+        artifact = None
+        if dlq_job.artifact_id is not None:
+            artifact = db.query(AnalysisArtifact).filter(
+                AnalysisArtifact.id == dlq_job.artifact_id,
+                AnalysisArtifact.tenant_id == dlq_job.tenant_id,
+            ).first()
+        if not artifact:
+            raise ArtifactUnavailable("Analysis artifact is unavailable")
+
+        cmd_data = (dlq_job.job_config or {}).get("command") or {}
+        cmd = command_from_dict(cmd_data) if cmd_data else None
+        retry_config = dict(dlq_job.job_config or {})
+        retry_config.pop("quota_released", None)
+        new_id = await self.enqueue_job(
             tenant_id=dlq_job.tenant_id,
+            resume_text=artifact.resume_text,
+            resume_filename=artifact.resume_filename,
+            jd_text=artifact.jd_text,
             candidate_id=dlq_job.candidate_id,
             user_id=dlq_job.user_id,
-            job_type=dlq_job.job_type,
-            resume_hash=dlq_job.resume_hash,
-            jd_hash=dlq_job.jd_hash,
-            input_hash=dlq_job.input_hash,
-            job_config=dlq_job.job_config,
-            priority=5,
-            status='queued',
+            job_config=retry_config,
+            parsed_resume_cache=artifact.parsed_resume_cache,
+            requisition_id=cmd.requisition_id if cmd else None,
+            scoring_weights=cmd.scoring_weights if cmd else None,
+            skill_overrides=cmd.skill_overrides if cmd else None,
+            role_template_id=cmd.role_template_id if cmd else None,
+            db=db,
+            reuse_artifact_id=artifact.id,
         )
-        
-        db.add(new_job)
-        
-        # Update dead letter job status
+        if not new_id:
+            raise ArtifactUnavailable("Analysis artifact is unavailable")
+
+        new_job = db.query(AnalysisJob).filter(AnalysisJob.id == new_id).first()
         dlq_job.status = 'reprocessed'
         dlq_job.reprocessed_at = datetime.now(timezone.utc)
         dlq_job.reprocessed_job_id = new_job.id
-        
         db.commit()
         logger.info(f"Retried dead letter job {dlq_job_id} as new job {new_job.id}")
-        
         return new_job
 
-    async def worker_loop(self):
-        """Main worker loop - processes jobs from the queue."""
-        logger.info(f"Worker loop started: {self.worker_id}")
-        self.is_running = True
-        
-        last_heartbeat = time.time()
-        last_recovery = time.time()
-        
-        while self.is_running:
-            db = SessionLocal()
+    async def purge_expired_artifacts(self, db: Session) -> int:
+        """Delete expired artifacts that are not referenced by pending DLQ or live jobs."""
+        now = datetime.now(timezone.utc)
+        live_ids = {
+            row[0]
+            for row in db.query(AnalysisJob.artifact_id).filter(
+                AnalysisJob.artifact_id.isnot(None),
+                AnalysisJob.status.in_(["queued", "processing", "retrying", "completed"]),
+            ).all()
+        }
+        pending_dlq_ids = {
+            row[0]
+            for row in db.query(DeadLetterJob.artifact_id).filter(
+                DeadLetterJob.status == "pending",
+                DeadLetterJob.artifact_id.isnot(None),
+            ).all()
+        }
+        keep = live_ids | pending_dlq_ids
+        deleted = 0
+        expired = db.query(AnalysisArtifact).filter(
+            AnalysisArtifact.expires_at.isnot(None),
+            AnalysisArtifact.expires_at < now,
+        ).all()
+        for art in expired:
+            if art.id in keep:
+                continue
+            db.delete(art)
+            deleted += 1
+        db.commit()
+        return deleted
+
+    async def _process_claimed_job(self, job_id: uuid.UUID) -> None:
+        async with self._job_semaphore:
+            db = _database.SessionLocal()
             try:
-                # Periodic stale job recovery (every 5 minutes)
-                if time.time() - last_recovery > 300:
-                    await self.recover_stale_jobs(db)
-                    last_recovery = time.time()
-                
-                # Get next job
-                job = await self.get_next_job(db)
-                
-                if job:
-                    self.current_job_id = job.id
-                    
-                    # Process with periodic heartbeats
-                    success = await self.process_job(job, db)
-                    
+                job = db.query(AnalysisJob).filter(AnalysisJob.id == job_id).one_or_none()
+                if not job:
+                    return
+                self.current_job_id = job.id
+                try:
+                    await self.process_job(job, db)
+                finally:
                     self.current_job_id = None
-                else:
-                    # No jobs available, wait before polling again
-                    await asyncio.sleep(self.poll_interval_seconds)
-                
             except Exception as e:
                 logger.error(f"Worker loop error: {e}", exc_info=True)
-                await asyncio.sleep(5)  # Back off on error
+                await asyncio.sleep(5)
             finally:
                 db.close()
-        
+
+    async def worker_loop(self):
+        """Main worker loop - processes up to max_concurrent_jobs in parallel."""
+        logger.info(f"Worker loop started: {self.worker_id}")
+        self.is_running = True
+        in_flight: set[asyncio.Task] = set()
+        shutdown_timeout = float(os.getenv("QUEUE_SHUTDOWN_TIMEOUT", "30"))
+        claim_db = _database.SessionLocal()
+        try:
+            while self.is_running:
+                while self.is_running and len(in_flight) < self.max_concurrent_jobs:
+                    job = await self.get_next_job(claim_db)
+                    if not job:
+                        break
+                    task = asyncio.create_task(self._process_claimed_job(job.id))
+                    in_flight.add(task)
+                    task.add_done_callback(in_flight.discard)
+                if in_flight:
+                    await asyncio.wait(in_flight, return_when=asyncio.FIRST_COMPLETED)
+                else:
+                    await asyncio.sleep(self.poll_interval_seconds)
+            if in_flight:
+                await asyncio.wait(in_flight, timeout=shutdown_timeout)
+        finally:
+            claim_db.close()
+
         logger.info(f"Worker loop stopped: {self.worker_id}")
     
     def start(self):

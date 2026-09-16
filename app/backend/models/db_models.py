@@ -1547,7 +1547,7 @@ class ATSConnection(Base):
     api_secret          = Column(Text, nullable=True)
     base_url            = Column(String(500), nullable=True)  # override for self-hosted
     webhook_url         = Column(String(500), nullable=True)  # inbound webhook endpoint
-    webhook_secret      = Column(String(255), nullable=True)  # HMAC secret for inbound verification
+    webhook_secret      = Column(Text, nullable=True)  # HMAC secret for inbound verification (enc:v1 ciphertext)
     is_active           = Column(Boolean, nullable=False, default=True, server_default="true")
     sync_direction      = Column(String(10), nullable=False, default="push", server_default="push")  # push / pull / bidirectional
     status_mapping_json = Column(Text, nullable=True)  # JSON: {"shortlisted": "Greenhouse:active", ...}
@@ -1703,12 +1703,18 @@ class IdempotencyKey(Base):
     __tablename__ = "idempotency_keys"
 
     key             = Column(String(128), primary_key=True)
-    tenant_id       = Column(Integer, nullable=False, index=True)
-    endpoint        = Column(String(200), nullable=False)
+    tenant_id       = Column(Integer, primary_key=True)
+    endpoint        = Column(String(200), primary_key=True)
+    request_fingerprint = Column(String(64), nullable=False)
     response_status = Column(Integer, nullable=True)
     response_body   = Column(JSON, nullable=True)
     created_at      = Column(DateTime(timezone=True), server_default=func.now())
     expires_at      = Column(DateTime(timezone=True), nullable=False, index=True)
+
+    __table_args__ = (
+        UniqueConstraint("key", "tenant_id", "endpoint", name="uq_idempotency_key_tenant_endpoint"),
+        Index("ix_idempotency_tenant", "tenant_id"),
+    )
 
 
 class BreachLog(Base):
@@ -1844,6 +1850,7 @@ class DeadLetterJob(Base):
     input_hash = Column(String(64), nullable=False)
 
     job_config = Column(JSON, nullable=True)
+    artifact_id = Column(Uuid(as_uuid=True), ForeignKey('analysis_artifacts.id', ondelete='SET NULL'), nullable=True)
 
     failure_reason = Column(Text, nullable=False)
     failure_type = Column(String(100), nullable=True)

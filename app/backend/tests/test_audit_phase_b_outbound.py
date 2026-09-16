@@ -1,8 +1,10 @@
 # app/backend/tests/test_audit_phase_b_outbound.py
+import gzip as gzip_mod
 import hashlib
 import hmac
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
+from urllib.parse import urlparse
 
 import httpx
 import pytest
@@ -10,6 +12,8 @@ import pytest
 from app.backend.services.url_safety import (
     UnsafeURLError,
     _origin_changed,
+    _read_limited,
+    pinned_request_url,
     safe_request,
     safe_request_async,
     validate_public_url,
@@ -17,6 +21,11 @@ from app.backend.services.url_safety import (
 
 _PUBLIC_IP = "93.184.216.34"
 _EXAMPLE = "https://example.com/a"
+_PINNED_EXAMPLE = pinned_request_url(_EXAMPLE, _PUBLIC_IP)
+
+
+def _pin(url: str, ip: str = _PUBLIC_IP) -> str:
+    return pinned_request_url(url, ip)
 
 
 def _fake_getaddrinfo(host, *args, **kwargs):
@@ -26,9 +35,47 @@ def _fake_getaddrinfo(host, *args, **kwargs):
     return [(None, None, None, None, (_PUBLIC_IP, 0))]
 
 
+def _merge_stream_kwargs(args, kwargs):
+    merged = dict(kwargs)
+    if len(args) >= 1:
+        merged.setdefault("method", args[0])
+    if len(args) >= 2:
+        merged.setdefault("url", args[1])
+    return merged
+
+
+class _SyncStreamCM:
+    def __init__(self, response):
+        self._response = response
+
+    def __enter__(self):
+        return self._response
+
+    def __exit__(self, *args):
+        return False
+
+
+class _AsyncStreamCM:
+    def __init__(self, request_impl, kwargs):
+        self._request_impl = request_impl
+        self._kwargs = kwargs
+
+    async def __aenter__(self):
+        result = self._request_impl(**self._kwargs)
+        if hasattr(result, "__await__"):
+            return await result
+        return result
+
+    async def __aexit__(self, *args):
+        return False
+
+
 def _sync_client(request_impl):
     client = MagicMock()
     client.request.side_effect = request_impl
+    client.stream.side_effect = lambda *args, **kwargs: _SyncStreamCM(
+        request_impl(**_merge_stream_kwargs(args, kwargs))
+    )
     client.__enter__.return_value = client
     client.__exit__.return_value = False
     return client
@@ -37,6 +84,9 @@ def _sync_client(request_impl):
 def _async_client(request_impl):
     client = MagicMock()
     client.request = AsyncMock(side_effect=request_impl)
+    client.stream.side_effect = lambda *args, **kwargs: _AsyncStreamCM(
+        request_impl, _merge_stream_kwargs(args, kwargs)
+    )
     client.__aenter__ = AsyncMock(return_value=client)
     client.__aexit__ = AsyncMock(return_value=False)
     return client
@@ -92,6 +142,22 @@ def test_allows_public_https():
         assert validate_public_url("https://example.com/a") == "https://example.com/a"
 
 
+def test_connects_to_resolved_ip_with_original_host_header():
+    seen = {}
+
+    def request_impl(**kwargs):
+        seen.update(kwargs)
+        return httpx.Response(200, request=httpx.Request("GET", kwargs["url"]), content=b"ok")
+
+    with patch("app.backend.services.url_safety.socket.getaddrinfo", return_value=[
+        (None, None, None, None, ("93.184.216.34", 0)),
+    ]), patch("app.backend.services.url_safety.httpx.Client", return_value=_sync_client(request_impl)):
+        safe_request("GET", "https://example.com/a")
+    assert urlparse(seen["url"]).hostname == "93.184.216.34"
+    host = {k.lower(): v for k, v in (seen.get("headers") or {}).items()}
+    assert host.get("host") == "example.com"
+
+
 def test_safe_request_public_url_200_once():
     requested = []
 
@@ -105,9 +171,37 @@ def test_safe_request_public_url_200_once():
             resp = safe_request("GET", _EXAMPLE)
 
     assert resp.status_code == 200
-    assert requested == [_EXAMPLE]
-    client.request.assert_called_once()
+    assert requested == [_PINNED_EXAMPLE]
+    client.stream.assert_called_once()
     assert client_cls.call_args.kwargs.get("follow_redirects") is False
+
+
+def test_gzip_content_encoding_yields_decoded_body_without_decoding_error():
+    plaintext = b"hello-gzip-body"
+    compressed = gzip_mod.compress(plaintext)
+
+    def request(method, url, **kwargs):
+        return httpx.Response(
+            200,
+            headers={
+                "Content-Encoding": "gzip",
+                "Content-Length": str(len(compressed)),
+                "Transfer-Encoding": "chunked",
+            },
+            content=compressed,
+            request=httpx.Request("GET", url),
+        )
+
+    client = _sync_client(request)
+    with patch("app.backend.services.url_safety.socket.getaddrinfo", side_effect=_fake_getaddrinfo):
+        with patch("app.backend.services.url_safety.httpx.Client", return_value=client):
+            resp = safe_request("GET", _EXAMPLE)
+
+    assert resp.content == plaintext
+    lowered = {k.lower() for k in resp.headers}
+    assert "content-encoding" not in lowered
+    assert "content-length" not in lowered or resp.headers.get("content-length") == str(len(plaintext))
+    assert "transfer-encoding" not in lowered
 
 
 def test_safe_request_rejects_redirect_to_private_ip():
@@ -123,7 +217,7 @@ def test_safe_request_rejects_redirect_to_private_ip():
             with pytest.raises(UnsafeURLError):
                 safe_request("GET", _EXAMPLE)
 
-    assert requested == [_EXAMPLE]
+    assert requested == [_PINNED_EXAMPLE]
     assert all("10.0.0.1" not in u for u in requested)
 
 
@@ -140,7 +234,7 @@ def test_safe_request_rejects_redirect_to_file_scheme():
             with pytest.raises(UnsafeURLError):
                 safe_request("GET", _EXAMPLE)
 
-    assert requested == [_EXAMPLE]
+    assert requested == [_PINNED_EXAMPLE]
 
 
 def test_safe_request_rejects_fourth_redirect():
@@ -151,11 +245,12 @@ def test_safe_request_rejects_fourth_redirect():
         "https://example.com/d",
         "https://example.com/e",
     ]
+    pinned = [_pin(h) for h in hops]
     requested = []
 
     def request(method, url, **kwargs):
         requested.append(url)
-        idx = hops.index(url)
+        idx = pinned.index(url)
         return _response(302, url, location=hops[idx + 1])
 
     client = _sync_client(request)
@@ -164,7 +259,7 @@ def test_safe_request_rejects_fourth_redirect():
             with pytest.raises(UnsafeURLError):
                 safe_request("GET", hops[0])
 
-    assert requested == hops[:4]
+    assert requested == pinned[:4]
 
 
 def test_safe_request_rejects_missing_location():
@@ -176,7 +271,7 @@ def test_safe_request_rejects_missing_location():
         with patch("app.backend.services.url_safety.httpx.Client", return_value=client):
             with pytest.raises(UnsafeURLError):
                 safe_request("GET", _EXAMPLE)
-    client.request.assert_called_once()
+    client.stream.assert_called_once()
 
 
 def test_safe_request_rejects_redirect_loop():
@@ -192,7 +287,7 @@ def test_safe_request_rejects_redirect_loop():
             with pytest.raises(UnsafeURLError):
                 safe_request("GET", _EXAMPLE)
 
-    assert requested == [_EXAMPLE]
+    assert requested == [_PINNED_EXAMPLE]
 
 
 def test_safe_request_rejects_oversized_body():
@@ -204,6 +299,31 @@ def test_safe_request_rejects_oversized_body():
         with patch("app.backend.services.url_safety.httpx.Client", return_value=client):
             with pytest.raises(UnsafeURLError):
                 safe_request("GET", _EXAMPLE, max_bytes=32)
+
+
+def test_read_limited_aborts_before_concatenating_all_chunks():
+    chunk = b"x" * 400_000
+    yielded = []
+    closed = []
+
+    class _HugeIfContent:
+        def iter_bytes(self, chunk_size=65536):
+            for i in range(3):
+                yielded.append(i)
+                yield chunk
+
+        @property
+        def content(self):
+            raise AssertionError("must not read response.content")
+
+        def close(self):
+            closed.append(True)
+
+    with pytest.raises(UnsafeURLError, match="Response body exceeds maximum size"):
+        _read_limited(_HugeIfContent(), 500_000)
+
+    assert yielded == [0, 1]
+    assert closed == [True]
 
 
 @pytest.mark.asyncio
@@ -220,8 +340,8 @@ async def test_safe_request_async_public_url_200_once():
             resp = await safe_request_async("GET", _EXAMPLE)
 
     assert resp.status_code == 200
-    assert requested == [_EXAMPLE]
-    client.request.assert_awaited_once()
+    assert requested == [_PINNED_EXAMPLE]
+    client.stream.assert_called_once()
     assert client_cls.call_args.kwargs.get("follow_redirects") is False
 
 
@@ -239,7 +359,7 @@ async def test_safe_request_async_rejects_redirect_to_private_ip():
             with pytest.raises(UnsafeURLError):
                 await safe_request_async("GET", _EXAMPLE)
 
-    assert requested == [_EXAMPLE]
+    assert requested == [_PINNED_EXAMPLE]
     assert all("10.0.0.1" not in u for u in requested)
 
 
@@ -259,7 +379,7 @@ def test_safe_request_post_302_does_not_follow_as_get():
 
     def request(method, url, **kwargs):
         calls.append({"method": method, "url": url, **kwargs})
-        if url == host_a:
+        if url == _pin(host_a):
             return _response(302, url, location=host_b)
         return _response(200, url)
 
@@ -269,7 +389,7 @@ def test_safe_request_post_302_does_not_follow_as_get():
             with pytest.raises(UnsafeURLError):
                 safe_request("POST", host_a, json={"event": "x"})
 
-    assert [c["url"] for c in calls] == [host_a]
+    assert [c["url"] for c in calls] == [_pin(host_a)]
     assert calls[0]["method"].upper() == "POST"
     assert all(c["url"] != host_b for c in calls)
     assert not any(c["url"] == host_b and c["method"].upper() == "GET" for c in calls)
@@ -280,9 +400,12 @@ def test_safe_request_strips_auth_on_cross_host_307():
     host_b = "https://public-b.example/hook"
     calls = []
 
+    def _call_host(kwargs):
+        return {k.lower(): v for k, v in (kwargs.get("headers") or {}).items()}.get("host")
+
     def request(method, url, **kwargs):
         calls.append({"method": method, "url": url, **kwargs})
-        if url == host_a:
+        if _call_host(kwargs) == "public-a.example":
             return _response(307, url, location=host_b)
         return _response(200, url)
 
@@ -299,16 +422,18 @@ def test_safe_request_strips_auth_on_cross_host_307():
     assert resp.status_code == 200
     assert len(calls) == 2
     first, second = calls
-    assert first["url"] == host_a
+    assert first["url"] == _pin(host_a)
     assert first["method"].upper() == "POST"
     assert first.get("headers", {}).get("Authorization") == "Bearer secret"
-    assert second["url"] == host_b
+    assert {k.lower(): v for k, v in first.get("headers", {}).items()}.get("host") == "public-a.example"
+    assert second["url"] == _pin(host_b)
     assert second["method"].upper() == "POST"
     second_headers = second.get("headers") or {}
     assert "Authorization" not in second_headers
     assert not any(k.lower() == "authorization" for k in second_headers)
     assert second.get("json") == {"event": "x"}
     assert second_headers.get("X-Custom") == "keep"
+    assert {k.lower(): v for k, v in second_headers.items()}.get("host") == "public-b.example"
 
 
 def test_validate_webhook_url_requires_https_and_public_dns():
@@ -360,7 +485,7 @@ async def test_scrape_jd_rejects_redirect_to_private_ip():
                 with pytest.raises(UnsafeURLError):
                     await scrape_jd(_EXAMPLE)
 
-    assert requested == [_EXAMPLE]
+    assert requested == [_PINNED_EXAMPLE]
     assert all("127.0.0.1" not in u for u in requested)
 
 
@@ -411,7 +536,7 @@ async def test_resolve_zoom_url_rejects_redirect_to_private_ip():
                 await resolve_zoom_url(_EXAMPLE)
 
     assert str(exc.value) == "URL is not allowed"
-    assert requested == [_EXAMPLE]
+    assert requested == [_PINNED_EXAMPLE]
     assert all("10.0.0.1" not in u for u in requested)
 
 
@@ -432,7 +557,7 @@ async def test_http_download_rejects_redirect_to_private_ip():
                 await _http_download(_EXAMPLE, "direct")
 
     assert str(exc.value) == "URL is not allowed"
-    assert requested == [_EXAMPLE]
+    assert requested == [_PINNED_EXAMPLE]
     assert all("10.0.0.1" not in u for u in requested)
 
 

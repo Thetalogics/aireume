@@ -214,13 +214,7 @@ async def _http_download(url: str, platform: str) -> bytes:
                 "• For Teams: use SharePoint → share → 'Anyone with the link'"
             )
 
-        body = resp.content
-        if len(body) > MAX_DOWNLOAD_BYTES:
-            raise ValueError(
-                "Recording exceeds the 500 MB download limit. "
-                "Please trim the recording or upload the file directly."
-            )
-        return body
+        return resp.content
 
     except UnsafeURLError as e:
         if "exceeds maximum size" in str(e):

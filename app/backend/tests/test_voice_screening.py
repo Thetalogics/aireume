@@ -13,19 +13,31 @@ from datetime import datetime, timezone, timedelta
 from unittest.mock import patch, MagicMock
 
 # ── Ensure voice_call_scheduler is importable even without apscheduler ────────
-# CI may not have apscheduler installed.  Inject a minimal stub so that
-# @patch("app.backend.services.voice_call_scheduler.schedule_voice_call")
-# can resolve the module path.
-if "apscheduler" not in sys.modules:
+# Prefer the real package when installed. Checking sys.modules alone would
+# inject a non-package stub during collection and break later imports of
+# apscheduler.triggers (e.g. services.scheduler).
+try:
+    import apscheduler  # noqa: F401
+except ImportError:
     _fake_ap = types.ModuleType("apscheduler")
+    _fake_ap.__path__ = []
     _fake_schedulers = types.ModuleType("apscheduler.schedulers")
+    _fake_schedulers.__path__ = []
     _fake_bg = types.ModuleType("apscheduler.schedulers.background")
     _fake_bg.BackgroundScheduler = MagicMock
+    _fake_triggers = types.ModuleType("apscheduler.triggers")
+    _fake_triggers.__path__ = []
+    _fake_interval = types.ModuleType("apscheduler.triggers.interval")
+    _fake_interval.IntervalTrigger = MagicMock
     _fake_ap.schedulers = _fake_schedulers
     _fake_schedulers.background = _fake_bg
+    _fake_ap.triggers = _fake_triggers
+    _fake_triggers.interval = _fake_interval
     sys.modules["apscheduler"] = _fake_ap
     sys.modules["apscheduler.schedulers"] = _fake_schedulers
     sys.modules["apscheduler.schedulers.background"] = _fake_bg
+    sys.modules["apscheduler.triggers"] = _fake_triggers
+    sys.modules["apscheduler.triggers.interval"] = _fake_interval
 
 from app.backend.models.db_models import (
     Candidate, RoleTemplate, VoiceTenantConfig, VoiceScreeningSession, VoiceTranscriptEntry,

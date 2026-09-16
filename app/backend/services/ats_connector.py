@@ -21,9 +21,21 @@ from app.backend.models.db_models import (
     Candidate,
     ScreeningResult,
 )
+from app.backend.services.integration_secrets import decrypt_and_upgrade, decrypt_secret
 from app.backend.services.url_safety import safe_request_async
 
 logger = logging.getLogger("aria.ats")
+
+_SECRET_FIELDS = ("api_key", "api_secret", "webhook_secret")
+
+
+def _plain_secret(connection: ATSConnection, field_name: str) -> Optional[str]:
+    return decrypt_secret(getattr(connection, field_name, None))
+
+
+def _upgrade_connection_secrets(connection: ATSConnection, db: Session) -> None:
+    for field in _SECRET_FIELDS:
+        decrypt_and_upgrade(connection, field, db)
 
 
 class ATSConnector:
@@ -91,6 +103,7 @@ class ATSConnector:
         )
 
         url = adapter.get_endpoint(connection, external_id)
+        _upgrade_connection_secrets(connection, self.db)
         headers = adapter.get_headers(connection)
 
         try:
@@ -161,6 +174,7 @@ class ATSConnector:
         """
         adapter = self._get_adapter(connection.provider)
         url = adapter.get_pull_endpoint(connection, external_id)
+        _upgrade_connection_secrets(connection, self.db)
         headers = adapter.get_headers(connection)
 
         try:
@@ -229,6 +243,7 @@ class ATSConnector:
             }
 
         try:
+            _upgrade_connection_secrets(connection, self.db)
             openings = await adapter.fetch_open_requisitions(connection)
             synced = 0
             for opening in openings or []:
@@ -300,7 +315,7 @@ class ATSConnector:
         body: bytes,
     ) -> bool:
         """Verify HMAC signature of inbound ATS webhook. Fail closed if secret is blank."""
-        secret = (connection.webhook_secret or "").strip()
+        secret = (decrypt_and_upgrade(connection, "webhook_secret", self.db) or "").strip()
         if not secret:
             return False
         expected = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
@@ -435,7 +450,8 @@ class GreenhouseAdapter(BaseATSAdapter):
 
     def get_headers(self, connection):
         import base64
-        auth = base64.b64encode(f"{connection.api_key}:".encode()).decode()
+        api_key = _plain_secret(connection, "api_key") or ""
+        auth = base64.b64encode(f"{api_key}:".encode()).decode()
         return {
             "Content-Type": "application/json",
             "Authorization": f"Basic {auth}",
@@ -488,7 +504,7 @@ class LeverAdapter(BaseATSAdapter):
     def get_headers(self, connection):
         return {
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {connection.api_key}",
+            "Authorization": f"Bearer {_plain_secret(connection, 'api_key') or ''}",
         }
 
     def parse_pull_status(self, data):
@@ -542,7 +558,7 @@ class WorkdayAdapter(BaseATSAdapter):
     def get_headers(self, connection):
         return {
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {connection.api_key}",
+            "Authorization": f"Bearer {_plain_secret(connection, 'api_key') or ''}",
         }
 
     def parse_pull_status(self, data):
@@ -602,10 +618,12 @@ class GenericAdapter(BaseATSAdapter):
 
     def get_headers(self, connection):
         headers = {"Content-Type": "application/json"}
-        if connection.api_key:
-            headers["Authorization"] = f"Bearer {connection.api_key}"
-        if connection.webhook_secret:
-            headers["X-Webhook-Secret"] = connection.webhook_secret
+        api_key = _plain_secret(connection, "api_key")
+        webhook_secret = _plain_secret(connection, "webhook_secret")
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        if webhook_secret:
+            headers["X-Webhook-Secret"] = webhook_secret
         return headers
 
     def parse_pull_status(self, data):

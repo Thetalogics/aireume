@@ -486,18 +486,20 @@ class TestIdempotencyTenantScope:
         from app.backend.models.db_models import IdempotencyKey
 
         now = datetime.now(timezone.utc)
+        fp = idem.request_fingerprint("POST", "/api/example", "", "application/json", b'{"ok":true}')
         db.merge(IdempotencyKey(
             key="same-key",
             tenant_id=1,
             endpoint="POST:/api/example",
+            request_fingerprint=fp,
             response_status=200,
             response_body={"ok": True, "tenant": 1},
             expires_at=now + timedelta(hours=1),
         ))
         db.commit()
 
-        replay = idem._lookup("same-key", "2", "POST:/api/example")
+        replay = idem._lookup("same-key", "2", "POST:/api/example", fp)
         assert replay is None
-        own = idem._lookup("same-key", "1", "POST:/api/example")
+        own = idem._lookup("same-key", "1", "POST:/api/example", fp)
         assert own is not None
         assert own[1]["tenant"] == 1
