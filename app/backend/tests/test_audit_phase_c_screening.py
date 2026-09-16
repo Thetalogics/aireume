@@ -11,6 +11,7 @@ from app.backend.models.db_models import (
     AnalysisArtifact,
     AnalysisJob,
     AnalysisResult,
+    Candidate,
     DeadLetterJob,
     Requisition,
     RequisitionCandidate,
@@ -22,6 +23,7 @@ from app.backend.services.queue_analysis_service import complete_queue_job
 from app.backend.services.queue_manager import QueueManager, get_queue_manager
 from app.backend.services.screening_command import (
     ArtifactUnavailable,
+    CandidateNotFoundError,
     CrossTenantRequisitionError,
     ScreeningCommand,
     analysis_fingerprint,
@@ -1193,4 +1195,181 @@ async def test_sync_analyze_http_and_queue_screening_command_parity(
         RequisitionCandidate.candidate_id == queue_result.candidate_id,
     ).one()
     assert rc_q.screening_result_id == queue_result.id
+
+
+def _seed_tenant_with_candidates(db):
+    tenant = Tenant(name="CandRes", slug="cand-res")
+    other = Tenant(name="CandOther", slug="cand-other")
+    db.add_all([tenant, other])
+    db.commit()
+    db.refresh(tenant)
+    db.refresh(other)
+    user = User(
+        tenant_id=tenant.id,
+        email="cand-res@test.com",
+        hashed_password="x",
+        role="admin",
+        is_active=True,
+        email_verified=True,
+    )
+    kept = Candidate(
+        tenant_id=tenant.id,
+        name="Kept",
+        email="kept@test.com",
+        raw_resume_text="kept resume",
+        parsed_skills='["python"]',
+    )
+    other_match = Candidate(
+        tenant_id=tenant.id,
+        name="OtherMatch",
+        email="other-match@test.com",
+        raw_resume_text="other resume",
+        parsed_skills='["python"]',
+    )
+    foreign = Candidate(
+        tenant_id=other.id,
+        name="Foreign",
+        email="foreign@test.com",
+        raw_resume_text="foreign resume",
+    )
+    db.add_all([user, kept, other_match, foreign])
+    db.commit()
+    db.refresh(user)
+    db.refresh(kept)
+    db.refresh(other_match)
+    db.refresh(foreign)
+    return tenant, user, kept, other_match, foreign
+
+
+def test_execute_screening_keeps_supplied_candidate_id(db, seed_subscription_plans, monkeypatch):
+    tenant, user, kept, other_match, _foreign = _seed_tenant_with_candidates(db)
+    called = {"n": 0}
+
+    def _boom(*_a, **_k):
+        called["n"] += 1
+        raise AssertionError("_get_or_create_candidate must not run when candidate_id is set")
+
+    monkeypatch.setattr("app.backend.routes.analyze._get_or_create_candidate", _boom)
+    cmd = build_screening_command(
+        db,
+        tenant_id=tenant.id,
+        user_id=user.id,
+        resume_hash="r",
+        jd_hash="j",
+        candidate_id=kept.id,
+    )
+    parsed = {
+        "raw_text": "other resume",
+        "contact_info": {"name": "OtherMatch", "email": other_match.email},
+        "skills": ["python"],
+    }
+    result, is_dup = execute_screening(
+        db,
+        cmd,
+        resume_text="other resume",
+        jd_text="Need python",
+        parsed_data=parsed,
+        pipeline_result={"fit_score": 77},
+        filename="a.pdf",
+        action="use_existing",
+    )
+    assert called["n"] == 0
+    assert result.candidate_id == kept.id
+    assert cmd.candidate_id == kept.id
+    assert db.query(Candidate).filter(Candidate.tenant_id == tenant.id).count() == 2
+
+
+def test_execute_screening_rejects_cross_tenant_candidate_id(db, seed_subscription_plans):
+    tenant, user, _kept, _other, foreign = _seed_tenant_with_candidates(db)
+    cmd = build_screening_command(
+        db,
+        tenant_id=tenant.id,
+        user_id=user.id,
+        resume_hash="r",
+        jd_hash="j",
+        candidate_id=foreign.id,
+    )
+    before = db.query(Candidate).count()
+    with pytest.raises(CandidateNotFoundError):
+        execute_screening(
+            db,
+            cmd,
+            resume_text="x",
+            jd_text="Need python",
+            parsed_data={"raw_text": "x", "contact_info": {}},
+            pipeline_result={"fit_score": 10},
+            filename="a.pdf",
+        )
+    assert db.query(Candidate).count() == before
+
+
+def test_execute_screening_creates_when_candidate_id_absent(db, seed_subscription_plans):
+    tenant, user, kept, _other, _foreign = _seed_tenant_with_candidates(db)
+    cmd = build_screening_command(
+        db,
+        tenant_id=tenant.id,
+        user_id=user.id,
+        resume_hash="r",
+        jd_hash="j",
+    )
+    result, is_dup = execute_screening(
+        db,
+        cmd,
+        resume_text="brand new",
+        jd_text="Need python",
+        parsed_data={
+            "raw_text": "brand new",
+            "contact_info": {"name": "Newbie", "email": "newbie-create@test.com"},
+            "skills": ["python"],
+        },
+        pipeline_result={"fit_score": 40},
+        filename="n.pdf",
+    )
+    assert result.candidate_id != kept.id
+    assert result.candidate_id != _other.id
+    assert is_dup is False
+    assert db.query(Candidate).filter(Candidate.tenant_id == tenant.id).count() == 3
+
+
+def test_use_existing_does_not_increase_candidate_count(
+    auth_client, db, seed_subscription_plans, mock_hybrid_pipeline
+):
+    import hashlib
+    from io import BytesIO
+    from app.backend.tests.test_usage_enforcement import DOCX_HEADER, LONG_JOB_DESCRIPTION, RESUME_CONTENT
+    from app.backend.tests.test_helpers import allow_ad_hoc_screening
+
+    admin = db.query(User).filter(User.email == "admin@testcorp.com").one()
+    content = DOCX_HEADER + RESUME_CONTENT
+    existing = Candidate(
+        tenant_id=admin.tenant_id,
+        name="HashMatchCount",
+        email="hash-match-count@testcorp.com",
+        resume_file_hash=hashlib.md5(content).hexdigest(),
+        raw_resume_text="stored resume",
+        parsed_skills='["python"]',
+    )
+    db.add(existing)
+    db.commit()
+    db.refresh(existing)
+    allow_ad_hoc_screening(db, email="admin@testcorp.com")
+    before = db.query(Candidate).filter(Candidate.tenant_id == admin.tenant_id).count()
+    resp = auth_client.post(
+        "/api/analyze",
+        files={
+            "resume": (
+                "test_resume.docx",
+                BytesIO(content),
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        },
+        data={
+            "job_description": LONG_JOB_DESCRIPTION,
+            "action": "use_existing",
+            "candidate_id": str(existing.id),
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["candidate_id"] == existing.id
+    assert db.query(Candidate).filter(Candidate.tenant_id == admin.tenant_id).count() == before
 

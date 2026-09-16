@@ -9,6 +9,9 @@ ALGORITHM_VERSION_DEFAULT = "1.0"
 class CrossTenantRequisitionError(ValueError):
     pass
 
+class CandidateNotFoundError(ValueError):
+    pass
+
 class ArtifactUnavailable(ValueError):
     pass
 
@@ -163,12 +166,19 @@ def execute_screening(
     gaps = gap_analysis if gap_analysis is not None else {}
     content = file_content if file_content is not None else (resume_text or "").encode("utf-8")
     is_dup = False
-    if cmd.candidate_id:
-        existing = db.get(Candidate, cmd.candidate_id)
-        if existing is None or existing.tenant_id != cmd.tenant_id:
-            raise CrossTenantRequisitionError("Candidate not found")
+    if cmd.candidate_id is not None:
+        existing = (
+            db.query(Candidate)
+            .filter(
+                Candidate.id == cmd.candidate_id,
+                Candidate.tenant_id == cmd.tenant_id,
+            )
+            .first()
+        )
+        if existing is None:
+            raise CandidateNotFoundError("Candidate not found")
         candidate_id = existing.id
-        is_dup = True
+        is_dup = action == "use_existing"
     else:
         candidate_id, is_dup = _get_or_create_candidate(
             db,
@@ -184,7 +194,7 @@ def execute_screening(
             resume_text=parsed.get("raw_text", resume_text),
         )
     cand = db.get(Candidate, candidate_id)
-    if cand:
+    if cand and action != "use_existing":
         _store_candidate_profile(
             cand,
             parsed,
@@ -212,3 +222,23 @@ def execute_screening(
         _link_to_requisition(db, cmd.requisition_id, cmd.tenant_id, candidate_id, db_result.id, cmd.user_id)
     cmd.candidate_id = candidate_id
     return db_result, is_dup
+
+
+def apply_screening_pipeline_result(db, db_result, pipeline_result: dict | None):
+    """Update scores on an already-persisted ScreeningResult without re-resolving the candidate."""
+    from app.backend.routes.analyze_helpers import (
+        _populate_denormalized_columns,
+        _restore_preserved_scores,
+        _should_preserve_analysis_scores,
+    )
+
+    if db_result is None:
+        return None
+    payload = pipeline_result or {}
+    if _should_preserve_analysis_scores(db_result, db_result.resume_text, db_result.jd_text):
+        payload = _restore_preserved_scores(db_result, payload)
+    db_result.analysis_result = json.dumps(payload, default=str)
+    _populate_denormalized_columns(db_result, payload)
+    db.commit()
+    db.refresh(db_result)
+    return db_result

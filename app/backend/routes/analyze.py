@@ -72,7 +72,13 @@ from app.backend.services.outcome_service import compute_skill_patterns
 from app.backend.services.team_service import get_team_profile
 from app.backend.services.skill_trend_service import get_skill_trends
 
-from app.backend.services.screening_command import build_screening_command, execute_screening
+from app.backend.services.screening_command import (
+    CandidateNotFoundError,
+    CrossTenantRequisitionError,
+    apply_screening_pipeline_result,
+    build_screening_command,
+    execute_screening,
+)
 from app.backend.routes.analyze_helpers import (
     ALLOWED_EXTENSIONS,
     MAX_BATCH_SIZE,
@@ -162,20 +168,23 @@ def _persist_via_screening_command(
         scoring_weights=scoring_weights,
         skill_overrides=skill_overrides,
     )
-    db_result, is_dup = execute_screening(
-        db,
-        cmd,
-        resume_text=resume_text or "",
-        jd_text=jd_text or "",
-        parsed_data=parsed_data or {},
-        pipeline_result=pipeline_result or {},
-        file_hash=file_hash,
-        filename=filename,
-        file_content=file_content,
-        gap_analysis=gap_analysis,
-        action=action,
-        converted_pdf_content=converted_pdf_content,
-    )
+    try:
+        db_result, is_dup = execute_screening(
+            db,
+            cmd,
+            resume_text=resume_text or "",
+            jd_text=jd_text or "",
+            parsed_data=parsed_data or {},
+            pipeline_result=pipeline_result or {},
+            file_hash=file_hash,
+            filename=filename,
+            file_content=file_content,
+            gap_analysis=gap_analysis,
+            action=action,
+            converted_pdf_content=converted_pdf_content,
+        )
+    except (CandidateNotFoundError, CrossTenantRequisitionError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return db_result, is_dup
 
 
@@ -617,7 +626,7 @@ async def analyze_endpoint(
                 phase3_context=phase3_context,
                 db_session=db,
             )
-            db_result, _ = _persist_via_screening_command(pipeline_result=result, **persist_kw)
+            db_result = apply_screening_pipeline_result(db, db_result, result)
             
             result["result_id"]      = db_result.id
             result["analysis_id"]    = db_result.id   # Add this line
@@ -626,8 +635,6 @@ async def analyze_endpoint(
 
             if project_id:
                 _link_to_project(db, project_id, current_user.tenant_id, existing.id, db_result.id, current_user.id)
-            if requisition_id:
-                _link_to_requisition(db, requisition_id, current_user.tenant_id, existing.id, db_result.id, current_user.id)
 
             return result
 
@@ -707,9 +714,7 @@ async def analyze_endpoint(
         phase3_context=phase3_context,
         db_session=db,
     )
-    db_result, is_dup = _persist_via_screening_command(
-        pipeline_result=result, candidate_id=candidate_id, **persist_kw
-    )
+    db_result = apply_screening_pipeline_result(db, db_result, result)
 
     # Persist skill overrides to template after successful analysis
     _persist_skill_overrides_to_template(
@@ -731,8 +736,6 @@ async def analyze_endpoint(
 
     if project_id:
         _link_to_project(db, project_id, current_user.tenant_id, candidate_id, db_result.id, current_user.id)
-    if requisition_id:
-        _link_to_requisition(db, requisition_id, current_user.tenant_id, candidate_id, db_result.id, current_user.id)
 
     # Resolve name: candidate.name (possibly edited) takes priority over parsed/analysis data
     _cand_row = db.get(Candidate, candidate_id)
@@ -978,6 +981,7 @@ async def analyze_stream_endpoint(
         skill_overrides=parsed_skill_overrides,
         action=action,
         converted_pdf_content=pdf_bytes,
+        candidate_id=candidate_id if action == "use_existing" else None,
     )
     candidate_id = db_result.candidate_id
     screening_result_id = db_result.id
@@ -1133,7 +1137,7 @@ async def analyze_stream_endpoint(
                     _populate_denormalized_columns(sr, final_result)
                     # Also update candidate profile
                     cand = save_db.query(Candidate).filter(Candidate.id == candidate_id).first()
-                    if cand:
+                    if cand and action != "use_existing":
                         _store_candidate_profile(cand, parsed_data, gap_analysis, file_hash, final_result.get("analysis_quality", "medium"), content, resume.filename, db=save_db)
                     save_db.commit()
                     log.info("Final DB save completed for screening_result_id=%s (fit_score=%s)", screening_result_id, final_result.get("fit_score"))
