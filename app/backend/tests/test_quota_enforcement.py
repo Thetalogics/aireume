@@ -95,6 +95,7 @@ class TestCheckQuota:
         """Enterprise plan should always be allowed regardless of usage."""
         ent_plan = db.query(SubscriptionPlan).filter(SubscriptionPlan.name == "enterprise").first()
         tenant = _make_tenant(db, "entcorp", plan_id=ent_plan.id)
+        tenant.subscription_status = "active"
         db.commit()
 
         # Create many results — should still be allowed
@@ -108,15 +109,16 @@ class TestCheckQuota:
         assert result["remaining"] == -1
 
     def test_no_subscription_defaults_to_free(self, db, seed_subscription_plans):
-        """Tenant with no plan_id should default to free tier limits."""
+        """Tenant with no plan_id should default to the effective starter/free plan."""
         tenant = _make_tenant(db, "noplan", plan_id=None)
         db.commit()
 
         result = check_quota(tenant.id, db)
         assert result["allowed"] is True
         assert result["plan"] == "starter"
-        # The fallback PLAN_LIMITS["starter"] = 30
-        assert result["limit"] == PLAN_LIMITS["starter"]
+        free_plan = db.query(SubscriptionPlan).filter(SubscriptionPlan.name.in_(("starter", "free"))).first()
+        plan_limits = json.loads(free_plan.limits)
+        assert result["limit"] == plan_limits["analyses_per_month"]
 
     def test_quota_resets_each_calendar_month(self, db, seed_subscription_plans):
         """Results from a previous month should not count toward this month's quota."""
@@ -152,6 +154,7 @@ class TestCheckQuota:
         """Pro plan should use its plan limits for quota checking."""
         pro_plan = db.query(SubscriptionPlan).filter(SubscriptionPlan.name.in_(("growth", "pro"))).first()
         tenant = _make_tenant(db, "procorp", plan_id=pro_plan.id)
+        tenant.subscription_status = "active"
         db.commit()
 
         result = check_quota(tenant.id, db)

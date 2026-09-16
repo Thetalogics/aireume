@@ -27,6 +27,8 @@ from sqlalchemy import select, update, and_, or_, func
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 
+from sqlalchemy.orm.attributes import flag_modified
+
 from app.backend.db import database as _database
 from app.backend.db.database import Base
 from app.backend.models.db_models import Tenant, Candidate, Requisition
@@ -54,6 +56,23 @@ from app.backend.models.db_models import (  # noqa: F401
     AnalysisArtifact,
     JobMetrics,
 )
+
+CACHEABLE_JOB_STATUSES = ("queued", "processing", "retrying", "completed")
+TERMINAL_NON_CACHEABLE_STATUSES = ("failed", "cancelled", "dead_letter")
+
+
+def terminal_fingerprint(status: str, job_id, original_hash: str) -> str:
+    return hashlib.sha256(f"terminal:{status}:{job_id}:{original_hash}".encode("utf-8")).hexdigest()
+
+
+def archive_terminal_fingerprint(job: AnalysisJob, status: str) -> None:
+    cfg = dict(job.job_config or {})
+    original = cfg.get("canonical_input_hash") or job.input_hash
+    if original:
+        cfg["canonical_input_hash"] = original
+        job.job_config = cfg
+        flag_modified(job, "job_config")
+        job.input_hash = terminal_fingerprint(status, job.id, original)
 
 
 # ============================================================================
@@ -127,6 +146,7 @@ class QueueManager:
             CrossTenantRequisitionError,
             ScreeningCommand,
             analysis_fingerprint,
+            build_screening_command,
             command_to_dict,
         )
 
@@ -134,53 +154,32 @@ class QueueManager:
         if owns_session:
             db = _database.SessionLocal()
         try:
-            # Compute hashes for deduplication
             resume_hash = self.compute_hash(resume_text)
             jd_hash = self.compute_hash(jd_text)
-
-            criteria_version = None
-            resolved_template_id = role_template_id
-            if requisition_id is not None:
-                req = db.query(Requisition).filter(
-                    Requisition.id == requisition_id,
-                    Requisition.tenant_id == tenant_id,
-                ).first()
-                if not req:
-                    raise CrossTenantRequisitionError("Requisition not found")
-                criteria_version = req.current_criteria_version
-                if resolved_template_id is None:
-                    resolved_template_id = req.legacy_role_template_id
-
-            cmd = ScreeningCommand(
-                schema_version="v1",
+            cmd = build_screening_command(
+                db,
                 tenant_id=tenant_id,
                 user_id=user_id or 0,
                 resume_hash=resume_hash,
                 jd_hash=jd_hash,
-                algorithm_version=ALGORITHM_VERSION_DEFAULT,
                 candidate_id=candidate_id,
                 requisition_id=requisition_id,
-                role_template_id=resolved_template_id,
-                criteria_version=criteria_version,
+                role_template_id=role_template_id,
                 scoring_weights=scoring_weights,
                 skill_overrides=skill_overrides,
+                algorithm_version=ALGORITHM_VERSION_DEFAULT,
             )
             input_hash = analysis_fingerprint(cmd)
-            
-            # Check if identical job already exists and is not failed
+
             existing = db.query(AnalysisJob).filter(
                 AnalysisJob.input_hash == input_hash,
                 AnalysisJob.tenant_id == tenant_id,
-                AnalysisJob.status.in_(['queued', 'processing', 'completed', 'retrying'])
+                AnalysisJob.status.in_(CACHEABLE_JOB_STATUSES),
             ).first()
-            
+
             if existing:
-                if existing.status == 'completed':
-                    logger.info(f"Duplicate job found (completed): {existing.id}")
-                    return existing.id
-                else:
-                    logger.info(f"Duplicate job found (in progress): {existing.id}, status={existing.status}")
-                    return existing.id
+                logger.info("Duplicate job found: %s status=%s", existing.id, existing.status)
+                return existing.id
 
             from app.backend.routes.analyze_helpers import _check_and_increment_usage
             allowed, message = _check_and_increment_usage(db, tenant_id, user_id or 0, 1)
@@ -239,12 +238,42 @@ class QueueManager:
             
             logger.info(f"Job enqueued: {job.id}, priority={priority}, tenant={tenant_id}")
             return job.id
-            
+
         except IntegrityError as e:
             db.rollback()
-            logger.warning(f"Duplicate job detected: {e}")
-            existing = db.query(AnalysisJob).filter(AnalysisJob.input_hash == input_hash).first()
-            return existing.id if existing else None
+            logger.warning("Duplicate job detected: %s", e)
+            from app.backend.routes.analyze_helpers import _release_analysis_quota
+            _release_analysis_quota(db, tenant_id, 1)
+            db.commit()
+            existing = db.query(AnalysisJob).filter(
+                AnalysisJob.input_hash == input_hash,
+                AnalysisJob.tenant_id == tenant_id,
+                AnalysisJob.status.in_(CACHEABLE_JOB_STATUSES),
+            ).first()
+            if existing:
+                return existing.id
+            poison = db.query(AnalysisJob).filter(AnalysisJob.input_hash == input_hash).first()
+            if poison and poison.status in TERMINAL_NON_CACHEABLE_STATUSES:
+                archive_terminal_fingerprint(poison, poison.status)
+                db.commit()
+                return await self.enqueue_job(
+                    tenant_id=tenant_id,
+                    resume_text=resume_text,
+                    resume_filename=resume_filename,
+                    jd_text=jd_text,
+                    candidate_id=candidate_id,
+                    user_id=user_id,
+                    priority=priority,
+                    job_config=job_config,
+                    parsed_resume_cache=parsed_resume_cache,
+                    requisition_id=requisition_id,
+                    scoring_weights=scoring_weights,
+                    skill_overrides=skill_overrides,
+                    role_template_id=role_template_id,
+                    db=db if not owns_session else None,
+                    reuse_artifact_id=reuse_artifact_id,
+                )
+            raise
         finally:
             if owns_session:
                 db.close()
@@ -491,6 +520,13 @@ class QueueManager:
                 db.refresh(job)
                 from app.backend.routes.analyze_helpers import release_job_analysis_quota
                 release_job_analysis_quota(db, job)
+                await self.move_to_dead_letter(
+                    db,
+                    job,
+                    "Worker timeout - job abandoned",
+                    error_type="WorkerTimeout",
+                    error_message="Worker timeout - job abandoned",
+                )
 
         if recovered:
             db.commit()
@@ -510,7 +546,15 @@ class QueueManager:
         """
         Move a failed job to the dead letter queue after all retries exhausted.
         """
-        original_input_hash = job.input_hash
+        original_input_hash = (job.job_config or {}).get("canonical_input_hash") or job.input_hash
+        existing = db.query(DeadLetterJob).filter(DeadLetterJob.original_job_id == job.id).first()
+        if existing:
+            archive_terminal_fingerprint(job, "dead_letter")
+            job.status = "dead_letter"
+            job.failed_at = job.failed_at or datetime.now(timezone.utc)
+            db.commit()
+            return existing
+
         dlq_job = DeadLetterJob(
             original_job_id=job.id,
             tenant_id=job.tenant_id,
@@ -530,15 +574,11 @@ class QueueManager:
             original_created_at=job.created_at,
             status='pending',
         )
-        
+
         db.add(dlq_job)
-        
-        # Mark original job as dead-lettered and free unique fingerprint for replay.
         job.status = 'dead_letter'
         job.failed_at = datetime.now(timezone.utc)
-        job.input_hash = hashlib.sha256(
-            f"dead_letter:{job.id}:{original_input_hash}".encode()
-        ).hexdigest()
+        archive_terminal_fingerprint(job, "dead_letter")
         
         db.commit()
         logger.warning("Moved job %s to dead letter queue: %s", job.id, failure_reason)

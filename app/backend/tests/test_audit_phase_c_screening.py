@@ -24,7 +24,9 @@ from app.backend.services.screening_command import (
     CrossTenantRequisitionError,
     ScreeningCommand,
     analysis_fingerprint,
+    build_screening_command,
     command_from_dict,
+    execute_screening,
 )
 
 
@@ -727,4 +729,425 @@ def test_expired_idempotency_row_does_not_replay(db):
     )
     db.commit()
     assert idem._lookup("expired-key", "0", "POST:/api/idem-a", fp) is None
+
+
+async def _enqueue_pair(db, slug, **kwargs):
+    tenant = Tenant(name=slug, slug=slug)
+    db.add(tenant)
+    db.commit()
+    db.refresh(tenant)
+    mgr = get_queue_manager()
+    job_id = await mgr.enqueue_job(
+        tenant_id=tenant.id,
+        resume_text="Alice engineer python",
+        resume_filename="a.pdf",
+        jd_text="Need python",
+        user_id=1,
+        scoring_weights={"skills": 0.5},
+        **kwargs,
+    )
+    job = db.query(AnalysisJob).filter(AnalysisJob.id == job_id).one()
+    return tenant, mgr, job
+
+
+@pytest.mark.asyncio
+async def test_queued_same_fingerprint_returns_same_job(db, seed_subscription_plans):
+    tenant, mgr, job = await _enqueue_pair(db, "c-fp-queued")
+    again = await mgr.enqueue_job(
+        tenant_id=tenant.id,
+        resume_text="Alice engineer python",
+        resume_filename="other.pdf",
+        jd_text="Need python",
+        user_id=2,
+        scoring_weights={"skills": 0.5},
+    )
+    assert again == job.id
+    assert job.status == "queued"
+
+
+@pytest.mark.asyncio
+async def test_processing_same_fingerprint_returns_same_job(db, seed_subscription_plans):
+    tenant, mgr, job = await _enqueue_pair(db, "c-fp-proc")
+    job.status = "processing"
+    db.commit()
+    again = await mgr.enqueue_job(
+        tenant_id=tenant.id,
+        resume_text="Alice engineer python",
+        resume_filename="a.pdf",
+        jd_text="Need python",
+        user_id=1,
+        scoring_weights={"skills": 0.5},
+    )
+    assert again == job.id
+
+
+@pytest.mark.asyncio
+async def test_retrying_same_fingerprint_returns_same_job(db, seed_subscription_plans):
+    tenant, mgr, job = await _enqueue_pair(db, "c-fp-retry")
+    job.status = "retrying"
+    db.commit()
+    again = await mgr.enqueue_job(
+        tenant_id=tenant.id,
+        resume_text="Alice engineer python",
+        resume_filename="a.pdf",
+        jd_text="Need python",
+        user_id=1,
+        scoring_weights={"skills": 0.5},
+    )
+    assert again == job.id
+
+
+@pytest.mark.asyncio
+async def test_completed_same_fingerprint_returns_cache_hit(db, seed_subscription_plans):
+    tenant, mgr, job = await _enqueue_pair(db, "c-fp-done")
+    job.status = "completed"
+    db.commit()
+    again = await mgr.enqueue_job(
+        tenant_id=tenant.id,
+        resume_text="Alice engineer python",
+        resume_filename="a.pdf",
+        jd_text="Need python",
+        user_id=1,
+        scoring_weights={"skills": 0.5},
+    )
+    assert again == job.id
+
+
+@pytest.mark.asyncio
+async def test_cancelled_same_fingerprint_creates_new_job(db, seed_subscription_plans):
+    tenant, mgr, job = await _enqueue_pair(db, "c-fp-cancel")
+    db.refresh(tenant)
+    before = tenant.analyses_count_this_month
+    job.status = "cancelled"
+    from app.backend.routes.analyze_helpers import release_job_analysis_quota
+
+    release_job_analysis_quota(db, job)
+    db.commit()
+    again = await mgr.enqueue_job(
+        tenant_id=tenant.id,
+        resume_text="Alice engineer python",
+        resume_filename="a.pdf",
+        jd_text="Need python",
+        user_id=1,
+        scoring_weights={"skills": 0.5},
+    )
+    assert again != job.id
+    db.refresh(tenant)
+    assert tenant.analyses_count_this_month == before
+
+
+@pytest.mark.asyncio
+async def test_failed_same_fingerprint_creates_new_job(db, seed_subscription_plans):
+    tenant, mgr, job = await _enqueue_pair(db, "c-fp-fail")
+    job.status = "failed"
+    db.commit()
+    again = await mgr.enqueue_job(
+        tenant_id=tenant.id,
+        resume_text="Alice engineer python",
+        resume_filename="a.pdf",
+        jd_text="Need python",
+        user_id=1,
+        scoring_weights={"skills": 0.5},
+    )
+    assert again != job.id
+
+
+@pytest.mark.asyncio
+async def test_dead_letter_same_fingerprint_creates_new_job(db, seed_subscription_plans):
+    tenant, mgr, job = await _enqueue_pair(db, "c-fp-dlq")
+    await mgr.move_to_dead_letter(db, job, "retries exhausted")
+    again = await mgr.enqueue_job(
+        tenant_id=tenant.id,
+        resume_text="Alice engineer python",
+        resume_filename="a.pdf",
+        jd_text="Need python",
+        user_id=1,
+        scoring_weights={"skills": 0.5},
+    )
+    assert again != job.id
+
+
+@pytest.mark.asyncio
+async def test_concurrent_enqueue_resolves_to_one_cacheable_job(db, seed_subscription_plans):
+    tenant = Tenant(name="c-fp-race", slug="c-fp-race")
+    db.add(tenant)
+    db.commit()
+    db.refresh(tenant)
+    mgr = get_queue_manager()
+    ids = await asyncio.gather(
+        mgr.enqueue_job(
+            tenant_id=tenant.id,
+            resume_text="Race resume",
+            resume_filename="a.pdf",
+            jd_text="Race jd",
+            user_id=1,
+        ),
+        mgr.enqueue_job(
+            tenant_id=tenant.id,
+            resume_text="Race resume",
+            resume_filename="b.pdf",
+            jd_text="Race jd",
+            user_id=1,
+        ),
+    )
+    assert ids[0] == ids[1]
+    cacheable = (
+        db.query(AnalysisJob)
+        .filter(
+            AnalysisJob.tenant_id == tenant.id,
+            AnalysisJob.status.in_(["queued", "processing", "retrying", "completed"]),
+        )
+        .all()
+    )
+    assert len(cacheable) == 1
+
+
+@pytest.mark.asyncio
+async def test_integrity_error_fallback_never_returns_terminal_job(db, seed_subscription_plans):
+    tenant, mgr, job = await _enqueue_pair(db, "c-fp-poison")
+    original_hash = job.input_hash
+    job.status = "failed"
+    db.commit()
+    db.expire_all()
+    again = await mgr.enqueue_job(
+        tenant_id=tenant.id,
+        resume_text="Alice engineer python",
+        resume_filename="a.pdf",
+        jd_text="Need python",
+        user_id=1,
+        scoring_weights={"skills": 0.5},
+    )
+    assert again != job.id
+    poisoned = db.query(AnalysisJob).filter(AnalysisJob.id == job.id).one()
+    assert poisoned.input_hash != original_hash
+    fresh = db.query(AnalysisJob).filter(AnalysisJob.id == again).one()
+    assert fresh.status in ("queued", "processing", "retrying", "completed")
+    assert fresh.input_hash == original_hash
+
+
+@pytest.mark.asyncio
+async def test_dedup_does_not_double_reserve_quota(db, seed_subscription_plans):
+    tenant, mgr, job = await _enqueue_pair(db, "c-fp-quota")
+    db.refresh(tenant)
+    used = tenant.analyses_count_this_month
+    await mgr.enqueue_job(
+        tenant_id=tenant.id,
+        resume_text="Alice engineer python",
+        resume_filename="a.pdf",
+        jd_text="Need python",
+        user_id=1,
+        scoring_weights={"skills": 0.5},
+    )
+    db.refresh(tenant)
+    assert tenant.analyses_count_this_month == used
+    assert used >= 1
+
+
+@pytest.mark.asyncio
+async def test_stale_at_max_retries_moves_to_dlq_once(db, seed_subscription_plans):
+    now = datetime.now(timezone.utc)
+    job = _processing_job(
+        db, "c-stale-dlq", now - timedelta(hours=2), now - timedelta(hours=1), retry_count=3
+    )
+    job.max_retries = 3
+    job.job_config = {"quota_reserved": True, "command": {"tenant_id": job.tenant_id, "user_id": 1, "resume_hash": "s" * 64, "jd_hash": "t" * 64, "schema_version": "v1", "algorithm_version": "1.0"}}
+    db.commit()
+    original_hash = job.input_hash
+    original_artifact = job.artifact_id
+    db2 = SessionLocal()
+    try:
+        mgr = QueueManager()
+        await asyncio.gather(mgr.recover_stale_jobs(db), mgr.recover_stale_jobs(db2))
+    finally:
+        db2.close()
+    db.expire_all()
+    refreshed = db.query(AnalysisJob).filter(AnalysisJob.id == job.id).one()
+    assert refreshed.status == "dead_letter"
+    assert refreshed.input_hash != original_hash
+    dlqs = db.query(DeadLetterJob).filter(DeadLetterJob.original_job_id == job.id).all()
+    assert len(dlqs) == 1
+    assert dlqs[0].artifact_id == original_artifact
+    assert (dlqs[0].job_config or {}).get("command") is not None
+    tenant = db.query(Tenant).filter(Tenant.id == job.tenant_id).one()
+    mgr = get_queue_manager()
+    new_id = await mgr.enqueue_job(
+        tenant_id=tenant.id,
+        resume_text="new after stale",
+        resume_filename="n.pdf",
+        jd_text="jd",
+        user_id=1,
+    )
+    assert new_id != job.id
+
+
+def test_query_param_order_same_fingerprint():
+    from app.backend.middleware.idempotency import canonicalize_query, request_fingerprint
+
+    q1 = canonicalize_query("a=1&b=2")
+    q2 = canonicalize_query("b=2&a=1")
+    assert q1 == q2
+    a = request_fingerprint("POST", "/api/idem-a", q1, "application/json", b'{"n":1}')
+    b = request_fingerprint("POST", "/api/idem-a", q2, "application/json", b'{"n":1}')
+    assert a == b
+
+
+def test_duplicate_query_params_are_deterministic():
+    from app.backend.middleware.idempotency import canonicalize_query, request_fingerprint
+
+    q_ab = canonicalize_query("tag=a&tag=b")
+    q_ba = canonicalize_query("tag=b&tag=a")
+    q_a = canonicalize_query("tag=a")
+    assert q_ab == q_ba
+    assert q_ab != q_a
+    assert request_fingerprint("GET", "/x", q_ab, "", b"") == request_fingerprint("GET", "/x", q_ba, "", b"")
+    assert request_fingerprint("GET", "/x", q_ab, "", b"") != request_fingerprint("GET", "/x", q_a, "", b"")
+
+
+def test_same_query_order_replays(db):
+    hits = {}
+    client = _idempotency_test_client(hits)
+    headers = {"X-Idempotency-Key": "q-order"}
+    first = client.post("/api/idem-a?a=1&b=2", json={"n": 1}, headers=headers)
+    second = client.post("/api/idem-a?b=2&a=1", json={"n": 1}, headers=headers)
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.headers.get("X-Idempotent-Replay") == "true"
+    assert hits["a"] == 1
+
+
+def test_changed_query_value_conflicts(db):
+    hits = {}
+    client = _idempotency_test_client(hits)
+    headers = {"X-Idempotency-Key": "q-change"}
+    first = client.post("/api/idem-a?a=1", json={"n": 1}, headers=headers)
+    second = client.post("/api/idem-a?a=2", json={"n": 1}, headers=headers)
+    assert first.status_code == 200
+    assert second.status_code == 409
+    assert hits["a"] == 1
+
+
+def test_idempotency_tenant_isolation_http(db, monkeypatch):
+    from jose import jwt
+    from app.backend.middleware.auth import ALGORITHM, SECRET_KEY
+
+    hits = {}
+    client = _idempotency_test_client(hits)
+    t1 = jwt.encode({"tenant_id": 11, "sub": "1"}, SECRET_KEY, algorithm=ALGORITHM)
+    t2 = jwt.encode({"tenant_id": 22, "sub": "2"}, SECRET_KEY, algorithm=ALGORITHM)
+    headers1 = {"X-Idempotency-Key": "shared-key", "Authorization": f"Bearer {t1}"}
+    headers2 = {"X-Idempotency-Key": "shared-key", "Authorization": f"Bearer {t2}"}
+    a = client.post("/api/idem-a", json={"n": 1}, headers=headers1)
+    b = client.post("/api/idem-a", json={"n": 1}, headers=headers2)
+    assert a.status_code == 200
+    assert b.status_code == 200
+    assert "X-Idempotent-Replay" not in b.headers
+    assert hits["a"] == 2
+
+
+@pytest.mark.asyncio
+async def test_sync_and_queue_screening_command_parity(db, seed_subscription_plans, monkeypatch):
+    tenant = Tenant(name="c-parity", slug="c-parity")
+    db.add(tenant)
+    db.commit()
+    db.refresh(tenant)
+    user = User(
+        tenant_id=tenant.id,
+        email="parity@test.com",
+        hashed_password="x",
+        role="admin",
+        is_active=True,
+        email_verified=True,
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    req = Requisition(
+        tenant_id=tenant.id,
+        title="Eng",
+        jd_text="Need python",
+        status="open",
+        current_criteria_version=4,
+        created_by=user.id,
+        legacy_role_template_id=None,
+    )
+    db.add(req)
+    db.commit()
+    db.refresh(req)
+
+    parsed = {
+        "raw_text": "Alice engineer python",
+        "contact_info": {"name": "Alice Parity", "email": "alice-parity@test.com"},
+        "skills": ["python"],
+    }
+    pipeline = {"fit_score": 81, "final_recommendation": "Strong Hire", "risk_level": "low"}
+
+    async def _fake_process(*args, **kwargs):
+        return dict(pipeline)
+
+    monkeypatch.setattr("app.backend.routes.analyze._process_single_resume", _fake_process)
+    monkeypatch.setattr("app.backend.routes.analyze._spawn_background_narrative", lambda *a, **k: None)
+
+    cmd = build_screening_command(
+        db,
+        tenant_id=tenant.id,
+        user_id=user.id,
+        resume_hash="parity-r",
+        jd_hash="parity-j",
+        requisition_id=req.id,
+        scoring_weights={"skills": 0.7},
+        skill_overrides={"python": True},
+    )
+    sync_result = execute_screening(
+        db,
+        cmd,
+        resume_text=parsed["raw_text"],
+        jd_text="Need python",
+        parsed_data=parsed,
+        pipeline_result=pipeline,
+        file_hash="parity-file",
+        filename="a.pdf",
+    )
+    assert sync_result.requisition_id == req.id
+    assert sync_result.candidate_id is not None
+    assert sync_result.role_template_id == cmd.role_template_id
+    rc_sync = db.query(RequisitionCandidate).filter(
+        RequisitionCandidate.requisition_id == req.id,
+        RequisitionCandidate.candidate_id == sync_result.candidate_id,
+    ).one()
+    assert rc_sync.screening_result_id == sync_result.id
+
+    mgr = get_queue_manager()
+    job_id = await mgr.enqueue_job(
+        tenant_id=tenant.id,
+        resume_text="Bob engineer python",
+        resume_filename="b.pdf",
+        jd_text="Need python",
+        user_id=user.id,
+        requisition_id=req.id,
+        scoring_weights={"skills": 0.7},
+        skill_overrides={"python": True},
+        parsed_resume_cache={
+            "parsed_data": {
+                "raw_text": "Bob engineer python",
+                "contact_info": {"name": "Bob Parity", "email": "bob-parity@test.com"},
+                "skills": ["python"],
+            },
+            "file_hash": "parity-bob",
+            "filename": "b.pdf",
+        },
+    )
+    await complete_queue_job(job_id, db)
+    job = db.query(AnalysisJob).filter(AnalysisJob.id == job_id).one()
+    queue_result = db.query(ScreeningResult).filter(ScreeningResult.candidate_id == job.candidate_id).one()
+    assert queue_result.requisition_id == req.id
+    qcmd = command_from_dict(job.job_config["command"])
+    assert qcmd.criteria_version == cmd.criteria_version
+    assert qcmd.scoring_weights == cmd.scoring_weights
+    assert queue_result.deterministic_score == 81
+    assert sync_result.deterministic_score == 81
+    rc_q = db.query(RequisitionCandidate).filter(
+        RequisitionCandidate.requisition_id == req.id,
+        RequisitionCandidate.candidate_id == queue_result.candidate_id,
+    ).one()
+    assert rc_q.screening_result_id == queue_result.id
 

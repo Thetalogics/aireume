@@ -662,6 +662,8 @@ async def cancel_job(
     job.status = 'cancelled'
     job.completed_at = datetime.now(timezone.utc)
     from app.backend.routes.analyze_helpers import release_job_analysis_quota
+    from app.backend.services.queue_manager import archive_terminal_fingerprint
+    archive_terminal_fingerprint(job, "cancelled")
     release_job_analysis_quota(db, job)
     db.commit()
     

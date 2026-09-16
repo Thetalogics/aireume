@@ -122,3 +122,51 @@ def decrypt_and_upgrade(conn, field_name: str, db=None) -> Optional[str]:
         except Exception:
             logger.warning("Lazy re-encrypt of ATS secret field failed")
     return plain
+
+
+_ATS_SECRET_FIELDS = ("api_key", "api_secret", "webhook_secret")
+
+
+def backfill_ats_secrets(db=None) -> dict:
+    """Encrypt legacy plaintext ATS secrets. Idempotent; never logs secret values."""
+    owns = db is None
+    if owns:
+        from app.backend.db.database import SessionLocal
+        db = SessionLocal()
+    encrypted = 0
+    skipped = 0
+    try:
+        from app.backend.models.db_models import ATSConnection
+
+        keys = _current_keys()
+        if 1 not in keys:
+            logger.warning("ATS secret backfill skipped: INTEGRATION_MASTER_KEY unavailable")
+            return {"encrypted": 0, "skipped": 0, "reason": "no_master_key"}
+
+        rows = db.query(ATSConnection).all()
+        for conn in rows:
+            for field in _ATS_SECRET_FIELDS:
+                stored = getattr(conn, field, None)
+                if stored is None or stored == "":
+                    skipped += 1
+                    continue
+                if str(stored).startswith("enc:v"):
+                    skipped += 1
+                    continue
+                setattr(conn, field, encrypt_secret(stored))
+                encrypted += 1
+        if encrypted:
+            db.commit()
+        return {"encrypted": encrypted, "skipped": skipped}
+    except Exception:
+        if db is not None:
+            db.rollback()
+        logger.warning("ATS secret backfill skipped due to encryption/session error")
+        return {"encrypted": 0, "skipped": skipped, "reason": "error"}
+    finally:
+        if owns and db is not None:
+            db.close()
+
+
+if __name__ == "__main__":
+    print(backfill_ats_secrets())

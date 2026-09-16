@@ -1839,7 +1839,7 @@ class DeadLetterJob(Base):
     __tablename__ = 'dead_letter_jobs'
 
     id = Column(Uuid(as_uuid=True), primary_key=True, default=_uuid.uuid4)
-    original_job_id = Column(Uuid(as_uuid=True), nullable=False, index=True)
+    original_job_id = Column(Uuid(as_uuid=True), nullable=False, unique=True, index=True)
     tenant_id = Column(Integer, nullable=False, index=True)
     candidate_id = Column(Integer, nullable=True)
     user_id = Column(Integer, nullable=True)

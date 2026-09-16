@@ -95,16 +95,12 @@ async def complete_queue_job(job_id, db: Session) -> bool:
     """
     from datetime import datetime, timezone
 
-    from app.backend.models.db_models import AnalysisArtifact, AnalysisJob, AnalysisResult, Candidate
+    from app.backend.models.db_models import AnalysisArtifact, AnalysisJob, AnalysisResult
     from app.backend.routes.analyze import (
-        _get_or_create_candidate,
-        _link_to_requisition,
         _process_single_resume,
         _spawn_background_narrative,
-        _store_candidate_profile,
-        _upsert_screening_result,
     )
-    from app.backend.services.screening_command import command_from_dict
+    from app.backend.services.screening_command import command_from_dict, execute_screening
     import time
 
     job = db.query(AnalysisJob).filter(AnalysisJob.id == job_id).first()
@@ -120,8 +116,6 @@ async def complete_queue_job(job_id, db: Session) -> bool:
     cmd = command_from_dict(job_config["command"]) if job_config.get("command") else None
     scoring_weights = (cmd.scoring_weights if cmd else None) or job_config.get("scoring_weights")
     skill_overrides = (cmd.skill_overrides if cmd else None) or job_config.get("skill_overrides")
-    template_id = (cmd.role_template_id if cmd else None) or job_config.get("template_id")
-    requisition_id = cmd.requisition_id if cmd else None
     filename = job_config.get("filename") or artifact.resume_filename
 
     cache = artifact.parsed_resume_cache or {}
@@ -153,54 +147,40 @@ async def complete_queue_job(job_id, db: Session) -> bool:
 
     file_hash = cache.get("file_hash") or hashlib.md5(content).hexdigest()
 
-    candidate_id, _ = _get_or_create_candidate(
-        db,
-        parsed_data,
-        job.tenant_id,
-        file_hash=file_hash,
-        gap_analysis=gap_analysis,
-        profile_quality=raw.get("analysis_quality", "medium"),
-        file_content=content,
-        filename=filename,
-        resume_text=parsed_data.get("raw_text", ""),
-    )
-
-    cand = db.get(Candidate, candidate_id)
-    if cand:
-        _store_candidate_profile(
-            cand,
-            parsed_data,
-            gap_analysis,
-            file_hash,
-            raw.get("analysis_quality", "medium"),
-            file_content=content,
-            filename=filename,
-            db=db,
+    if cmd is None:
+        from app.backend.services.screening_command import build_screening_command
+        cmd = build_screening_command(
+            db,
+            tenant_id=job.tenant_id,
+            user_id=job.user_id or 0,
+            resume_hash=job.resume_hash,
+            jd_hash=job.jd_hash,
+            candidate_id=job.candidate_id,
+            artifact_id=str(job.artifact_id) if job.artifact_id else None,
+            scoring_weights=scoring_weights,
+            skill_overrides=skill_overrides,
+            role_template_id=job_config.get("template_id"),
         )
 
-    db_result = _upsert_screening_result(
+    db_result = execute_screening(
         db,
-        tenant_id=job.tenant_id,
-        candidate_id=candidate_id,
-        role_template_id=template_id,
-        resume_text=parsed_data.get("raw_text", ""),
+        cmd,
+        resume_text=parsed_data.get("raw_text", artifact.resume_text or ""),
         jd_text=artifact.jd_text,
-        parsed_data=json.dumps(parsed_data, default=_json_default),
-        analysis_result=json.dumps(raw, default=_json_default),
-        narrative_status="pending",
+        parsed_data=parsed_data,
         pipeline_result=raw,
-        requisition_id=requisition_id,
+        file_hash=file_hash,
+        filename=filename,
+        file_content=content,
+        gap_analysis=gap_analysis,
     )
-
     screening_result_id = db_result.id
-    if requisition_id and job.user_id:
-        _link_to_requisition(db, requisition_id, job.tenant_id, candidate_id, screening_result_id, job.user_id)
     _spawn_background_narrative(raw, screening_result_id, job.tenant_id)
 
     job_config["screening_result_id"] = screening_result_id
     job_config["filename"] = filename
     job.job_config = job_config
-    job.candidate_id = candidate_id
+    job.candidate_id = db_result.candidate_id
 
     existing_result = db.query(AnalysisResult).filter(AnalysisResult.job_id == job.id).first()
     if existing_result:
@@ -216,7 +196,7 @@ async def complete_queue_job(job_id, db: Session) -> bool:
     analysis_result = AnalysisResult(
         job_id=job.id,
         tenant_id=job.tenant_id,
-        candidate_id=candidate_id,
+        candidate_id=db_result.candidate_id,
         fit_score=raw.get("fit_score") or 0,
         final_recommendation=raw.get("final_recommendation") or "Pending",
         risk_level=raw.get("risk_level"),

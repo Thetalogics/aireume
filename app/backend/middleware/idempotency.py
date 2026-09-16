@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from datetime import datetime, timedelta, timezone
+from urllib.parse import parse_qsl, urlencode
 
 from jose import jwt
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -13,6 +14,15 @@ from starlette.responses import JSONResponse, Response
 
 _MUTATING = {"POST", "PUT", "PATCH", "DELETE"}
 _TTL_HOURS = 24
+
+
+def canonicalize_query(query: str) -> str:
+    raw = (query or "").lstrip("?")
+    if not raw:
+        return ""
+    pairs = parse_qsl(raw, keep_blank_values=True)
+    pairs.sort(key=lambda item: (item[0], item[1]))
+    return urlencode(pairs, doseq=True)
 
 
 def request_fingerprint(method: str, path: str, query: str, content_type: str, body: bytes) -> str:
@@ -31,7 +41,7 @@ def request_fingerprint(method: str, path: str, query: str, content_type: str, b
         [
             (method or "").encode("utf-8"),
             (path or "").encode("utf-8"),
-            (query or "").encode("utf-8"),
+            canonicalize_query(query).encode("utf-8"),
             (content_type or "").encode("utf-8"),
             hashed_body,
         ]

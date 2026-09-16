@@ -11,7 +11,7 @@ from typing import Dict
 
 from sqlalchemy.orm import Session
 
-from app.backend.models.db_models import Tenant, SubscriptionPlan
+from app.backend.models.db_models import Tenant
 
 # ─── Plan limits fallback (used when no SubscriptionPlan row exists) ──────────
 
@@ -45,6 +45,8 @@ def check_quota(tenant_id: int, db: Session) -> Dict:
     The *used* count is ``tenant.analyses_count_this_month``, the same
     counter the subscription dashboard and analyze increment path use.
     """
+    from app.backend.services.plan_entitlement_service import get_tenant_plan, parse_plan_limits
+
     tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
     if not tenant:
         return {
@@ -55,23 +57,13 @@ def check_quota(tenant_id: int, db: Session) -> Dict:
             "plan": "starter",
         }
 
-    # Determine plan name and limit
     plan_name = "starter"
     analyses_limit = PLAN_LIMITS["starter"]
-
-    if tenant.plan_id:
-        plan = db.query(SubscriptionPlan).filter(
-            SubscriptionPlan.id == tenant.plan_id
-        ).first()
-        if plan:
-            plan_name = plan.name
-            # Try to read from the plan's JSON limits first
-            try:
-                import json as _json
-                limits = _json.loads(plan.limits) if plan.limits else {}
-                analyses_limit = limits.get("analyses_per_month", PLAN_LIMITS.get(plan_name, PLAN_LIMITS["starter"]))
-            except Exception:
-                analyses_limit = PLAN_LIMITS.get(plan_name, PLAN_LIMITS["starter"])
+    plan = get_tenant_plan(db, tenant_id)
+    if plan:
+        plan_name = plan.name
+        limits = parse_plan_limits(plan)
+        analyses_limit = limits.get("analyses_per_month", PLAN_LIMITS.get(plan_name, PLAN_LIMITS["starter"]))
 
     used = tenant.analyses_count_this_month or 0
 
