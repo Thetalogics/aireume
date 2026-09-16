@@ -162,7 +162,7 @@ async def complete_queue_job(job_id, db: Session) -> bool:
             role_template_id=job_config.get("template_id"),
         )
 
-    db_result = execute_screening(
+    db_result, _ = execute_screening(
         db,
         cmd,
         resume_text=parsed_data.get("raw_text", artifact.resume_text or ""),

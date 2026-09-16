@@ -1,6 +1,7 @@
 # app/backend/tests/test_audit_phase_c_screening.py
 import asyncio
 import inspect
+import json
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -1044,31 +1045,40 @@ def test_idempotency_tenant_isolation_http(db, monkeypatch):
     assert hits["a"] == 2
 
 
+def test_analyze_endpoint_persists_via_execute_screening():
+    import inspect
+    from app.backend.routes import analyze as analyze_mod
+
+    endpoint_src = inspect.getsource(analyze_mod.analyze_endpoint)
+    helper_src = inspect.getsource(analyze_mod._persist_via_screening_command)
+    assert "_persist_via_screening_command(" in endpoint_src
+    assert "_upsert_screening_result(" not in endpoint_src
+    assert "execute_screening(" in helper_src
+
+
 @pytest.mark.asyncio
-async def test_sync_and_queue_screening_command_parity(db, seed_subscription_plans, monkeypatch):
-    tenant = Tenant(name="c-parity", slug="c-parity")
-    db.add(tenant)
-    db.commit()
-    db.refresh(tenant)
-    user = User(
-        tenant_id=tenant.id,
-        email="parity@test.com",
-        hashed_password="x",
-        role="admin",
-        is_active=True,
-        email_verified=True,
-    )
-    db.add(user)
-    db.commit()
-    db.refresh(user)
+async def test_sync_analyze_http_and_queue_screening_command_parity(
+    auth_client, db, seed_subscription_plans, monkeypatch, mock_hybrid_pipeline
+):
+    from io import BytesIO
+
+    from app.backend.services import screening_command as sc_mod
+
+    tenant = db.query(Tenant).filter(Tenant.slug == "testcorp").one()
+    user = db.query(User).filter(User.email == "admin@testcorp.com").one()
     req = Requisition(
         tenant_id=tenant.id,
         title="Eng",
-        jd_text="Need python",
+        jd_text="Need python engineers who can ship production services with tests.",
         status="open",
         current_criteria_version=4,
         created_by=user.id,
         legacy_role_template_id=None,
+        intake_json=json.dumps({
+            "must_haves": ["python"],
+            "screen_focus_topics": ["ownership"],
+        }),
+        intake_status="ready",
     )
     db.add(req)
     db.commit()
@@ -1076,60 +1086,87 @@ async def test_sync_and_queue_screening_command_parity(db, seed_subscription_pla
 
     parsed = {
         "raw_text": "Alice engineer python",
-        "contact_info": {"name": "Alice Parity", "email": "alice-parity@test.com"},
+        "contact_info": {"name": "Alice Sync", "email": "alice-sync-parity@test.com"},
         "skills": ["python"],
+        "education": [],
+        "work_experience": [],
     }
-    pipeline = {"fit_score": 81, "final_recommendation": "Strong Hire", "risk_level": "low"}
 
-    async def _fake_process(*args, **kwargs):
-        return dict(pipeline)
+    async def _fake_parse(*args, **kwargs):
+        return parsed, None
 
-    monkeypatch.setattr("app.backend.routes.analyze._process_single_resume", _fake_process)
+    persist_calls = {"n": 0}
+    real_execute = sc_mod.execute_screening
+
+    def _wrapped_execute(*args, **kwargs):
+        persist_calls["n"] += 1
+        return real_execute(*args, **kwargs)
+
+    monkeypatch.setattr("app.backend.routes.analyze._parse_resume_with_doc_conversion", _fake_parse)
     monkeypatch.setattr("app.backend.routes.analyze._spawn_background_narrative", lambda *a, **k: None)
+    monkeypatch.setattr("app.backend.routes.analyze.execute_screening", _wrapped_execute)
+    monkeypatch.setattr(sc_mod, "execute_screening", _wrapped_execute)
 
-    cmd = build_screening_command(
-        db,
-        tenant_id=tenant.id,
-        user_id=user.id,
-        resume_hash="parity-r",
-        jd_hash="parity-j",
-        requisition_id=req.id,
-        scoring_weights={"skills": 0.7},
-        skill_overrides={"python": True},
+    jd = (
+        "We are looking for an experienced software developer to join our growing team. "
+        "The ideal candidate will have strong skills in Python programming, web development, "
+        "and database design. Requirements include 3+ years of professional experience with "
+        "Python frameworks such as FastAPI or Django, familiarity with SQL and NoSQL databases, "
+        "experience with cloud platforms like AWS or Azure, strong understanding of software "
+        "design patterns, excellent problem-solving skills, and the ability to work collaboratively "
+        "in an agile environment. The role involves building scalable web applications, "
+        "integrating with third-party APIs, writing unit tests, and mentoring junior developers."
     )
-    sync_result = execute_screening(
-        db,
-        cmd,
-        resume_text=parsed["raw_text"],
-        jd_text="Need python",
-        parsed_data=parsed,
-        pipeline_result=pipeline,
-        file_hash="parity-file",
-        filename="a.pdf",
+    resp = auth_client.post(
+        "/api/analyze",
+        files={
+            "resume": (
+                "a.docx",
+                BytesIO(b"PK\x03\x04" + b"\x00" * 20),
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        },
+        data={
+            "job_description": jd,
+            "requisition_id": str(req.id),
+        },
     )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert persist_calls["n"] >= 1
+    sync_id = body["result_id"]
+    sync_result = db.query(ScreeningResult).filter(ScreeningResult.id == sync_id).one()
     assert sync_result.requisition_id == req.id
-    assert sync_result.candidate_id is not None
-    assert sync_result.role_template_id == cmd.role_template_id
     rc_sync = db.query(RequisitionCandidate).filter(
         RequisitionCandidate.requisition_id == req.id,
         RequisitionCandidate.candidate_id == sync_result.candidate_id,
     ).one()
     assert rc_sync.screening_result_id == sync_result.id
 
+    async def _fake_process(*args, **kwargs):
+        raw = dict(mock_hybrid_pipeline.return_value)
+        raw["_parsed_data"] = {
+            "raw_text": "Bob engineer python",
+            "contact_info": {"name": "Bob Queue", "email": "bob-queue-parity@test.com"},
+            "skills": ["python"],
+        }
+        raw["_gap_analysis"] = {}
+        return raw
+
+    monkeypatch.setattr("app.backend.routes.analyze._process_single_resume", _fake_process)
+
     mgr = get_queue_manager()
     job_id = await mgr.enqueue_job(
         tenant_id=tenant.id,
         resume_text="Bob engineer python",
         resume_filename="b.pdf",
-        jd_text="Need python",
+        jd_text=jd,
         user_id=user.id,
         requisition_id=req.id,
-        scoring_weights={"skills": 0.7},
-        skill_overrides={"python": True},
         parsed_resume_cache={
             "parsed_data": {
                 "raw_text": "Bob engineer python",
-                "contact_info": {"name": "Bob Parity", "email": "bob-parity@test.com"},
+                "contact_info": {"name": "Bob Queue", "email": "bob-queue-parity@test.com"},
                 "skills": ["python"],
             },
             "file_hash": "parity-bob",
@@ -1141,10 +1178,16 @@ async def test_sync_and_queue_screening_command_parity(db, seed_subscription_pla
     queue_result = db.query(ScreeningResult).filter(ScreeningResult.candidate_id == job.candidate_id).one()
     assert queue_result.requisition_id == req.id
     qcmd = command_from_dict(job.job_config["command"])
-    assert qcmd.criteria_version == cmd.criteria_version
-    assert qcmd.scoring_weights == cmd.scoring_weights
-    assert queue_result.deterministic_score == 81
-    assert sync_result.deterministic_score == 81
+    sync_cmd = build_screening_command(
+        db,
+        tenant_id=tenant.id,
+        user_id=user.id,
+        resume_hash="ignored",
+        jd_hash="ignored",
+        requisition_id=req.id,
+    )
+    assert qcmd.criteria_version == sync_cmd.criteria_version
+    assert queue_result.deterministic_score == sync_result.deterministic_score
     rc_q = db.query(RequisitionCandidate).filter(
         RequisitionCandidate.requisition_id == req.id,
         RequisitionCandidate.candidate_id == queue_result.candidate_id,

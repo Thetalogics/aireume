@@ -72,6 +72,7 @@ from app.backend.services.outcome_service import compute_skill_patterns
 from app.backend.services.team_service import get_team_profile
 from app.backend.services.skill_trend_service import get_skill_trends
 
+from app.backend.services.screening_command import build_screening_command, execute_screening
 from app.backend.routes.analyze_helpers import (
     ALLOWED_EXTENSIONS,
     MAX_BATCH_SIZE,
@@ -126,6 +127,56 @@ from app.backend.routes.analyze_helpers import (
 
 router = APIRouter(prefix="/api", tags=["analysis"])
 log    = logging.getLogger("aria.analysis")
+
+
+def _persist_via_screening_command(
+    db,
+    *,
+    tenant_id: int,
+    user_id: int,
+    resume_text: str,
+    jd_text: str,
+    parsed_data: dict,
+    pipeline_result: dict | None,
+    filename: str,
+    file_hash: str | None = None,
+    file_content: bytes | None = None,
+    gap_analysis: dict | None = None,
+    requisition_id: int | None = None,
+    role_template_id: int | None = None,
+    scoring_weights: dict | None = None,
+    skill_overrides: dict | None = None,
+    action: str | None = None,
+    converted_pdf_content: bytes | None = None,
+    candidate_id: int | None = None,
+):
+    cmd = build_screening_command(
+        db,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        resume_hash=hashlib.sha256((resume_text or "").encode("utf-8")).hexdigest(),
+        jd_hash=hashlib.sha256((jd_text or "").encode("utf-8")).hexdigest(),
+        candidate_id=candidate_id,
+        requisition_id=requisition_id,
+        role_template_id=role_template_id,
+        scoring_weights=scoring_weights,
+        skill_overrides=skill_overrides,
+    )
+    db_result, is_dup = execute_screening(
+        db,
+        cmd,
+        resume_text=resume_text or "",
+        jd_text=jd_text or "",
+        parsed_data=parsed_data or {},
+        pipeline_result=pipeline_result or {},
+        file_hash=file_hash,
+        filename=filename,
+        file_content=file_content,
+        gap_analysis=gap_analysis,
+        action=action,
+        converted_pdf_content=converted_pdf_content,
+    )
+    return db_result, is_dup
 
 
 
@@ -534,18 +585,25 @@ async def analyze_endpoint(
                 db, current_user.tenant_id, jd_analysis, team_id=team_id,
             )
 
-            # Create or update result record for background LLM
-            db_result = _upsert_screening_result(
-                db,
+            persist_kw = dict(
+                db=db,
                 tenant_id=current_user.tenant_id,
-                candidate_id=existing.id,
-                role_template_id=template_id,
+                user_id=current_user.id,
                 resume_text=existing.raw_resume_text,
                 jd_text=job_description,
-                parsed_data=json.dumps(parsed_data, default=_json_default),
-                analysis_result="{}",
+                parsed_data=parsed_data,
+                filename=resume.filename,
+                file_hash=file_hash,
+                file_content=content,
+                gap_analysis=gap_analysis,
                 requisition_id=requisition_id,
+                role_template_id=template_id,
+                scoring_weights=weights,
+                skill_overrides=parsed_skill_overrides,
+                action=action,
+                candidate_id=existing.id,
             )
+            db_result, _ = _persist_via_screening_command(pipeline_result={}, **persist_kw)
 
             result = await run_hybrid_pipeline(
                 resume_text=existing.raw_resume_text,
@@ -559,11 +617,7 @@ async def analyze_endpoint(
                 phase3_context=phase3_context,
                 db_session=db,
             )
-            
-            # Update result with analysis
-            db_result.analysis_result = json.dumps(result, default=_json_default)
-            _populate_denormalized_columns(db_result, result)
-            db.commit()
+            db_result, _ = _persist_via_screening_command(pipeline_result=result, **persist_kw)
             
             result["result_id"]      = db_result.id
             result["analysis_id"]    = db_result.id   # Add this line
@@ -619,30 +673,26 @@ async def analyze_endpoint(
         db, current_user.tenant_id, jd_analysis, team_id=team_id,
     )
 
-    # Create candidate and result BEFORE pipeline (for background LLM)
-    candidate_id, is_dup = _get_or_create_candidate(
-        db, parsed_data, current_user.tenant_id,
-        file_hash=file_hash,
-        gap_analysis=gap_analysis,
-        profile_quality="medium",  # Will be updated
-        action=action,
-        file_content=content,
-        filename=resume.filename,
-        converted_pdf_content=pdf_bytes,
-        resume_text=parsed_data.get("raw_text", ""),
-    )
-
-    db_result = _upsert_screening_result(
-        db,
+    persist_kw = dict(
+        db=db,
         tenant_id=current_user.tenant_id,
-        candidate_id=candidate_id,
-        role_template_id=template_id,
+        user_id=current_user.id,
         resume_text=parsed_data.get("raw_text", ""),
         jd_text=job_description,
-        parsed_data=json.dumps(parsed_data, default=_json_default),
-        analysis_result="{}",
+        parsed_data=parsed_data,
+        filename=resume.filename,
+        file_hash=file_hash,
+        file_content=content,
+        gap_analysis=gap_analysis,
         requisition_id=requisition_id,
+        role_template_id=template_id,
+        scoring_weights=weights,
+        skill_overrides=parsed_skill_overrides,
+        action=action,
+        converted_pdf_content=pdf_bytes,
     )
+    db_result, is_dup = _persist_via_screening_command(pipeline_result={}, **persist_kw)
+    candidate_id = db_result.candidate_id
 
     # Run pipeline with background LLM
     result = await run_hybrid_pipeline(
@@ -657,23 +707,9 @@ async def analyze_endpoint(
         phase3_context=phase3_context,
         db_session=db,
     )
-
-    # Update result in DB
-    db_result.analysis_result = json.dumps(result, default=_json_default)
-    _populate_denormalized_columns(db_result, result)
-    
-    # Update candidate profile quality
-    _store_candidate_profile(
-        db.get(Candidate, candidate_id) or db.query(Candidate).filter(Candidate.id == candidate_id).first(),
-        parsed_data,
-        gap_analysis,
-        file_hash,
-        result.get("analysis_quality", "medium"),
-        file_content=content,
-        filename=resume.filename,
-        db=db,
+    db_result, is_dup = _persist_via_screening_command(
+        pipeline_result=result, candidate_id=candidate_id, **persist_kw
     )
-    db.commit()
 
     # Persist skill overrides to template after successful analysis
     _persist_skill_overrides_to_template(
@@ -924,34 +960,27 @@ async def analyze_stream_endpoint(
         db, tenant_id, jd_analysis, team_id=team_id,
     )
 
-    # Pre-create candidate and ScreeningResult BEFORE streaming
-    # This gives us an ID to pass to the background LLM task
-    candidate_id, is_dup = _get_or_create_candidate(
-        db, parsed_data, tenant_id,
-        file_hash=file_hash,
-        gap_analysis=gap_analysis,
-        profile_quality="medium",  # Will be updated after pipeline
-        action=action,
-        file_content=content,
-        filename=resume.filename,
-        converted_pdf_content=pdf_bytes,
-        resume_text=parsed_data.get("raw_text", ""),
-    )
-    
-    db_result = _upsert_screening_result(
-        db,
+    db_result, is_dup = _persist_via_screening_command(
+        db=db,
         tenant_id=tenant_id,
-        candidate_id=candidate_id,
-        role_template_id=template_id,
+        user_id=current_user.id,
         resume_text=parsed_data.get("raw_text", ""),
         jd_text=job_description,
-        parsed_data=json.dumps(parsed_data, default=_json_default),
-        analysis_result="{}",
+        parsed_data=parsed_data,
+        pipeline_result={},
+        filename=resume.filename,
+        file_hash=file_hash,
+        file_content=content,
+        gap_analysis=gap_analysis,
         requisition_id=requisition_id,
+        role_template_id=template_id,
+        scoring_weights=weights,
+        skill_overrides=parsed_skill_overrides,
+        action=action,
+        converted_pdf_content=pdf_bytes,
     )
+    candidate_id = db_result.candidate_id
     screening_result_id = db_result.id
-    if requisition_id:
-        _link_to_requisition(db, requisition_id, tenant_id, candidate_id, screening_result_id, current_user.id)
 
     # Cancellation token: set when client disconnects so pipeline can break early
     cancel_event = asyncio.Event()
@@ -1411,27 +1440,21 @@ async def batch_analyze_chunked_endpoint(
             gap_analysis = raw.pop("_gap_analysis", {})
             file_hash = hashlib.md5(content).hexdigest()
 
-            candidate_id, _ = _get_or_create_candidate(
-                db, parsed_data, current_user.tenant_id,
-                file_hash=file_hash,
-                gap_analysis=gap_analysis,
-                profile_quality=raw.get("analysis_quality", "medium"),
-                file_content=content,
-                filename=filename,
-                resume_text=parsed_data.get("raw_text", ""),
-            )
-
-            db_result = _upsert_screening_result(
-                db,
+            db_result, _ = _persist_via_screening_command(
+                db=db,
                 tenant_id=current_user.tenant_id,
-                candidate_id=candidate_id,
-                role_template_id=template_id,
+                user_id=current_user.id,
                 resume_text=parsed_data.get("raw_text", ""),
                 jd_text=job_description,
-                parsed_data=json.dumps(parsed_data),
-                analysis_result=json.dumps(raw),
-                narrative_status="pending",
+                parsed_data=parsed_data,
                 pipeline_result=raw,
+                filename=filename,
+                file_hash=file_hash,
+                file_content=content,
+                gap_analysis=gap_analysis,
+                requisition_id=requisition_id,
+                role_template_id=template_id,
+                scoring_weights=weights,
             )
             raw["result_id"] = db_result.id
 
@@ -1799,46 +1822,25 @@ async def batch_analyze_stream_endpoint(
                 gap_analysis = raw.pop("_gap_analysis", {})
                 file_hash = hashlib.md5(content).hexdigest()
 
-                candidate_id, _ = _get_or_create_candidate(
-                    save_db, parsed_data, tenant_id,
-                    file_hash=file_hash,
-                    gap_analysis=gap_analysis,
-                    profile_quality=raw.get("analysis_quality", "medium"),
-                    file_content=content,
-                    filename=filename,
-                    resume_text=parsed_data.get("raw_text", ""),
-                )
-
-                cand = save_db.get(Candidate, candidate_id)
-                if cand:
-                    _store_candidate_profile(
-                        cand, parsed_data, gap_analysis, file_hash,
-                        raw.get("analysis_quality", "medium"),
-                        file_content=content,
-                        filename=filename,
-                        db=save_db,
-                    )
-
-                db_result = _upsert_screening_result(
-                    save_db,
+                db_result, _ = _persist_via_screening_command(
+                    db=save_db,
                     tenant_id=tenant_id,
-                    candidate_id=candidate_id,
-                    role_template_id=_template_id,
+                    user_id=current_user.id,
                     resume_text=parsed_data.get("raw_text", ""),
                     jd_text=job_description,
-                    parsed_data=json.dumps(parsed_data, default=_json_default),
-                    analysis_result=json.dumps(raw, default=_json_default),
-                    narrative_status="pending",
+                    parsed_data=parsed_data,
                     pipeline_result=raw,
+                    filename=filename,
+                    file_hash=file_hash,
+                    file_content=content,
+                    gap_analysis=gap_analysis,
                     requisition_id=_requisition_id,
+                    role_template_id=_template_id,
+                    scoring_weights=parsed_weights,
+                    skill_overrides=parsed_skill_overrides,
                 )
-
+                candidate_id = db_result.candidate_id
                 screening_result_id = db_result.id
-                if _requisition_id:
-                    _link_to_requisition(
-                        save_db, _requisition_id, tenant_id, candidate_id,
-                        screening_result_id, current_user.id,
-                    )
 
                 # Spawn background LLM narrative generation
                 _spawn_background_narrative(raw, screening_result_id, tenant_id)
@@ -2031,37 +2033,25 @@ async def batch_analyze_endpoint(
         pdf_bytes    = raw.pop("_pdf_bytes", None)
         file_hash    = hashlib.md5(content).hexdigest()
 
-        candidate_id, _ = _get_or_create_candidate(
-            db, parsed_data, current_user.tenant_id,
-            file_hash=file_hash,
-            gap_analysis=gap_analysis,
-            profile_quality=raw.get("analysis_quality", "medium"),
-            file_content=content,
-            filename=filename,
-            converted_pdf_content=pdf_bytes,
-            resume_text=parsed_data.get("raw_text", ""),
-        )
-
-        db_result = _upsert_screening_result(
-            db,
+        db_result, _ = _persist_via_screening_command(
+            db=db,
             tenant_id=current_user.tenant_id,
-            candidate_id=candidate_id,
-            role_template_id=template_id,
-            requisition_id=requisition_id,
+            user_id=current_user.id,
             resume_text=parsed_data.get("raw_text", ""),
             jd_text=job_description,
-            parsed_data=json.dumps(parsed_data),
-            analysis_result=json.dumps(raw),
-            narrative_status="pending",
+            parsed_data=parsed_data,
             pipeline_result=raw,
+            filename=filename,
+            file_hash=file_hash,
+            file_content=content,
+            gap_analysis=gap_analysis,
+            requisition_id=requisition_id,
+            role_template_id=template_id,
+            scoring_weights=weights,
+            converted_pdf_content=pdf_bytes,
         )
         raw["result_id"] = db_result.id
-
-        if requisition_id:
-            _link_to_requisition(
-                db, requisition_id, current_user.tenant_id,
-                candidate_id, db_result.id, current_user.id,
-            )
+        candidate_id = db_result.candidate_id
 
         # Spawn background LLM narrative generation
         _spawn_background_narrative(raw, db_result.id, current_user.tenant_id)

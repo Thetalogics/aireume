@@ -146,6 +146,8 @@ def execute_screening(
     filename: str = "resume.pdf",
     file_content: Optional[bytes] = None,
     gap_analysis: Optional[dict] = None,
+    action: Optional[str] = None,
+    converted_pdf_content: Optional[bytes] = None,
 ):
     import json
 
@@ -160,17 +162,27 @@ def execute_screening(
     parsed = parsed_data or {}
     gaps = gap_analysis if gap_analysis is not None else {}
     content = file_content if file_content is not None else (resume_text or "").encode("utf-8")
-    candidate_id, _ = _get_or_create_candidate(
-        db,
-        parsed,
-        cmd.tenant_id,
-        file_hash=file_hash,
-        gap_analysis=gaps,
-        profile_quality=pipeline_result.get("analysis_quality", "medium") if pipeline_result else "medium",
-        file_content=content,
-        filename=filename,
-        resume_text=parsed.get("raw_text", resume_text),
-    )
+    is_dup = False
+    if cmd.candidate_id:
+        existing = db.get(Candidate, cmd.candidate_id)
+        if existing is None or existing.tenant_id != cmd.tenant_id:
+            raise CrossTenantRequisitionError("Candidate not found")
+        candidate_id = existing.id
+        is_dup = True
+    else:
+        candidate_id, is_dup = _get_or_create_candidate(
+            db,
+            parsed,
+            cmd.tenant_id,
+            file_hash=file_hash,
+            gap_analysis=gaps,
+            profile_quality=pipeline_result.get("analysis_quality", "medium") if pipeline_result else "medium",
+            action=action,
+            file_content=content,
+            filename=filename,
+            converted_pdf_content=converted_pdf_content,
+            resume_text=parsed.get("raw_text", resume_text),
+        )
     cand = db.get(Candidate, candidate_id)
     if cand:
         _store_candidate_profile(
@@ -199,4 +211,4 @@ def execute_screening(
     if cmd.requisition_id and cmd.user_id:
         _link_to_requisition(db, cmd.requisition_id, cmd.tenant_id, candidate_id, db_result.id, cmd.user_id)
     cmd.candidate_id = candidate_id
-    return db_result
+    return db_result, is_dup
