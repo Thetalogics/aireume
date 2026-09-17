@@ -765,12 +765,26 @@ async def health_check():
 
 
 @app.get("/api/version")
-async def app_version():
+def app_version():
     """Build id for deploy refresh detection (compare with frontend __APP_BUILD_ID__)."""
     return {
         "build_id": os.getenv("BUILD_ID") or os.getenv("GIT_SHA") or "dev",
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
+
+
+@app.get("/api/internal/async-probe")
+async def async_probe():
+    await asyncio.sleep(0.01)
+    return {"ok": True}
+
+
+@app.get("/api/internal/sync-sleep")
+def sync_sleep():
+    if os.getenv("TESTING", "").lower() not in ("true", "1", "yes"):
+        return JSONResponse(status_code=404, content={"detail": "Not found"})
+    time.sleep(0.35)
+    return {"ok": True}
 
 
 @app.get("/api/health")

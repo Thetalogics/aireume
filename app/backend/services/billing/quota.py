@@ -78,8 +78,12 @@ def check_quota(tenant_id: int, db: Session) -> Dict:
         }
 
     remaining = max(analyses_limit - used, 0)
+    allowed = used < analyses_limit
+    if not allowed:
+        from app.backend.services.metrics import QUOTA_REJECTED_TOTAL
+        QUOTA_REJECTED_TOTAL.labels(surface="analyze").inc()
     return {
-        "allowed": used < analyses_limit,
+        "allowed": allowed,
         "remaining": remaining,
         "limit": analyses_limit,
         "used": used,

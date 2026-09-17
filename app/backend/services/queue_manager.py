@@ -311,6 +311,14 @@ class QueueManager:
             db.commit()
             
             logger.info(f"Claimed job: {job.id}, priority={job.priority}, retry_count={job.retry_count}")
+            try:
+                from app.backend.services.metrics import QUEUE_WAIT_SECONDS
+                if job.queued_at and job.started_at:
+                    wait = (job.started_at - job.queued_at).total_seconds()
+                    if wait >= 0:
+                        QUEUE_WAIT_SECONDS.observe(wait)
+            except Exception:
+                pass
         
         return job
     
@@ -397,6 +405,11 @@ class QueueManager:
             db.commit()
             
             self.jobs_processed += 1
+            try:
+                from app.backend.services.metrics import QUEUE_PROCESSING_SECONDS
+                QUEUE_PROCESSING_SECONDS.observe(max(total_time_ms / 1000.0, 0))
+            except Exception:
+                pass
             logger.info(f"Job completed: {job.id}, time={total_time_ms}ms")
             return True
             
@@ -418,6 +431,11 @@ class QueueManager:
                 job.error_type = type(e).__name__
                 
                 self.jobs_retried += 1
+                try:
+                    from app.backend.services.metrics import QUEUE_RETRY_TOTAL
+                    QUEUE_RETRY_TOTAL.labels(reason="job_error").inc()
+                except Exception:
+                    pass
                 logger.info(f"Job will retry: {job.id}, attempt={job.retry_count}/{job.max_retries}, next_retry={next_retry}")
             else:
                 # Max retries exceeded — move to dead letter queue

@@ -55,6 +55,58 @@ def get_or_create_tenant_settings(db: Session, tenant_id: int) -> TenantRequisit
     return row
 
 
+def get_tenant_settings_readonly(db: Session, tenant_id: int) -> TenantRequisitionSettings:
+    """Return persisted settings or in-memory defaults. GET-safe (no INSERT)."""
+    row = db.get(TenantRequisitionSettings, tenant_id)
+    if row:
+        return row
+    return TenantRequisitionSettings(
+        tenant_id=tenant_id,
+        intake_gate_mode="warn",
+        screening_mode="requisition_required",
+        hm_pipeline_permission="view_only",
+    )
+
+
+def load_requisition_list_extras(db: Session, reqs: list[Requisition]) -> dict:
+    """Batch candidate counts, HM ids, and user emails for list serialization."""
+    ids = [r.id for r in reqs]
+    counts: dict[int, int] = {}
+    hm_map: dict[int, list[int]] = {i: [] for i in ids}
+    emails: dict[int, str] = {}
+    if not ids:
+        return {"counts": counts, "hm_map": hm_map, "emails": emails}
+    count_rows = (
+        db.query(RequisitionCandidate.requisition_id, func.count(RequisitionCandidate.id))
+        .filter(RequisitionCandidate.requisition_id.in_(ids))
+        .group_by(RequisitionCandidate.requisition_id)
+        .all()
+    )
+    counts = {rid: int(n) for rid, n in count_rows}
+    hm_rows = (
+        db.query(RequisitionHiringManager)
+        .filter(RequisitionHiringManager.requisition_id.in_(ids))
+        .all()
+    )
+    user_ids: set[int] = set()
+    for r in reqs:
+        for uid in (
+            r.primary_hiring_manager_id,
+            r.hm_requested_by,
+            r.assigned_recruiter_id,
+            r.opened_on_behalf_of_hm_id,
+        ):
+            if uid:
+                user_ids.add(uid)
+    for row in hm_rows:
+        hm_map.setdefault(row.requisition_id, []).append(row.user_id)
+        user_ids.add(row.user_id)
+    if user_ids:
+        for uid, email in db.query(User.id, User.email).filter(User.id.in_(user_ids)).all():
+            emails[uid] = email
+    return {"counts": counts, "hm_map": hm_map, "emails": emails}
+
+
 DEFAULT_ROUTING_POLICY = {
     "submit_to_hm_min_score": 80,
     "ai_interview_min_score": 65,
@@ -608,32 +660,30 @@ def requisition_to_dict(
     *,
     candidate_count: int = 0,
     gate_warning: str | None = None,
+    hiring_manager_ids: list[int] | None = None,
+    email_map: dict[int, str] | None = None,
 ) -> dict[str, Any]:
-    hm_ids = [
-        row.user_id
-        for row in db.query(RequisitionHiringManager)
-        .filter(RequisitionHiringManager.requisition_id == req.id)
-        .all()
-    ]
-    primary_email = None
-    if req.primary_hiring_manager_id:
-        u = db.get(User, req.primary_hiring_manager_id)
-        primary_email = u.email if u else None
+    if hiring_manager_ids is None:
+        hiring_manager_ids = [
+            row.user_id
+            for row in db.query(RequisitionHiringManager)
+            .filter(RequisitionHiringManager.requisition_id == req.id)
+            .all()
+        ]
+    emails = email_map or {}
 
-    requester_email = None
-    if req.hm_requested_by:
-        requester = db.get(User, req.hm_requested_by)
-        requester_email = requester.email if requester else None
+    def _email(user_id: int | None) -> str | None:
+        if not user_id:
+            return None
+        if user_id in emails:
+            return emails[user_id]
+        u = db.get(User, user_id)
+        return u.email if u else None
 
-    assigned_email = None
-    if req.assigned_recruiter_id:
-        ar = db.get(User, req.assigned_recruiter_id)
-        assigned_email = ar.email if ar else None
-
-    on_behalf_email = None
-    if req.opened_on_behalf_of_hm_id:
-        ob = db.get(User, req.opened_on_behalf_of_hm_id)
-        on_behalf_email = ob.email if ob else None
+    primary_email = _email(req.primary_hiring_manager_id)
+    requester_email = _email(req.hm_requested_by)
+    assigned_email = _email(req.assigned_recruiter_id)
+    on_behalf_email = _email(req.opened_on_behalf_of_hm_id)
 
     return {
         "id": req.id,
@@ -657,7 +707,7 @@ def requisition_to_dict(
         "must_ask_questions_json": _json_loads(req.must_ask_questions_json, []),
         "primary_hiring_manager_id": req.primary_hiring_manager_id,
         "primary_hiring_manager_email": primary_email,
-        "hiring_manager_ids": hm_ids,
+        "hiring_manager_ids": hiring_manager_ids,
         "hm_request_email": req.hm_request_email,
         "hm_request_status": req.hm_request_status,
         "hm_requested_by": req.hm_requested_by,

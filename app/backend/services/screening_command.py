@@ -155,6 +155,7 @@ def execute_screening(
     converted_pdf_content: Optional[bytes] = None,
 ):
     import json
+    import time
 
     from app.backend.models.db_models import Candidate
     from app.backend.routes.analyze import (
@@ -163,67 +164,76 @@ def execute_screening(
         _store_candidate_profile,
         _upsert_screening_result,
     )
+    from app.backend.services.metrics import SCREENING_DURATION_SECONDS, SCREENING_TOTAL
 
-    parsed = parsed_data or {}
-    gaps = gap_analysis if gap_analysis is not None else {}
-    content = file_content if file_content is not None else (resume_text or "").encode("utf-8")
-    is_dup = False
-    if cmd.candidate_id is not None:
-        existing = (
-            db.query(Candidate)
-            .filter(
-                Candidate.id == cmd.candidate_id,
-                Candidate.tenant_id == cmd.tenant_id,
+    started = time.perf_counter()
+    try:
+        parsed = parsed_data or {}
+        gaps = gap_analysis if gap_analysis is not None else {}
+        content = file_content if file_content is not None else (resume_text or "").encode("utf-8")
+        is_dup = False
+        if cmd.candidate_id is not None:
+            existing = (
+                db.query(Candidate)
+                .filter(
+                    Candidate.id == cmd.candidate_id,
+                    Candidate.tenant_id == cmd.tenant_id,
+                )
+                .first()
             )
-            .first()
-        )
-        if existing is None:
-            raise CandidateNotFoundError("Candidate not found")
-        candidate_id = existing.id
-        is_dup = action == "use_existing"
-    else:
-        candidate_id, is_dup = _get_or_create_candidate(
+            if existing is None:
+                raise CandidateNotFoundError("Candidate not found")
+            candidate_id = existing.id
+            is_dup = action == "use_existing"
+        else:
+            candidate_id, is_dup = _get_or_create_candidate(
+                db,
+                parsed,
+                cmd.tenant_id,
+                file_hash=file_hash,
+                gap_analysis=gaps,
+                profile_quality=pipeline_result.get("analysis_quality", "medium") if pipeline_result else "medium",
+                action=action,
+                file_content=content,
+                filename=filename,
+                converted_pdf_content=converted_pdf_content,
+                resume_text=parsed.get("raw_text", resume_text),
+            )
+        cand = db.get(Candidate, candidate_id)
+        if cand and action != "use_existing":
+            _store_candidate_profile(
+                cand,
+                parsed,
+                gaps,
+                file_hash,
+                pipeline_result.get("analysis_quality", "medium") if pipeline_result else "medium",
+                file_content=content,
+                filename=filename,
+                db=db,
+            )
+        db_result = _upsert_screening_result(
             db,
-            parsed,
-            cmd.tenant_id,
-            file_hash=file_hash,
-            gap_analysis=gaps,
-            profile_quality=pipeline_result.get("analysis_quality", "medium") if pipeline_result else "medium",
-            action=action,
-            file_content=content,
-            filename=filename,
-            converted_pdf_content=converted_pdf_content,
+            tenant_id=cmd.tenant_id,
+            candidate_id=candidate_id,
+            role_template_id=cmd.role_template_id,
             resume_text=parsed.get("raw_text", resume_text),
+            jd_text=jd_text,
+            parsed_data=json.dumps(parsed, default=str),
+            analysis_result=json.dumps(pipeline_result or {}, default=str),
+            narrative_status="pending",
+            pipeline_result=pipeline_result,
+            requisition_id=cmd.requisition_id,
         )
-    cand = db.get(Candidate, candidate_id)
-    if cand and action != "use_existing":
-        _store_candidate_profile(
-            cand,
-            parsed,
-            gaps,
-            file_hash,
-            pipeline_result.get("analysis_quality", "medium") if pipeline_result else "medium",
-            file_content=content,
-            filename=filename,
-            db=db,
-        )
-    db_result = _upsert_screening_result(
-        db,
-        tenant_id=cmd.tenant_id,
-        candidate_id=candidate_id,
-        role_template_id=cmd.role_template_id,
-        resume_text=parsed.get("raw_text", resume_text),
-        jd_text=jd_text,
-        parsed_data=json.dumps(parsed, default=str),
-        analysis_result=json.dumps(pipeline_result or {}, default=str),
-        narrative_status="pending",
-        pipeline_result=pipeline_result,
-        requisition_id=cmd.requisition_id,
-    )
-    if cmd.requisition_id and cmd.user_id:
-        _link_to_requisition(db, cmd.requisition_id, cmd.tenant_id, candidate_id, db_result.id, cmd.user_id)
-    cmd.candidate_id = candidate_id
-    return db_result, is_dup
+        if cmd.requisition_id and cmd.user_id:
+            _link_to_requisition(db, cmd.requisition_id, cmd.tenant_id, candidate_id, db_result.id, cmd.user_id)
+        cmd.candidate_id = candidate_id
+        SCREENING_TOTAL.labels(result="success").inc()
+        return db_result, is_dup
+    except Exception:
+        SCREENING_TOTAL.labels(result="failure").inc()
+        raise
+    finally:
+        SCREENING_DURATION_SECONDS.observe(time.perf_counter() - started)
 
 
 def apply_screening_pipeline_result(db, db_result, pipeline_result: dict | None):

@@ -103,11 +103,18 @@ def consume_saml_authn_request(request_id: str, tenant_id: int) -> bool:
     require_redis = _saml_state_requires_redis()
     key = _saml_request_key(request_id)
     stored = cache_consume_if_tenant(key, tenant_id, require_redis=require_redis)
-    if stored is None or stored is False:
-        return False
-    if not isinstance(stored, dict):
-        return False
-    return int(stored.get("tenant_id") or 0) == int(tenant_id)
+    ok = (
+        stored is not None
+        and stored is not False
+        and isinstance(stored, dict)
+        and int(stored.get("tenant_id") or 0) == int(tenant_id)
+    )
+    try:
+        from app.backend.services.metrics import SAML_AUTH_TOTAL
+        SAML_AUTH_TOTAL.labels(outcome="success" if ok else "failure").inc()
+    except Exception:
+        pass
+    return ok
 
 
 def _idp_cert_body(pem_str: str) -> str:

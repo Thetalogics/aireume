@@ -3,27 +3,23 @@ import path from 'path';
 
 const authFile = path.join(__dirname, '.auth/user.json');
 
-// Credentials are overridable via env so this file needn't hardcode secrets.
-const E2E_WORKSPACE = process.env.E2E_WORKSPACE || 'thetalogics';
-const E2E_EMAIL = process.env.E2E_EMAIL || 'revanth.a@thetalogics.com';
-const E2E_PASSWORD = process.env.E2E_PASSWORD || 'Admin@123';
+const E2E_WORKSPACE = process.env.E2E_WORKSPACE || '';
+const E2E_EMAIL = process.env.E2E_EMAIL || '';
+const E2E_PASSWORD = process.env.E2E_PASSWORD || '';
 
 setup('authenticate', async ({ page }) => {
+  setup.skip(!E2E_EMAIL || !E2E_PASSWORD || !E2E_WORKSPACE, 'E2E credentials not configured');
+
   await page.goto('/login');
 
-  // The login form now requires a workspace slug in addition to email/password.
-  // Placeholders (not labels) are the stable selectors on this page.
   await page.getByPlaceholder('your-company').fill(E2E_WORKSPACE);
   await page.getByPlaceholder('you@company.com').fill(E2E_EMAIL);
   await page.getByPlaceholder('••••••••').fill(E2E_PASSWORD);
   await page.getByRole('button', { name: /sign in|log in|login/i }).click();
 
-  // Wait for redirect to dashboard (/) or another authenticated route
   await page.waitForURL((url) => !url.pathname.includes('/login'), { timeout: 15000 });
 
-  // Verify logged in - look for user avatar or nav element
   await expect(page.locator('nav, header').first()).toBeVisible();
 
-  // Save auth state
   await page.context().storageState({ path: authFile });
 });

@@ -1,0 +1,4 @@
+Pat Lee
+email: pat.lee@example.test
+Python, SQL, FastAPI
+Senior software engineer with 5 years of backend experience.

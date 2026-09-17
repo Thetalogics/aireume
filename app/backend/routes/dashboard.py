@@ -150,15 +150,21 @@ def get_dashboard_summary(
         .all()
     )
     pipeline_by_requisition = []
+    req_ids = [req.id for req in requisitions]
+    rc_by_req: Dict[int, list] = {rid: [] for rid in req_ids}
+    if req_ids:
+        all_rc = (
+            db.query(RequisitionCandidate)
+            .filter(RequisitionCandidate.requisition_id.in_(req_ids))
+            .all()
+        )
+        for rc in all_rc:
+            rc_by_req.setdefault(rc.requisition_id, []).append(rc)
     for req in requisitions:
         req_results = [r for r in results if r.requisition_id == req.id]
         if not req_results and req.legacy_role_template_id:
             req_results = [r for r in results if r.role_template_id == req.legacy_role_template_id]
-        rc_rows = (
-            db.query(RequisitionCandidate)
-            .filter(RequisitionCandidate.requisition_id == req.id)
-            .all()
-        )
+        rc_rows = rc_by_req.get(req.id, [])
         by_status: Dict[str, int] = Counter()
         fit_scores = []
         for r in req_results:
@@ -230,7 +236,7 @@ def get_dashboard_summary(
 # ── GET /api/dashboard/activity ────────────────────────────────────────────────
 
 @router.get("/api/dashboard/activity")
-async def get_dashboard_activity(
+def get_dashboard_activity(
     limit: int = Query(10, ge=1, le=100),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -285,7 +291,7 @@ async def get_dashboard_activity(
     dependencies=[Depends(require_feature("analytics"))],
     response_model=ScreeningAnalyticsOut,
 )
-async def get_screening_analytics(
+def get_screening_analytics(
     period: str = Query("last_30_days", pattern="^(last_7_days|last_30_days|last_90_days)$"),
     start_date: Optional[str] = Query(None, description="ISO date YYYY-MM-DD (custom range)"),
     end_date: Optional[str] = Query(None, description="ISO date YYYY-MM-DD (custom range)"),
@@ -312,7 +318,7 @@ async def get_screening_analytics(
 # ── GET /api/analytics/skill-trends ───────────────────────────────────────────
 
 @router.get("/api/analytics/skill-trends", dependencies=[Depends(require_feature("analytics"))])
-async def get_skill_trends_endpoint(
+def get_skill_trends_endpoint(
     role_category: Optional[str] = Query(None, description="Filter by role category"),
     months: int = Query(6, ge=1, le=24, description="Number of months to look back"),
     current_user: User = Depends(get_current_user),
@@ -326,7 +332,7 @@ async def get_skill_trends_endpoint(
 # ── POST /api/analytics/skill-trends/compute ──────────────────────────────────
 
 @router.post("/api/analytics/skill-trends/compute", dependencies=[Depends(require_feature("analytics"))])
-async def compute_skill_trends_endpoint(
+def compute_skill_trends_endpoint(
     current_user: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
@@ -345,7 +351,7 @@ async def compute_skill_trends_endpoint(
     dependencies=[Depends(require_feature("analytics"))],
     response_model=AnalyticsHubOut,
 )
-async def get_analytics_hub(
+def get_analytics_hub(
     period: str = Query("last_30_days", pattern="^(last_7_days|last_30_days|last_90_days)$"),
     start_date: Optional[str] = Query(None),
     end_date: Optional[str] = Query(None),
@@ -399,13 +405,13 @@ async def get_analytics_hub(
 # ── Report builder & BI export ────────────────────────────────────────────────
 
 @router.get("/api/analytics/reports/templates", dependencies=[Depends(require_feature("analytics"))])
-async def list_report_templates_endpoint(current_user: User = Depends(get_current_user)):
+def list_report_templates_endpoint(current_user: User = Depends(get_current_user)):
     from app.backend.services.report_builder_service import list_report_templates
     return {"templates": list_report_templates()}
 
 
 @router.post("/api/analytics/reports/run", dependencies=[Depends(require_feature("analytics"))])
-async def run_report_endpoint(
+def run_report_endpoint(
     body: dict = Body(...),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -442,7 +448,7 @@ async def run_report_endpoint(
 
 
 @router.get("/api/analytics/reports/bi-manifest", dependencies=[Depends(require_feature("analytics"))])
-async def bi_manifest_endpoint(current_user: User = Depends(get_current_user)):
+def bi_manifest_endpoint(current_user: User = Depends(get_current_user)):
     from app.backend.services.report_builder_service import bi_export_manifest
     return bi_export_manifest(current_user.tenant_id)
 
@@ -450,7 +456,7 @@ async def bi_manifest_endpoint(current_user: User = Depends(get_current_user)):
 # ── Analytics overview, views, metrics ────────────────────────────────────────
 
 @router.get("/api/analytics/overview", dependencies=[Depends(require_feature("analytics"))])
-async def get_analytics_overview(
+def get_analytics_overview(
     period: str = Query("last_30_days", pattern="^(last_7_days|last_30_days|last_90_days)$"),
     start_date: Optional[str] = Query(None),
     end_date: Optional[str] = Query(None),
@@ -478,13 +484,13 @@ async def get_analytics_overview(
 
 
 @router.get("/api/analytics/metrics", dependencies=[Depends(require_feature("analytics"))])
-async def get_analytics_metrics():
+def get_analytics_metrics():
     from app.backend.services.analytics_metrics_service import get_metric_glossary
     return get_metric_glossary()
 
 
 @router.get("/api/analytics/views", dependencies=[Depends(require_feature("analytics"))])
-async def list_analytics_views(
+def list_analytics_views(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -496,7 +502,7 @@ async def list_analytics_views(
 
 
 @router.post("/api/analytics/views", dependencies=[Depends(require_feature("analytics"))])
-async def create_analytics_view(
+def create_analytics_view(
     body: dict = Body(...),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -521,7 +527,7 @@ async def create_analytics_view(
 
 
 @router.put("/api/analytics/views/{view_id}", dependencies=[Depends(require_feature("analytics"))])
-async def update_analytics_view(
+def update_analytics_view(
     view_id: int,
     body: dict = Body(...),
     current_user: User = Depends(get_current_user),
@@ -547,7 +553,7 @@ async def update_analytics_view(
 
 
 @router.delete("/api/analytics/views/{view_id}", dependencies=[Depends(require_feature("analytics"))])
-async def delete_analytics_view(
+def delete_analytics_view(
     view_id: int,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -565,13 +571,13 @@ async def delete_analytics_view(
 # ── Custom report builder ─────────────────────────────────────────────────────
 
 @router.get("/api/analytics/reports/fields", dependencies=[Depends(require_feature("analytics"))])
-async def report_fields_endpoint(current_user: User = Depends(get_current_user)):
+def report_fields_endpoint(current_user: User = Depends(get_current_user)):
     from app.backend.services.custom_report_service import get_field_catalog
     return get_field_catalog()
 
 
 @router.post("/api/analytics/reports/custom/run", dependencies=[Depends(require_feature("analytics"))])
-async def run_custom_report_endpoint(
+def run_custom_report_endpoint(
     body: dict = Body(...),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -602,7 +608,7 @@ async def run_custom_report_endpoint(
 
 
 @router.get("/api/analytics/reports/saved", dependencies=[Depends(require_feature("analytics"))])
-async def list_saved_reports_endpoint(
+def list_saved_reports_endpoint(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -611,7 +617,7 @@ async def list_saved_reports_endpoint(
 
 
 @router.post("/api/analytics/reports/saved", dependencies=[Depends(require_feature("analytics"))])
-async def create_saved_report_endpoint(
+def create_saved_report_endpoint(
     body: dict = Body(...),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -633,7 +639,7 @@ async def create_saved_report_endpoint(
 
 
 @router.put("/api/analytics/reports/saved/{report_id}", dependencies=[Depends(require_feature("analytics"))])
-async def update_saved_report_endpoint(
+def update_saved_report_endpoint(
     report_id: int,
     body: dict = Body(...),
     current_user: User = Depends(get_current_user),
@@ -657,7 +663,7 @@ async def update_saved_report_endpoint(
 
 
 @router.delete("/api/analytics/reports/saved/{report_id}", dependencies=[Depends(require_feature("analytics"))])
-async def delete_saved_report_endpoint(
+def delete_saved_report_endpoint(
     report_id: int,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -673,7 +679,7 @@ async def delete_saved_report_endpoint(
 
 
 @router.post("/api/analytics/reports/saved/{report_id}/share", dependencies=[Depends(require_feature("analytics"))])
-async def share_saved_report_endpoint(
+def share_saved_report_endpoint(
     report_id: int,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -689,7 +695,7 @@ async def share_saved_report_endpoint(
 
 
 @router.delete("/api/analytics/reports/saved/{report_id}/share", dependencies=[Depends(require_feature("analytics"))])
-async def unshare_saved_report_endpoint(
+def unshare_saved_report_endpoint(
     report_id: int,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -707,7 +713,7 @@ async def unshare_saved_report_endpoint(
 # ── Scheduled reports ─────────────────────────────────────────────────────────
 
 @router.get("/api/analytics/reports/scheduled", dependencies=[Depends(require_feature("analytics"))])
-async def list_scheduled_reports_endpoint(
+def list_scheduled_reports_endpoint(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -716,7 +722,7 @@ async def list_scheduled_reports_endpoint(
 
 
 @router.post("/api/analytics/reports/scheduled", dependencies=[Depends(require_feature("analytics"))])
-async def create_scheduled_report_endpoint(
+def create_scheduled_report_endpoint(
     body: dict = Body(...),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -739,7 +745,7 @@ async def create_scheduled_report_endpoint(
 
 
 @router.put("/api/analytics/reports/scheduled/{schedule_id}", dependencies=[Depends(require_feature("analytics"))])
-async def update_scheduled_report_endpoint(
+def update_scheduled_report_endpoint(
     schedule_id: int,
     body: dict = Body(...),
     current_user: User = Depends(get_current_user),
@@ -764,7 +770,7 @@ async def update_scheduled_report_endpoint(
 
 
 @router.delete("/api/analytics/reports/scheduled/{schedule_id}", dependencies=[Depends(require_feature("analytics"))])
-async def delete_scheduled_report_endpoint(
+def delete_scheduled_report_endpoint(
     schedule_id: int,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),

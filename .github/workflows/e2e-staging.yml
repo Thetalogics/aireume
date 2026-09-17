@@ -1,12 +1,10 @@
 name: E2E - Staging (authenticated)
 
-# Runs the full authenticated Playwright suite against the live staging
-# environment. Kept separate from the PR CI (which only runs the secret-free
-# login-page specs) because these tests need real credentials and the full
-# stack to be up.
+# Critical authenticated flow against live staging. Does not treat a missing
+# secret configuration as a successful product test — the job records
+# "not configured" and skips Playwright.
 on:
   schedule:
-    # Every day at 02:30 UTC. Adjust as needed.
     - cron: '30 2 * * *'
   workflow_dispatch:
     inputs:
@@ -14,6 +12,10 @@ on:
         description: 'Override staging base URL (optional)'
         required: false
         default: ''
+  workflow_run:
+    workflows: [CD - Build & Push Images]
+    types: [completed]
+    branches: [main, production]
 
 concurrency:
   group: e2e-staging
@@ -21,44 +23,50 @@ concurrency:
 
 jobs:
   e2e-staging:
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      # Credentials come from repository secrets — never hardcoded.
       E2E_WORKSPACE: ${{ secrets.E2E_WORKSPACE }}
       E2E_EMAIL: ${{ secrets.E2E_EMAIL }}
       E2E_PASSWORD: ${{ secrets.E2E_PASSWORD }}
+      E2E_BASE_URL: ${{ secrets.E2E_BASE_URL }}
     steps:
     - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
     - name: Set up Node.js
-      uses: actions/setup-node@v4
+      uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
       with:
         node-version: '22'
 
+    - name: Guard — staging secrets
+      id: guard
+      run: |
+        if [ -z "$E2E_EMAIL" ] || [ -z "$E2E_PASSWORD" ] || [ -z "$E2E_WORKSPACE" ]; then
+          echo "configured=false" >> "$GITHUB_OUTPUT"
+          echo "::notice title=AUD-048::Authenticated staging E2E not configured. Set E2E_WORKSPACE, E2E_EMAIL, E2E_PASSWORD (and optional E2E_BASE_URL). This run is skipped, not a product pass."
+        else
+          echo "configured=true" >> "$GITHUB_OUTPUT"
+        fi
+
     - name: Install E2E runner (root)
+      if: steps.guard.outputs.configured == 'true'
       run: npm ci
 
     - name: Install Playwright browser
+      if: steps.guard.outputs.configured == 'true'
       run: npx playwright install --with-deps chromium
 
-    - name: Guard — require credentials
-      run: |
-        if [ -z "$E2E_EMAIL" ] || [ -z "$E2E_PASSWORD" ] || [ -z "$E2E_WORKSPACE" ]; then
-          echo "::error::Missing E2E secrets. Set E2E_WORKSPACE, E2E_EMAIL and E2E_PASSWORD in repo secrets."
-          exit 1
-        fi
-
-    - name: Run authenticated E2E against staging
+    - name: Run authenticated staging E2E
+      if: steps.guard.outputs.configured == 'true'
       run: npx playwright test
       env:
-        # Optional per-run base URL override from workflow_dispatch input.
-        PLAYWRIGHT_BASE_URL: ${{ github.event.inputs.base_url }}
-        PLAYWRIGHT_API_URL: ${{ github.event.inputs.base_url || 'https://airesume-staging.thetalogics.com' }}
+        PLAYWRIGHT_BASE_URL: ${{ github.event.inputs.base_url || secrets.E2E_BASE_URL || 'https://airesume-staging.thetalogics.com' }}
+        PLAYWRIGHT_API_URL: ${{ github.event.inputs.base_url || secrets.E2E_BASE_URL || 'https://airesume-staging.thetalogics.com' }}
 
     - name: Upload Playwright report
-      if: always()
-      uses: actions/upload-artifact@v4
+      if: always() && steps.guard.outputs.configured == 'true'
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
       with:
         name: playwright-report-staging
         path: playwright-report/

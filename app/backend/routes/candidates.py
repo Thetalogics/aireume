@@ -15,6 +15,7 @@ from datetime import datetime, date, timezone
 from decimal import Decimal
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import Response
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.exc import SQLAlchemyError
@@ -106,6 +107,39 @@ def import_candidates_csv(
     return {"created": created, "errors": errors, "created_count": len(created)}
 
 
+class CandidateMergeRequest(BaseModel):
+    source_candidate_id: int
+    target_candidate_id: int
+    reason: Optional[str] = Field(default=None, max_length=500)
+
+
+@router.post("/merge")
+def merge_candidate_records(
+    body: CandidateMergeRequest,
+    current_user: User = Depends(require_recruiter_or_admin),
+    db: Session = Depends(get_db),
+):
+    from app.backend.services.candidate_merge_service import MergeError, merge_candidates
+
+    try:
+        result = merge_candidates(
+            db,
+            current_user.tenant_id,
+            body.source_candidate_id,
+            body.target_candidate_id,
+            current_user.id,
+            reason=body.reason,
+        )
+        db.commit()
+        return result
+    except MergeError as exc:
+        db.rollback()
+        status = 403 if exc.code == "cross_tenant" else 400
+        if exc.code == "not_found":
+            status = 404
+        raise HTTPException(status_code=status, detail=exc.message) from exc
+
+
 def _json_default(obj):
     """Handle non-serializable types for json.dumps (datetime, date, Decimal)."""
     if isinstance(obj, (datetime, date)):
@@ -134,7 +168,10 @@ def list_candidates(
             detail=f"Invalid status '{status}'. Must be one of: {', '.join(sorted(_VALID_STATUSES))}",
         )
 
-    query = db.query(Candidate).filter(Candidate.tenant_id == current_user.tenant_id)
+    query = db.query(Candidate).filter(
+        Candidate.tenant_id == current_user.tenant_id,
+        Candidate.merged_into_id.is_(None),
+    )
     from app.backend.middleware.rbac import apply_hm_candidate_scope
     query = apply_hm_candidate_scope(query, db, current_user)
 

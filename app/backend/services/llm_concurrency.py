@@ -20,9 +20,14 @@ def _max_slots(provider: str) -> int:
 
 @contextmanager
 def llm_slot(provider: str, tenant_id: int | None = None, ttl_seconds: int = 180):
+    from app.backend.services.metrics import LLM_SATURATION, LLM_SATURATION_TOTAL
+
     key = f"llm:slots:{provider}:{tenant_id or 'global'}"
     if not cache_try_acquire_slot(key, _max_slots(provider), ttl_seconds=ttl_seconds):
+        LLM_SATURATION_TOTAL.labels(provider=provider).inc()
+        LLM_SATURATION.labels(provider=provider).set(1)
         raise LLMConcurrencySaturated(f"{provider} concurrency saturated")
+    LLM_SATURATION.labels(provider=provider).set(0)
     try:
         yield
     finally:

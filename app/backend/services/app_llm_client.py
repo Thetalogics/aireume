@@ -69,15 +69,25 @@ async def generate_app_llm(
             allow_provider_fallback=allow_provider_fallback,
         )
 
+    import time
+    from app.backend.services.metrics import LLM_DURATION_SECONDS, LLM_REQUEST_TOTAL
+
+    started = time.perf_counter()
     try:
         with llm_slot("app"):
-            return await breaker.call(_inner)
+            result = await breaker.call(_inner)
+        LLM_REQUEST_TOTAL.labels(provider="app", outcome="success" if result else "failure").inc()
+        return result
     except LLMConcurrencySaturated:
+        LLM_REQUEST_TOTAL.labels(provider="app", outcome="failure").inc()
         logger.error("%s LLM concurrency saturated", log_label)
         return None
     except CircuitBreakerOpenError:
+        LLM_REQUEST_TOTAL.labels(provider="app", outcome="failure").inc()
         logger.error("%s LLM circuit breaker open", log_label)
         return None
+    finally:
+        LLM_DURATION_SECONDS.labels(provider="app").observe(time.perf_counter() - started)
 
 
 async def _try_gemini(

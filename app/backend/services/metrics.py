@@ -72,7 +72,7 @@ GUARDRAIL_CIRCUIT_BREAKER_TOTAL = Counter(
 GUARDRAIL_TOKEN_BUDGET_EXCEEDED_TOTAL = Counter(
     "aria_guardrail_token_budget_exceeded_total",
     "Total token budget exceedances",
-    ["tenant_id"]
+    ["route_class"]
 )
 
 # Custom metrics for resume parsing
@@ -88,16 +88,94 @@ SCREENING_TOTAL = Counter(
     ["result"],
 )
 
+SCREENING_DURATION_SECONDS = Histogram(
+    "aria_screening_duration_seconds",
+    "Screening persist/execute duration",
+    buckets=[0.05, 0.1, 0.25, 0.5, 1, 2, 5, 15, 30],
+)
+
 QUEUE_WAIT_SECONDS = Histogram(
     "aria_queue_wait_seconds",
     "Time from enqueue to processing start",
     buckets=[1, 5, 15, 30, 60, 120, 300],
 )
 
+QUEUE_PROCESSING_SECONDS = Histogram(
+    "aria_queue_processing_seconds",
+    "Time from processing start to completion",
+    buckets=[1, 5, 15, 30, 60, 120, 300, 600],
+)
+
+QUEUE_RETRY_TOTAL = Counter(
+    "aria_queue_retry_total",
+    "Queue job retries",
+    ["reason"],
+)
+
 QUOTA_REJECTED_TOTAL = Counter(
     "aria_quota_rejected_total",
     "Quota rejections",
     ["surface"],
+)
+
+LLM_REQUEST_TOTAL = Counter(
+    "aria_llm_request_total",
+    "LLM requests",
+    ["provider", "outcome"],
+)
+
+LLM_DURATION_SECONDS = Histogram(
+    "aria_llm_duration_seconds",
+    "LLM call duration",
+    ["provider"],
+    buckets=[0.5, 1, 2, 5, 10, 20, 30, 60, 120],
+)
+
+LLM_SATURATION_TOTAL = Counter(
+    "aria_llm_saturation_total",
+    "LLM concurrency slot exhaustion",
+    ["provider"],
+)
+
+LLM_SATURATION = Gauge(
+    "aria_llm_slot_exhausted",
+    "Current LLM slot saturation (1=exhausted last acquire)",
+    ["provider"],
+)
+
+ATS_SYNC_TOTAL = Counter(
+    "aria_ats_sync_total",
+    "ATS push/pull operations",
+    ["direction", "outcome"],
+)
+
+WEBHOOK_DELIVERY_TOTAL = Counter(
+    "aria_webhook_delivery_total",
+    "Outbound webhook deliveries",
+    ["outcome"],
+)
+
+BILLING_WEBHOOK_TOTAL = Counter(
+    "aria_billing_webhook_total",
+    "Billing provider webhook handling",
+    ["outcome"],
+)
+
+SAML_AUTH_TOTAL = Counter(
+    "aria_saml_auth_total",
+    "SAML authentication outcomes",
+    ["outcome"],
+)
+
+GDPR_DELETION_FAILURE_TOTAL = Counter(
+    "aria_gdpr_deletion_failure_total",
+    "GDPR hard-delete failures",
+    ["reason"],
+)
+
+GDPR_DELETION_RETRY_TOTAL = Counter(
+    "aria_gdpr_deletion_retry_total",
+    "GDPR object-deletion retries queued",
 )
 
 # Custom metrics for batch operations

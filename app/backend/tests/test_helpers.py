@@ -89,3 +89,33 @@ def allow_ad_hoc_screening(db, *, tenant_id=None, slug=None, email=None):
     settings.screening_mode = "allow_ad_hoc"
     db.commit()
     return settings
+
+
+class StatementCounter:
+    """Count SQL statements on the test engine (AUD-043)."""
+
+    def __init__(self, engine):
+        self.engine = engine
+        self.statements = []
+
+    def _on_execute(self, conn, cursor, statement, parameters, context, executemany):
+        self.statements.append(statement)
+
+    def __enter__(self):
+        from sqlalchemy import event
+        event.listen(self.engine, "before_cursor_execute", self._on_execute)
+        return self
+
+    def __exit__(self, *exc):
+        from sqlalchemy import event
+        event.remove(self.engine, "before_cursor_execute", self._on_execute)
+
+    @property
+    def dml(self):
+        out = []
+        for stmt in self.statements:
+            token = stmt.lstrip().split(None, 1)[0].upper() if stmt.strip() else ""
+            if token in {"INSERT", "UPDATE", "DELETE"}:
+                out.append(stmt)
+        return out
+

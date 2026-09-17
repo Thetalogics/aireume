@@ -10,11 +10,11 @@
 
 <p align="center">
   <strong>AI Resume Intelligence by ThetaLogics</strong><br>
-  Production-oriented, multi-tenant SaaS platform for AI-powered resume screening and candidate evaluation.
+  Multi-tenant SaaS for AI-assisted resume screening and candidate evaluation.
 </p>
 
 <p align="center">
-  <em>Managed AI screening for modern hiring teams — explainable and tenant-secure.</em>
+  <em>Managed AI screening for hiring teams — explainable scores and tenant isolation. Operational readiness depends on how you deploy it.</em>
 </p>
 
 ---
@@ -27,10 +27,10 @@ ARIA is a comprehensive AI-powered recruitment platform designed for modern hiri
 
 - **Requisition-centric hiring** — Openings, intake calibration, screening, and HM handoff in one workflow
 - **Explainable AI Screening** — Fit scores, skill matching, gap detection, and narrative reports recruiters can trust
-- **Tenant Security** — Multi-tenant isolation, RBAC (5 tenant roles), admin MFA, and GDPR export/erasure tools
-- **Interview Automation** — AI screen calls and live screen kits integrated with your pipeline
-- **Multi-Tenant SaaS Architecture** — Support for multiple organizations with complete data isolation
-- **Hardened toward production** — tests, CI/CD, worker isolation, Redis, and monitoring. Operational steps live in `docs/OPS_RUNBOOK.md`.
+- **Tenant isolation** — Multi-tenant workspaces, RBAC (5 tenant roles), admin MFA, and GDPR export/erasure **workflows** (not a legal compliance certification)
+- **Interview assistance** — AI screen calls and live screen kits integrated with your pipeline
+- **Multi-tenant SaaS architecture** — Organizations are isolated by `tenant_id` in application queries
+- **Hardened toward production** — tests, CI/CD, worker isolation, Redis, and monitoring. What is actually verified lives in `docs/PRODUCTION_READINESS.md`.
 
 ---
 
@@ -321,7 +321,7 @@ docker exec -it resume-screener-ollama ollama pull gemma4:31b
 | **Model Quality** | Access to cloud models (e.g. gemma4) | Limited by local hardware |
 | **Typical use** | ThetaLogics SaaS production | Lab, air-gapped, dedicated enterprise |
 
-**Note:** Custom Modelfile fine-tuning (via `/api/training`) is only supported with local Ollama.
+**Note:** `/api/training` stores labeled examples for **prompt/model personalization**. It does not train or ship a fine-tuned model in the hosted SaaS path.
 
 ### Development Setup
 
@@ -593,7 +593,7 @@ LLM_NARRATIVE_TIMEOUT=180
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | POST | `/api/training/label` | Label outcome |
-| POST | `/api/training/train` | Trigger fine-tuning |
+| POST | `/api/training/train` | Trigger prompt personalization job |
 | GET | `/api/training/status` | Training status |
 
 ### Health & Monitoring

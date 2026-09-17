@@ -140,11 +140,22 @@ async def handle_webhook(
             event_id=event_id,
         )
 
+        try:
+            from app.backend.services.metrics import BILLING_WEBHOOK_TOTAL
+            BILLING_WEBHOOK_TOTAL.labels(outcome="success").inc()
+        except Exception:
+            pass
+
         log.info(
             "Webhook processed: provider=%s event=%s result=%s",
             provider_name, event_type, process_result.get("reason", "ok"),
         )
     except HTTPException:
+        try:
+            from app.backend.services.metrics import BILLING_WEBHOOK_TOTAL
+            BILLING_WEBHOOK_TOTAL.labels(outcome="failure").inc()
+        except Exception:
+            pass
         raise
     except _STRIPE_ERRORS + _RAZORPAY_ERRORS as exc:
         log.warning(

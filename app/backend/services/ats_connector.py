@@ -125,6 +125,11 @@ class ATSConnector:
                 response_body=response_body,
                 success=success,
             )
+            try:
+                from app.backend.services.metrics import ATS_SYNC_TOTAL
+                ATS_SYNC_TOTAL.labels(direction="push", outcome="success" if success else "failure").inc()
+            except Exception:
+                pass
 
             if success:
                 connection.last_sync_at = datetime.now(timezone.utc)
@@ -160,6 +165,11 @@ class ATSConnector:
             connection.last_sync_status = "failed"
             connection.last_error = str(e)[:500]
             self.db.commit()
+            try:
+                from app.backend.services.metrics import ATS_SYNC_TOTAL
+                ATS_SYNC_TOTAL.labels(direction="push", outcome="failure").inc()
+            except Exception:
+                pass
 
             return {"success": False, "external_id": external_id, "error": str(e)}
 
@@ -185,6 +195,11 @@ class ATSConnector:
             external_status = None
             if success:
                 external_status = adapter.parse_pull_status(resp.json())
+            try:
+                from app.backend.services.metrics import ATS_SYNC_TOTAL
+                ATS_SYNC_TOTAL.labels(direction="pull", outcome="success" if success else "failure").inc()
+            except Exception:
+                pass
 
             self._log_sync(
                 connection=connection,

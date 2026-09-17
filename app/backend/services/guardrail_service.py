@@ -1134,7 +1134,7 @@ def emit_guardrail_event(
         elif event_type == "circuit_breaker_triggered":
             GUARDRAIL_CIRCUIT_BREAKER_TOTAL.labels(node=meta.get("node", "unknown")).inc()
         elif event_type == "token_budget_exceeded":
-            GUARDRAIL_TOKEN_BUDGET_EXCEEDED_TOTAL.labels(tenant_id=str(tenant_id or "unknown")).inc()
+            GUARDRAIL_TOKEN_BUDGET_EXCEEDED_TOTAL.labels(route_class="token_budget").inc()
     except Exception:
         pass
 

@@ -114,6 +114,12 @@ def dispatch_event(db: Session, tenant_id: int, event: str, payload: dict):
                 if attempt < MAX_RETRIES:
                     time.sleep(RETRY_DELAYS[attempt - 1])
 
+        try:
+            from app.backend.services.metrics import WEBHOOK_DELIVERY_TOTAL
+            WEBHOOK_DELIVERY_TOTAL.labels(outcome="success" if success else "failure").inc()
+        except Exception:
+            pass
+
         # Auto-disable after too many failures
         if webhook.failure_count >= MAX_FAILURE_COUNT:
             webhook.is_active = False

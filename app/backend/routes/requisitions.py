@@ -71,6 +71,7 @@ from app.backend.services.requisition_service import (
     calibrate_requisition,
     create_requisition,
     get_or_create_tenant_settings,
+    get_tenant_settings_readonly,
     hm_assigned_to_requisition,
     intake_gate_blocks,
     intake_gate_message,
@@ -78,6 +79,7 @@ from app.backend.services.requisition_service import (
     intake_screening_ready,
     is_requisition_calibrated,
     list_pending_hm_requests,
+    load_requisition_list_extras,
     migrate_legacy_data,
     maybe_advance_to_interviewing,
     maybe_advance_to_sourcing,
@@ -167,15 +169,43 @@ def _to_out(
     req: Requisition,
     tenant_id: int,
     current_user: User | None = None,
+    *,
+    persist_settings: bool = False,
+    candidate_count: int | None = None,
+    hiring_manager_ids: list[int] | None = None,
+    email_map: dict[int, str] | None = None,
+    include_gate: bool = True,
+    settings: TenantRequisitionSettings | None = None,
 ) -> RequisitionOut:
-    settings = get_or_create_tenant_settings(db, tenant_id)
+    if include_gate:
+        if settings is None:
+            settings = (
+                get_or_create_tenant_settings(db, tenant_id)
+                if persist_settings
+                else get_tenant_settings_readonly(db, tenant_id)
+            )
+        gate_warning = intake_gate_message(settings, req, db, user=current_user)
+    else:
+        gate_warning = None
     data = requisition_to_dict(
         db,
         req,
-        candidate_count=_count_candidates(db, req.id),
-        gate_warning=intake_gate_message(settings, req, db, user=current_user),
+        candidate_count=_count_candidates(db, req.id) if candidate_count is None else candidate_count,
+        gate_warning=gate_warning,
+        hiring_manager_ids=hiring_manager_ids,
+        email_map=email_map,
     )
     return RequisitionOut(**data)
+
+
+@router.post("/admin/migrate-legacy")
+def migrate_legacy_requisitions(
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    migrate_legacy_data(db, current_user.tenant_id)
+    db.commit()
+    return {"ok": True}
 
 
 @router.get("/settings", response_model=TenantRequisitionSettingsOut)
@@ -183,7 +213,7 @@ def get_settings(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    row = get_or_create_tenant_settings(db, current_user.tenant_id)
+    row = get_tenant_settings_readonly(db, current_user.tenant_id)
     from app.backend.models.db_models import Tenant
     import json
     tenant = db.get(Tenant, current_user.tenant_id)
@@ -194,9 +224,8 @@ def get_settings(
             hw = meta.get("hiring_signal_weights") or {}
         except (json.JSONDecodeError, TypeError):
             hw = {}
-    db.commit()
     return TenantRequisitionSettingsOut(
-        tenant_id=row.tenant_id,
+        tenant_id=current_user.tenant_id,
         intake_gate_mode=row.intake_gate_mode,
         screening_mode=getattr(row, "screening_mode", None) or "requisition_required",
         hm_pipeline_permission=row.hm_pipeline_permission,
@@ -267,6 +296,7 @@ def create_req(
     current_user: User = Depends(require_recruiter_or_admin),
     db: Session = Depends(get_db),
 ):
+    _ensure_migrated(db, current_user.tenant_id)
     if body.primary_hiring_manager_id or body.hiring_manager_ids:
         _assert_hm_workflow(db, current_user.tenant_id)
     req = create_requisition(
@@ -382,7 +412,6 @@ def list_reqs(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    _ensure_migrated(db, current_user.tenant_id)
     q = db.query(Requisition).filter(Requisition.tenant_id == current_user.tenant_id)
     role = get_tenant_role(current_user)
     if role == TENANT_ROLE_HIRING_MANAGER or (mine_only and is_hiring_manager(current_user)):
@@ -404,15 +433,21 @@ def list_reqs(
         q = q.filter(Requisition.status == status_filter)
     q = q.order_by(Requisition.updated_at.desc())
     rows = q.all()
-    healed = False
-    for r in rows:
-        before = r.status
-        maybe_advance_to_sourcing(db, r)
-        if r.status != before:
-            healed = True
-    if healed:
-        db.commit()
-    return [_to_out(db, r, current_user.tenant_id, current_user=current_user) for r in rows]
+    extras = load_requisition_list_extras(db, rows)
+    return [
+        _to_out(
+            db,
+            r,
+            current_user.tenant_id,
+            current_user=current_user,
+            persist_settings=False,
+            candidate_count=extras["counts"].get(r.id, 0),
+            hiring_manager_ids=extras["hm_map"].get(r.id, []),
+            email_map=extras["emails"],
+            include_gate=False,
+        )
+        for r in rows
+    ]
 
 
 @router.get("/hm-requests", response_model=list[RequisitionOut], dependencies=[Depends(require_feature("hm_workflow"))])
@@ -421,9 +456,22 @@ def list_hm_requests(
     db: Session = Depends(get_db),
 ):
     """Tenant admins — pending hiring manager access requests across requisitions."""
-    _ensure_migrated(db, current_user.tenant_id)
     rows = list_pending_hm_requests(db, current_user.tenant_id)
-    return [_to_out(db, r, current_user.tenant_id, current_user=current_user) for r in rows]
+    extras = load_requisition_list_extras(db, rows)
+    return [
+        _to_out(
+            db,
+            r,
+            current_user.tenant_id,
+            current_user=current_user,
+            persist_settings=False,
+            candidate_count=extras["counts"].get(r.id, 0),
+            hiring_manager_ids=extras["hm_map"].get(r.id, []),
+            email_map=extras["emails"],
+            include_gate=False,
+        )
+        for r in rows
+    ]
 
 
 @router.get("/{req_id}", response_model=RequisitionOut, dependencies=[Depends(require_feature("requisitions"))])
@@ -434,12 +482,6 @@ def get_req(
 ):
     req = _load_req(db, req_id, current_user.tenant_id)
     require_requisition_access(current_user, req, db)
-    # Heal stuck intake_in_progress when intake+HM already satisfy screening-ready.
-    before = req.status
-    maybe_advance_to_sourcing(db, req)
-    if req.status != before:
-        db.commit()
-        db.refresh(req)
     return _to_out(db, req, current_user.tenant_id, current_user=current_user)
 
 

@@ -1,6 +1,8 @@
-# Audit closure status (re-audit vs `4e255e1` plus this change set)
+# Audit closure status
 
-Re-evaluated against current production code and tests. Status is **CLOSED**, **PARTIAL**, or **OPEN**. CLOSED Phase A–C items were not rewritten.
+Re-evaluated against production code after AUD-040/043/044/047/048/049/050 work. **CLOSED 49 / PARTIAL 1 / OPEN 0 / NOT APPLICABLE 0.**
+
+AUD-048 remains PARTIAL until an authenticated staging Playwright run succeeds with real secrets.
 
 | Finding | Current status | Evidence | Required work |
 |---|---|---|---|
@@ -43,16 +45,16 @@ Re-evaluated against current production code and tests. Status is **CLOSED**, **
 | AUD-037 | CLOSED | hashed bearer token; scrypt passcode; list omits token | None |
 | AUD-038 | CLOSED | CSV import implemented | None |
 | AUD-039 | CLOSED | search no longer ILIKE raw resume | None |
-| AUD-040 | PARTIAL | unique email/hash; no merge UX | Document merge hierarchy; no silent merge |
+| AUD-040 | CLOSED | `candidate_merge_service.merge_candidates`; `POST /api/candidates/merge`; `docs/CANDIDATE_MERGE.md` | `test_candidate_merge.py` |
 | AUD-041 | CLOSED | `lib/api/client.ts` + domain clients; `lib/api.ts` barrel | None |
 | AUD-042 | CLOSED | `/auth/me` CSRF cookie | None |
-| AUD-043 | PARTIAL | dashboard GET no longer runs `migrate_legacy_data`; remaining GET writes on analytics mutations | Query-count tests for remaining list endpoints |
-| AUD-044 | PARTIAL | dashboard summary is sync `def`; analyze/queue remain async for I/O | Broader handler consistency |
+| AUD-043 | CLOSED | GET list/dashboard no DML; batched requisition extras; dashboard RC batch | `test_audit_get_metrics_async.py` query-count + DML tests |
+| AUD-044 | CLOSED | DB-heavy GETs are sync `def`; analyze/queue submit stay async; `docs/ARCHITECTURE_ASYNC_DB.md` | `test_slow_sync_route_does_not_block_async_probe` |
 | AUD-045 | CLOSED | Redis/shared `cache_try_acquire_slot` around LLM | Saturation metrics still limited |
 | AUD-046 | CLOSED | body-size middleware | None |
-| AUD-047 | PARTIAL | screening/quota/queue Prometheus metrics added | Wire remaining surfaces + alert docs |
-| AUD-048 | PARTIAL | CI jobs exist; checkout SHA-pinned | Pin remaining third-party actions; authenticated staging E2E |
-| AUD-049 | PARTIAL | CD tags git SHA; `docs/BRANCH_PROTECTION_REQUIRED.md` | Enable GitHub branch protection |
-| AUD-050 | PARTIAL | security/readiness docs | Sweep remaining README claims |
+| AUD-047 | CLOSED | screening/queue/LLM/ATS/webhook/SAML/GDPR metrics; `docs/SLO_AND_ALERTING.md` | `TestObservabilityMetrics` |
+| AUD-048 | PARTIAL | Third-party Actions SHA-pinned; `--cov-fail-under=50`; `e2e-staging.yml` skips if secrets missing | **No successful authenticated staging E2E run yet** |
+| AUD-049 | CLOSED | `main.protected == true`; SHA + backend digest in CD; `docs/DEPLOYMENT_PROMOTION.md` | GitHub API branch protection |
+| AUD-050 | CLOSED | README/PRODUCT_SPEC/`docs/PRODUCT_CLAIMS.md`/`PRODUCTION_READINESS.md`; wiki notice | Claim sweep vs code |
 
-Authenticated staging E2E: **NOT VERIFIED**.
+Authenticated staging E2E: **NOT VERIFIED** (AUD-048 remains PARTIAL).

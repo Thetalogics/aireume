@@ -473,11 +473,11 @@ ARIA is an enterprise-grade, AI-powered resume intelligence platform designed fo
 - **Feedback Storage**: Optional feedback text
 - **Tenant Isolation**: Training data scoped to tenant
 
-#### 11.2 Model Fine-Tuning
-- **Ollama Modelfile**: Custom model customization
-- **Minimum Examples**: 10+ labeled examples required
-- **Per-Tenant Models**: Organization-specific AI tuning
-- **Training Status**: Track fine-tuning progress
+#### 11.2 Prompt / model personalization
+- **Labeled examples**: Recruiter outcomes used as prompt context (not hosted fine-tuning)
+- **Minimum examples**: 10+ labeled examples required for the personalization path
+- **Per-tenant prompts**: Organization-specific wording, not a separate trained model
+- **Training status**: Track personalization job status
 
 ### 12. Dashboard & Analytics
 
@@ -884,7 +884,7 @@ ARIA is an enterprise-grade, AI-powered resume intelligence platform designed fo
 
 #### 20.11 Training (`/api/training`)
 - `POST /api/training/label` - Label outcome
-- `POST /api/training/train` - Trigger fine-tuning
+- `POST /api/training/train` - Trigger prompt personalization job
 - `GET /api/training/status` - Training status
 
 #### 20.12 Subscription (`/api/subscription`)
@@ -1298,8 +1298,8 @@ ARIA is an enterprise-grade, AI-powered resume intelligence platform designed fo
 ### 30. Key Differentiators Summary
 
 1. **Managed SaaS + transparent AI**: Cloud-hosted platform with disclosed AI subprocessors — not a “data never leaves your server” product
-2. **Compliance**: EEOC/GDPR compliant, audit trails, evidence-based
-3. **AI Quality**: Hybrid pipeline, hallucination prevention, PII redaction
+2. **Workflows for audit/export/erasure**: supports GDPR-related workflows and evidence trails; not independently certified as “GDPR/EEOC compliant”
+3. **AI Quality**: Hybrid pipeline, hallucination guards, PII redaction — not 100% accurate or bias-free
 4. **Enterprise-Grade**: Multi-tenant, granular RBAC, webhooks, rate limiting
 5. **Open Source**: MIT license, fully auditable
 6. **Customizable**: Adaptive weights, custom training, feature flags

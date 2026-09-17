@@ -110,6 +110,12 @@ def hard_delete_candidate(db: Session, candidate_id: int, tenant_id: int, reason
                     ))
             deleted["object_storage_complete"] = storage_ok
             if not storage_ok:
+                try:
+                    from app.backend.services.metrics import GDPR_DELETION_FAILURE_TOTAL, GDPR_DELETION_RETRY_TOTAL
+                    GDPR_DELETION_FAILURE_TOTAL.labels(reason="object_storage").inc()
+                    GDPR_DELETION_RETRY_TOTAL.inc()
+                except Exception:
+                    pass
                 db.commit()
                 return {
                     "error": "object_storage_delete_incomplete",

@@ -223,6 +223,7 @@ class Candidate(Base):
 
     id         = Column(Integer, primary_key=True, index=True)
     tenant_id  = Column(Integer, ForeignKey("tenants.id"), nullable=False)
+    merged_into_id = Column(Integer, ForeignKey("candidates.id"), nullable=True, index=True)
     name       = Column(String(255), nullable=True)
     email      = Column(String(255), nullable=True, index=True)
     phone      = Column(String(50), nullable=True)
@@ -261,6 +262,22 @@ class Candidate(Base):
     tenant               = relationship("Tenant", back_populates="candidates")
     results              = relationship("ScreeningResult", back_populates="candidate")
     transcript_analyses  = relationship("TranscriptAnalysis", back_populates="candidate")
+    merged_into          = relationship("Candidate", remote_side="Candidate.id")
+
+
+class CandidateMergeEvent(Base):
+    """Provenance for an explicit, tenant-scoped candidate merge (AUD-040)."""
+    __tablename__ = "candidate_merge_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False, index=True)
+    source_candidate_id = Column(Integer, nullable=False, index=True)
+    target_candidate_id = Column(Integer, nullable=False, index=True)
+    actor_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    reason = Column(Text, nullable=True)
+    conflicts_json = Column(Text, nullable=True)
+    already_merged = Column(Boolean, nullable=False, default=False, server_default="false")
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
 class CandidateNote(Base):

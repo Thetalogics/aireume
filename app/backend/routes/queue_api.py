@@ -340,7 +340,7 @@ async def submit_analysis_batch(
 # ============================================================================
 
 @router.get("/status/{job_id}")
-async def get_job_status(
+def get_job_status(
     job_id: UUID,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -406,7 +406,7 @@ async def get_job_status(
 
 
 @router.get("/result/{job_id}")
-async def get_job_result(
+def get_job_result(
     job_id: UUID,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -477,7 +477,7 @@ async def get_job_result(
 # ============================================================================
 
 @router.get("/stats")
-async def get_queue_stats(
+def get_queue_stats(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -538,7 +538,7 @@ async def get_queue_stats(
 
 
 @router.get("/jobs")
-async def list_jobs(
+def list_jobs(
     status: Optional[str] = Query(None, description="Filter by status"),
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
@@ -678,7 +678,7 @@ async def cancel_job(
 
 
 @router.get("/worker/stats")
-async def get_worker_stats(
+def get_worker_stats(
     admin: User = Depends(require_platform_admin),
 ):
     """
@@ -691,7 +691,7 @@ async def get_worker_stats(
 
 
 @router.get("/metrics/performance")
-async def get_performance_metrics(
+def get_performance_metrics(
     days: int = Query(7, ge=1, le=30),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
