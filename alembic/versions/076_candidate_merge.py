@@ -13,15 +13,39 @@ branch_labels = None
 depends_on = None
 
 
+def _merged_into_fks(insp):
+    return [
+        fk
+        for fk in insp.get_foreign_keys("candidates")
+        if "merged_into_id" in (fk.get("constrained_columns") or []) and fk.get("name")
+    ]
+
+
+def _merged_into_indexes(insp):
+    out = []
+    for idx in insp.get_indexes("candidates"):
+        name = idx.get("name")
+        cols = list(idx.get("column_names") or [])
+        if name and (name == "ix_candidates_merged_into_id" or cols == ["merged_into_id"]):
+            out.append(idx)
+    return out
+
+
 def upgrade():
     bind = op.get_bind()
     insp = inspect(bind)
+    if hasattr(insp, "clear_cache"):
+        insp.clear_cache()
     tables = set(insp.get_table_names())
     if "candidates" in tables:
         cols = {c["name"] for c in insp.get_columns("candidates")}
         if "merged_into_id" not in cols:
             op.add_column("candidates", sa.Column("merged_into_id", sa.Integer(), nullable=True))
+            if hasattr(insp, "clear_cache"):
+                insp.clear_cache()
+        if not any(i["name"] == "ix_candidates_merged_into_id" for i in _merged_into_indexes(insp)):
             op.create_index("ix_candidates_merged_into_id", "candidates", ["merged_into_id"])
+        if not _merged_into_fks(insp):
             op.create_foreign_key(
                 "fk_candidates_merged_into_id",
                 "candidates",
@@ -50,15 +74,23 @@ def upgrade():
 def downgrade():
     bind = op.get_bind()
     insp = inspect(bind)
+    if hasattr(insp, "clear_cache"):
+        insp.clear_cache()
     tables = set(insp.get_table_names())
     if "candidate_merge_events" in tables:
         op.drop_table("candidate_merge_events")
-    if "candidates" in tables:
+        if hasattr(insp, "clear_cache"):
+            insp.clear_cache()
+    if "candidates" in insp.get_table_names():
         cols = {c["name"] for c in insp.get_columns("candidates")}
-        if "merged_into_id" in cols:
-            try:
-                op.drop_constraint("fk_candidates_merged_into_id", "candidates", type_="foreignkey")
-            except Exception:
-                pass
-            op.drop_index("ix_candidates_merged_into_id", table_name="candidates")
-            op.drop_column("candidates", "merged_into_id")
+        if "merged_into_id" not in cols:
+            return
+        # Inspect real constraint/index names. Never swallow DDL errors on
+        # PostgreSQL: a failed statement aborts the transaction, and a bare
+        # except Exception: pass then makes the next DROP fail with
+        # InFailedSqlTransaction (CI `alembic downgrade -1`).
+        for fk in _merged_into_fks(insp):
+            op.drop_constraint(fk["name"], "candidates", type_="foreignkey")
+        for idx in _merged_into_indexes(insp):
+            op.drop_index(idx["name"], table_name="candidates")
+        op.drop_column("candidates", "merged_into_id")
