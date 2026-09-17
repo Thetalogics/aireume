@@ -22,7 +22,10 @@ export async function expectRequisitionPicker(page: Page) {
 }
 
 export async function selectFirstRequisitionOnAnalyze(page: Page): Promise<boolean> {
-  await expectRequisitionPicker(page);
+  const picker = page.getByText(/select an opening to start/i).first();
+  if (!(await picker.isVisible({ timeout: 8000 }).catch(() => false))) {
+    return page.getByText(/screening for/i).first().isVisible().catch(() => false);
+  }
   const reqButton = page.locator('.grid.gap-2.max-h-80.overflow-y-auto button').first();
   if (!(await reqButton.isVisible({ timeout: 10000 }).catch(() => false))) {
     return false;
@@ -40,6 +43,72 @@ export async function enableAdHocScreeningIfAvailable(page: Page): Promise<boole
   await link.click();
   await expect(page.locator('textarea').first()).toBeVisible({ timeout: 10000 });
   return true;
+}
+
+/**
+ * Make Analyze ready for JD/skills confirmation. Fails if neither a requisition
+ * nor an ad-hoc JD path is actually available.
+ */
+export async function prepareAnalyzeJob(page: Page): Promise<'requisition' | 'ad-hoc'> {
+  await gotoAnalyze(page);
+
+  const selected = await selectFirstRequisitionOnAnalyze(page);
+  if (selected) {
+    return 'requisition';
+  }
+
+  const adHoc = await enableAdHocScreeningIfAvailable(page);
+  if (adHoc) {
+    return 'ad-hoc';
+  }
+
+  const textareaVisible = await page.locator('textarea').first().isVisible().catch(() => false);
+  if (textareaVisible) {
+    return 'ad-hoc';
+  }
+
+  const hint = (await page.locator('body').innerText().catch(() => '')).slice(0, 500);
+  throw new Error(
+    `Analyze is not ready for screening (no opening selected and no ad-hoc JD). url=${page.url()} ui=${hint}`,
+  );
+}
+
+export async function confirmSkillsIfNeeded(page: Page) {
+  const skipDefaults = page.getByRole('button', { name: /skip & use defaults/i });
+  const confirmAnalyze = page.getByRole('button', { name: /confirm & analyze/i });
+  const alreadyConfirmed = page.getByRole('button', { name: /re-edit/i });
+
+  await expect.poll(
+    async () => {
+      const parseError = (await page.getByText(/could not parse|parse error|failed to parse/i).first().textContent().catch(() => null))?.trim();
+      if (parseError) return `parse-error:${parseError}`;
+      if (await alreadyConfirmed.isVisible().catch(() => false)) return 'ready';
+      if (await skipDefaults.isVisible().catch(() => false)) return 'ready';
+      if (await confirmAnalyze.isVisible().catch(() => false)) return 'ready';
+      return 'waiting';
+    },
+    { timeout: 60000, message: 'JD skill confirmation never became available' },
+  ).toBe('ready');
+
+  if (await alreadyConfirmed.isVisible().catch(() => false)) {
+    return;
+  }
+  if (await skipDefaults.isVisible().catch(() => false)) {
+    await skipDefaults.click();
+    return;
+  }
+  if (await confirmAnalyze.isVisible().catch(() => false)) {
+    await confirmAnalyze.click();
+    return;
+  }
+  throw new Error('Skills were not confirmed and no confirm/skip control is visible');
+}
+
+export async function goToAnalyzeUploadStep(page: Page) {
+  const uploadStep = page.getByRole('button', { name: /^upload$/i }).first();
+  await expect(uploadStep).toBeVisible({ timeout: 15000 });
+  await uploadStep.click();
+  await expect(page.getByText(/step 2: upload & analyze/i)).toBeVisible({ timeout: 15000 });
 }
 
 export function apiBaseUrl(): string {

@@ -11,7 +11,7 @@ export default defineConfig({
     // PLAYWRIGHT_BASE_URL (empty string falls through) lets the staging E2E
     // workflow target a different environment without a code change.
     baseURL: process.env.PLAYWRIGHT_BASE_URL || 'https://airesume-staging.thetalogics.com',
-    trace: 'on-first-retry',
+    trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
     video: 'retain-on-failure',
   },
