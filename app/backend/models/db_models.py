@@ -1708,7 +1708,8 @@ class AIDecisionLog(Base):
     """
     __tablename__ = "ai_decision_logs"
 
-    id                     = Column(BigInteger, primary_key=True, index=True)
+    # INTEGER on SQLite so the PK autoincrements; BIGINT on Postgres.
+    id                     = Column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True, index=True)
     tenant_id              = Column(Integer, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
     screening_result_id    = Column(Integer, ForeignKey("screening_results.id", ondelete="SET NULL"), nullable=True, index=True)
     candidate_id           = Column(Integer, ForeignKey("candidates.id", ondelete="SET NULL"), nullable=True, index=True)
@@ -1752,7 +1753,7 @@ class BreachLog(Base):
     """Data breach incident register (GDPR Art. 33)."""
     __tablename__ = "breach_logs"
 
-    id                        = Column(BigInteger, primary_key=True, index=True)
+    id                        = Column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True, index=True)
     tenant_id                 = Column(Integer, ForeignKey("tenants.id", ondelete="SET NULL"), nullable=True, index=True)
     detected_at               = Column(DateTime(timezone=True), server_default=func.now())
     breach_type               = Column(String(100), nullable=False)

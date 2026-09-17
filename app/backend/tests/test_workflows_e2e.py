@@ -109,13 +109,11 @@ class TestFullHiringWorkflow:
         assert history.status_code == 200
         assert isinstance(history.json(), list)
 
-        # 5) The screening decision is persisted (candidate + result rows).
-        # Note: the AIDecisionLog audit row uses a BigInteger PK which does not
-        # autoincrement under SQLite, so we assert the ScreeningResult here (the
-        # decision-log write is exercised on Postgres in the migration/CI job).
-        from app.backend.models.db_models import ScreeningResult, Candidate
+        # 5) The screening decision is persisted (candidate + result + audit log).
+        from app.backend.models.db_models import ScreeningResult, Candidate, AIDecisionLog
         assert db.query(ScreeningResult).count() >= 1
         assert db.query(Candidate).count() >= 1
+        assert db.query(AIDecisionLog).count() >= 1
 
 
 class TestAuthLifecycleWorkflow:

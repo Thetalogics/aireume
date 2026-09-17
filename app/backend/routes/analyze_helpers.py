@@ -431,33 +431,29 @@ def _write_ai_decision_log(db: Session, result: ScreeningResult, pipeline_result
             or pipeline_result.get("overall_score")
             or pipeline_result.get("score")
         )
-        db.add(AIDecisionLog(
-            tenant_id=result.tenant_id,
-            screening_result_id=result.id,
-            candidate_id=result.candidate_id,
-            model_name=meta.get("model_name") or pipeline_result.get("model_used"),
-            model_version=meta.get("model_version"),
-            prompt_template_version=meta.get("prompt_template_version"),
-            prompt_hash=meta.get("prompt_hash"),
-            guardrails_triggered=guardrails if isinstance(guardrails, list) else [],
-            fallback_used=bool(meta.get("fallback_used") or pipeline_result.get("fallback_used")),
-            deterministic_score=meta.get("deterministic_score"),
-            llm_score=meta.get("llm_score"),
-            final_score=final_score,
-        ))
+        with db.begin_nested():
+            db.add(AIDecisionLog(
+                tenant_id=result.tenant_id,
+                screening_result_id=result.id,
+                candidate_id=result.candidate_id,
+                model_name=meta.get("model_name") or pipeline_result.get("model_used"),
+                model_version=meta.get("model_version"),
+                prompt_template_version=meta.get("prompt_template_version"),
+                prompt_hash=meta.get("prompt_hash"),
+                guardrails_triggered=guardrails if isinstance(guardrails, list) else [],
+                fallback_used=bool(meta.get("fallback_used") or pipeline_result.get("fallback_used")),
+                deterministic_score=meta.get("deterministic_score"),
+                llm_score=meta.get("llm_score"),
+                final_score=final_score,
+            ))
         db.commit()
     except (ValueError, TypeError, KeyError, json.JSONDecodeError, SQLAlchemyError) as e:
         log.warning(
             "Non-critical: failed to write AIDecisionLog: %s", e,
             extra={"error_code": "DB_ERROR" if isinstance(e, SQLAlchemyError) else "VALIDATION_ERROR"},
         )
-        try:
-            db.rollback()
-        except SQLAlchemyError as rollback_err:
-            log.warning(
-                "Non-critical: Rollback also failed: %s", rollback_err,
-                extra={"error_code": "DB_ERROR"},
-            )
+        # The savepoint already reverted a failed insert. Do not roll back the
+        # outer session: that undoes ScreeningResult / job rows already flushed.
 
 
 def _apply_skill_overrides(jd_analysis: dict, overrides: dict | None) -> dict:

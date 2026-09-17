@@ -62,7 +62,6 @@ class TestCandidateConsent:
 class TestAIDecisionLog:
     def test_create_captures_decision_chain(self, db, tenant, candidate):
         log = AIDecisionLog(
-            id=1,  # BigInteger PK doesn't autoincrement on SQLite (Postgres BIGSERIAL is fine)
             tenant_id=tenant.id, candidate_id=candidate.id,
             model_name="gemma4:31b", model_version="cloud",
             prompt_template_version="2.0", prompt_hash="abc123",
@@ -98,7 +97,6 @@ class TestIdempotencyKey:
 class TestBreachLog:
     def test_create_incident(self, db, tenant):
         breach = BreachLog(
-            id=1,  # BigInteger PK doesn't autoincrement on SQLite (Postgres BIGSERIAL is fine)
             tenant_id=tenant.id, breach_type="unauthorized_access",
             affected_records_count=42,
             affected_data_categories=["email", "resume"],
