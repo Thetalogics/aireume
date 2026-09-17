@@ -543,17 +543,7 @@ def _persist_skill_overrides_to_template(
             parsed_skill_overrides.get("nice_to_have_skills", [])
         )
         db.commit()
-        log.info("Persisted skill overrides to template %s", template_id)
-
-        # Add any new skills to the global registry so they can be extracted from resumes
-        all_skills = (
-            parsed_skill_overrides.get("required_skills", []) +
-            parsed_skill_overrides.get("nice_to_have_skills", [])
-        )
-        from app.backend.services.skill_matcher import add_user_skills_to_registry
-        added = add_user_skills_to_registry(all_skills, db)
-        if added:
-            log.info("Added %d new skills to global registry from template %s", len(added), template_id)
+        log.info("Persisted tenant-scoped skill overrides to template %s", template_id)
     except (json.JSONDecodeError, TypeError, ValueError, KeyError, SQLAlchemyError) as e:
         log.warning(
             "Failed to persist skill overrides to template: %s", e,
@@ -563,13 +553,14 @@ def _persist_skill_overrides_to_template(
 
 # ─── JD cache helpers ─────────────────────────────────────────────────────────
 
-def _get_or_cache_jd(db: Session, job_description: str) -> dict:
+def _get_or_cache_jd(db: Session, job_description: str, tenant_id: int | None = None) -> dict:
     """Parse the JD or return the cached result. Shared across all workers via DB.
 
     Cached entries are automatically invalidated when JD_CACHE_VERSION changes,
     ensuring stale skill-extraction results are never reused after logic updates.
+    Cache keys include tenant_id so tenant skill overrides cannot leak across tenants.
     """
-    jd_hash = hashlib.md5(job_description.encode()).hexdigest()
+    jd_hash = hashlib.md5(f"{tenant_id or 0}:{job_description}".encode()).hexdigest()
     cached = db.query(JdCache).filter(JdCache.hash == jd_hash).first()
     if cached:
         try:
@@ -1423,6 +1414,20 @@ def _check_scoring_weights_size(scoring_weights: str | None) -> None:
             status_code=400,
             detail="Scoring weights exceed maximum size of 4KB"
         )
+
+
+def _parse_user_scoring_weights(scoring_weights: str | None) -> dict | None:
+    if not scoring_weights:
+        return None
+    try:
+        weights = json.loads(scoring_weights)
+    except json.JSONDecodeError:
+        return None
+    from app.backend.services.scoring_weights import ScoringWeightError, canonicalize_scoring_weights
+    try:
+        return canonicalize_scoring_weights(weights, strict=True)
+    except ScoringWeightError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _validate_optional_analyze_payloads(

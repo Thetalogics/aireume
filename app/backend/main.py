@@ -694,6 +694,12 @@ class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
             except ValueError:
                 pass
 
+        body = await request.body()
+        if len(body) > max_size:
+            return JSONResponse(
+                status_code=413,
+                content={"detail": f"Request body too large. Maximum size: {max_size // (1024*1024)}MB"}
+            )
         return await call_next(request)
 
 

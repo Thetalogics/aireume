@@ -97,18 +97,17 @@ def peek_saml_authn_request(request_id: str, tenant_id: int) -> bool:
 
 
 def consume_saml_authn_request(request_id: str, tenant_id: int) -> bool:
-    from app.backend.services.shared_cache import cache_delete, cache_get
+    from app.backend.services.shared_cache import cache_consume_if_tenant
 
     _saml_redis_or_raise()
     require_redis = _saml_state_requires_redis()
     key = _saml_request_key(request_id)
-    stored = cache_get(key, require_redis=require_redis)
-    if not stored or not isinstance(stored, dict):
+    stored = cache_consume_if_tenant(key, tenant_id, require_redis=require_redis)
+    if stored is None or stored is False:
         return False
-    if int(stored.get("tenant_id") or 0) != int(tenant_id):
+    if not isinstance(stored, dict):
         return False
-    cache_delete(key, require_redis=require_redis)
-    return True
+    return int(stored.get("tenant_id") or 0) == int(tenant_id)
 
 
 def _idp_cert_body(pem_str: str) -> str:

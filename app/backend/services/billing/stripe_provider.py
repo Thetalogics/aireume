@@ -122,8 +122,31 @@ class StripeProvider(PaymentProvider):
             }
 
         try:
+            price_id = str((proration_data or {}).get("stripe_price_id") or "").strip()
+            if not price_id.startswith("price_"):
+                return {
+                    "tenant_id": tenant_id,
+                    "subscription_id": subscription_id,
+                    "provider": self.provider_name,
+                    "status": "error",
+                    "error": "Stripe plan change requires a mapped price_... id",
+                    "proration": proration_data,
+                }
+            sub = stripe.Subscription.retrieve(subscription_id)
+            items = (sub.get("items") or {}).get("data") or []
+            if not items:
+                return {
+                    "tenant_id": tenant_id,
+                    "subscription_id": subscription_id,
+                    "provider": self.provider_name,
+                    "status": "error",
+                    "error": "Stripe subscription has no items to update",
+                    "proration": proration_data,
+                }
+            item_id = items[0]["id"]
             sub = stripe.Subscription.modify(
                 subscription_id,
+                items=[{"id": item_id, "price": price_id}],
                 proration_behavior="create_prorations",
             )
             return {
@@ -132,6 +155,7 @@ class StripeProvider(PaymentProvider):
                 "provider": self.provider_name,
                 "status": sub.status,
                 "proration_behavior": "create_prorations",
+                "stripe_price_id": price_id,
                 "proration": proration_data,
             }
         except Exception as exc:

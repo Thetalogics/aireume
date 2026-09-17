@@ -55,15 +55,17 @@ def _apply_trend_factor(skill: str, skill_trends: list) -> float:
     return 1.0
 
 
-def _apply_outcome_factor(skill: str, outcome_patterns: list) -> float:
-    """Skills with higher historical success rate get boosted."""
-    if not outcome_patterns:
+def _apply_outcome_factor(skill: str, outcome_patterns: list, *, enabled: bool) -> float:
+    """Optional contextual multiplier. Never applied unless explicitly enabled."""
+    if not enabled or not outcome_patterns:
         return 1.0
     pattern = next((p for p in outcome_patterns if p.get("skill", "").lower() == skill.lower()), None)
-    if not pattern or pattern.get("sample_size", 0) < 5:
-        return 1.0  # Not enough data to be meaningful
+    if not pattern or int(pattern.get("sample_size") or 0) < 30:
+        return 1.0
+    if pattern.get("confidence") in (None, "low"):
+        return 1.0
     success_rate = pattern.get("success_rate", 0.5)
-    return 0.8 + (success_rate * 0.4)  # Range: 0.8x to 1.2x
+    return 0.8 + (success_rate * 0.4)
 
 
 def _generate_exp_explanation(actual: float, required: float, score: int) -> str:
@@ -230,10 +232,13 @@ def compute_fit_score(
             required_ratio = min(100, required_ratio * avg_trend)
 
         if outcome_patterns and required_matched:
+            enabled = bool(phase3_ctx.get("historical_outcomes_enabled"))
             outcome_adjusted_count = 0.0
             for s in required_matched:
                 skill_name = s if isinstance(s, str) else s.get("skill", "")
-                outcome_adjusted_count += _apply_outcome_factor(skill_name, outcome_patterns)
+                outcome_adjusted_count += _apply_outcome_factor(
+                    skill_name, outcome_patterns, enabled=enabled
+                )
             avg_outcome = outcome_adjusted_count / max(len(required_matched), 1)
             required_ratio = min(100, required_ratio * avg_outcome)
 
@@ -289,27 +294,30 @@ def compute_fit_score(
         risk_penalty = compute_risk_penalty(risk_signals)
 
     # ── Fit score ──────────────────────────────────────────────────────────────
+    # Employment timeline is recruiter context, not a default score dimension.
+    timeline_w = 0.0 if not (scoring_weights and "timeline" in scoring_weights) else w.get("timeline", 0)
+    skills_w = w.get("skills", DEFAULT_WEIGHTS["skills"])
+    if timeline_w == 0 and not (scoring_weights and "timeline" in scoring_weights):
+        skills_w = skills_w + w.get("timeline", DEFAULT_WEIGHTS.get("timeline", 0))
+
     if team_gap_bonus > 0:
-        # Redistribute: take 5% from skills weight, add team_fit dimension
-        # skills weight becomes 0.25 (from 0.30), team_fit gets 0.05
         fit_score = round(
-            skill_score      * (w.get("skills", DEFAULT_WEIGHTS["skills"]) - 0.05)       +
+            skill_score      * (skills_w - 0.05)       +
             team_gap_bonus   * 0.05                                                       +
             exp_score        * w.get("experience", DEFAULT_WEIGHTS["experience"])   +
             arch_score       * w.get("architecture", DEFAULT_WEIGHTS["architecture"]) +
             edu_score        * w.get("education", DEFAULT_WEIGHTS["education"])    +
-            timeline_score   * w.get("timeline", DEFAULT_WEIGHTS["timeline"])     +
+            timeline_score   * timeline_w     +
             domain_score     * w.get("domain", DEFAULT_WEIGHTS["domain"])       -
             risk_penalty     * w.get("risk", DEFAULT_WEIGHTS["risk"])
         )
     else:
-        # Normal weights (no team context)
         fit_score = round(
-            skill_score    * w.get("skills", DEFAULT_WEIGHTS["skills"])       +
+            skill_score    * skills_w       +
             exp_score      * w.get("experience", DEFAULT_WEIGHTS["experience"])   +
             arch_score     * w.get("architecture", DEFAULT_WEIGHTS["architecture"]) +
             edu_score      * w.get("education", DEFAULT_WEIGHTS["education"])    +
-            timeline_score * w.get("timeline", DEFAULT_WEIGHTS["timeline"])     +
+            timeline_score * timeline_w     +
             domain_score   * w.get("domain", DEFAULT_WEIGHTS["domain"])       -
             risk_penalty   * w.get("risk", DEFAULT_WEIGHTS["risk"])
         )

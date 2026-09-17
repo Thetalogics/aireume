@@ -226,9 +226,9 @@ def add_comment(
 
 # ─── Team Skill Profile endpoints ──────────────────────────────────────────────
 
-def _get_or_cache_jd(db: Session, jd_text: str) -> dict:
+def _get_or_cache_jd(db: Session, jd_text: str, tenant_id: int | None = None) -> dict:
     """Parse a JD or return the cached result (mirrors analyze.py pattern)."""
-    jd_hash = hashlib.md5(jd_text.encode()).hexdigest()
+    jd_hash = hashlib.md5(f"{tenant_id or 0}:{jd_text}".encode()).hexdigest()
     cached = db.query(JdCache).filter(JdCache.hash == jd_hash).first()
     if cached:
         try:
@@ -343,7 +343,7 @@ def gap_analysis(
             raise HTTPException(status_code=404, detail="Role template not found")
         jd_text = template.jd_text
 
-    jd_analysis = _get_or_cache_jd(db, jd_text)
+    jd_analysis = _get_or_cache_jd(db, jd_text, current_user.tenant_id)
 
     result = compute_team_gaps(
         db=db,

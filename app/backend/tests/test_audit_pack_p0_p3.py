@@ -277,9 +277,14 @@ class TestReqShareLinkPasscode:
         )
         assert resp.status_code == 200, resp.text
         token = resp.json()["token"]
-        link = db.query(HandoffShareLink).filter(HandoffShareLink.token == token).first()
+        from app.backend.services.share_crypto import hash_share_token
+        link = db.query(HandoffShareLink).filter(
+            HandoffShareLink.token_hash == hash_share_token(token)
+        ).first()
+        assert link.token is None
         assert link.passcode_hash
         assert link.passcode_hash != "s3cret"
+        assert link.passcode_hash.startswith("scrypt$")
 
 
 class TestSkillFilterQuotedMatch:

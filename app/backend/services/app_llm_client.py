@@ -49,6 +49,11 @@ async def generate_app_llm(
 ) -> str | None:
     """Generate text via Gemini when configured, else Ollama/OpenRouter fallbacks."""
     from app.backend.services.circuit_breaker import get_circuit_breaker, CircuitBreakerOpenError
+    from app.backend.services.external_ai_boundary import prepare_external_prompt
+    from app.backend.services.llm_concurrency import LLMConcurrencySaturated, llm_slot
+
+    prompt = prepare_external_prompt(prompt)
+    system = prepare_external_prompt(system) if system else None
 
     breaker = get_circuit_breaker("llm")
 
@@ -65,7 +70,11 @@ async def generate_app_llm(
         )
 
     try:
-        return await breaker.call(_inner)
+        with llm_slot("app"):
+            return await breaker.call(_inner)
+    except LLMConcurrencySaturated:
+        logger.error("%s LLM concurrency saturated", log_label)
+        return None
     except CircuitBreakerOpenError:
         logger.error("%s LLM circuit breaker open", log_label)
         return None

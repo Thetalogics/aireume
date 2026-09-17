@@ -1,15 +1,8 @@
 """
 Adverse Action Report Service
 
-Generates legally compliant adverse action documentation for hiring decisions.
-Required for EEOC compliance and legal defensibility.
-
-Provides structured reports showing:
-- Decision factors (why candidate was rejected/held)
-- Evidence for each factor
-- Bias mitigation documentation
-- Full audit trail
-- Candidate communication templates
+Generates recruiter-facing adverse-action *workflow assistance* (not legal advice).
+Templates are jurisdiction-agnostic unless a tenant configures legal review.
 """
 import logging
 import json
@@ -108,12 +101,13 @@ class AdverseActionService:
                 "communication_quality": analysis_result.get("communication_quality"),
             },
             
-            # Legal compliance
-            "compliance": {
-                "eeoc_compliant": True,
+            "legal_review": {
+                "disclaimer": (
+                    "This report is workflow assistance only. It is not legal advice and does "
+                    "not certify EEOC, FCRA, or other jurisdictional compliance. Have counsel "
+                    "review notices before sending."
+                ),
                 "evidence_based": len(decision_factors) > 0,
-                "protected_class_neutral": analysis_result.get("pii_redacted", False),
-                "job_related": True,
                 "documented": True,
             },
             
@@ -258,11 +252,11 @@ Decision Factors ({factors_count}):
         
         summary += f"""
 
-Compliance Status:
-- EEOC Compliant: {report['compliance']['eeoc_compliant']}
-- Evidence Based: {report['compliance']['evidence_based']}
-- PII Redacted: {report['bias_mitigation']['pii_redacted']}
-- Evidence Quality: {report['bias_mitigation']['evidence_quality_score']:.1f}/100
+Legal review:
+- {report.get('legal_review', {}).get('disclaimer', 'Counsel review required before sending notices.')}
+- Evidence based: {report.get('legal_review', {}).get('evidence_based')}
+- PII redacted: {report['bias_mitigation']['pii_redacted']}
+- Evidence quality: {report['bias_mitigation']['evidence_quality_score']:.1f}/100
 """
         
         return summary

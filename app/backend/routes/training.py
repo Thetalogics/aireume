@@ -1,5 +1,6 @@
 """
-Custom AI training — label outcomes, trigger fine-tuning via Ollama Modelfile.
+Tenant prompt personalization — labelled outcomes are stored as a Modelfile SYSTEM prompt.
+This is not weight/adapter fine-tuning.
 """
 import json
 import logging
@@ -27,9 +28,8 @@ OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
 def _training_enabled() -> bool:
     """
-    Fine-tuning is a beta/WIP feature. It is disabled by default in production
-    and must be explicitly enabled via TRAINING_ENABLED=true. In non-production
-    environments it defaults to enabled for development.
+    Fine-tuning-style training is not implemented. Prompt personalization is disabled
+    by default in production and must be enabled via TRAINING_ENABLED=true.
     """
     explicit = os.getenv("TRAINING_ENABLED")
     if explicit is not None:
@@ -88,7 +88,7 @@ def start_training(
     if not _training_enabled():
         raise HTTPException(
             status_code=403,
-            detail="Model fine-tuning is in beta and is currently disabled. Contact your administrator to enable it."
+            detail="Prompt personalization is in beta and is currently disabled. Contact your administrator to enable it."
         )
 
     examples = (

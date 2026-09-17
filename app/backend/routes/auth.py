@@ -274,9 +274,7 @@ def register(request: Request, body: RegisterRequest, db: Session = Depends(get_
             headers={"Retry-After": str(retry_after)}
         )
 
-    if db.query(User).filter(User.email == body.email).first():
-        raise HTTPException(status_code=400, detail="Email already registered")
-
+    # Same email may exist in another workspace; uniqueness is (tenant_id, email).
     if len(body.password) < 8:
         raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
     try:
@@ -557,10 +555,22 @@ def refresh_token(request: Request, body: RefreshRequest = None, db: Session = D
 @router.get("/me")
 def get_me(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     tenant = db.query(Tenant).filter(Tenant.id == current_user.tenant_id).first()
-    return {
+    is_production = os.getenv("ENVIRONMENT", "development") == "production"
+    csrf_token = secrets.token_hex(32)
+    response = JSONResponse(content={
         "user": _user_dict(current_user),
         "tenant": _tenant_dict(tenant) if tenant else None,
-    }
+    })
+    response.set_cookie(
+        key="csrf_token",
+        value=csrf_token,
+        httponly=False,
+        secure=is_production,
+        samesite="lax",
+        max_age=3600,
+        path="/",
+    )
+    return response
 
 
 @router.post("/logout")
@@ -645,50 +655,43 @@ def forgot_password(request: Request, request_data: dict, db: Session = Depends(
 
     email = request_data.get("email", "").strip().lower()
 
-    # Always return success to prevent email enumeration
-    user = db.query(User).filter(User.email == email, User.is_active == True).first()
-    if not user:
+    users = db.query(User).filter(User.email == email, User.is_active == True).all()
+    if not users:
         return {"message": "If an account with that email exists, a reset link has been sent."}
 
-    # Delete any existing tokens for this user
-    db.query(PasswordResetToken).filter(PasswordResetToken.user_id == user.id).delete()
-
-    # Create new token
-    token = secrets.token_urlsafe(32)
-    reset_token = PasswordResetToken(
-        user_id=user.id,
-        token=token,
-        expires_at=datetime.now(timezone.utc) + timedelta(hours=1)
-    )
-    db.add(reset_token)
-    db.commit()
-
-    # Send password reset email
-    try:
-        from app.backend.services.email_service import email_service, get_tenant_email_service
-        frontend_url = os.environ.get("FRONTEND_URL", "http://localhost:5173")
-        reset_url = f"{frontend_url}/reset-password/{token}"
-        html_body = (
-            f"<h2>Password Reset Request</h2>"
-            f"<p>Click the link below to reset your password. This link expires in 1 hour.</p>"
-            f'<p><a href="{reset_url}">Reset Password</a></p>'
-            f"<p>If you didn't request this, you can safely ignore this email.</p>"
-            f"<hr><p style='color:gray;font-size:12px;'>"
-            f"This is an automated message from ARIA Resume Intelligence.</p>"
+    for user in users:
+        db.query(PasswordResetToken).filter(PasswordResetToken.user_id == user.id).delete()
+        token = secrets.token_urlsafe(32)
+        reset_token = PasswordResetToken(
+            user_id=user.id,
+            token=token,
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1)
         )
-        # Try tenant-specific email config first, fall back to global
-        tenant_svc = get_tenant_email_service(db, user.tenant_id) if user.tenant_id else None
-        if tenant_svc:
-            tenant_svc.send_email(user.email, "Password Reset - ARIA Platform", html_body)
-        else:
-            email_service.send_email(user.email, "Password Reset - ARIA Platform", html_body)
-    except (smtplib.SMTPException, OSError, ValueError, RuntimeError) as e:
-        logger.error(
-            "Failed to send password reset email: %s", e,
-            extra={"error_code": "EMAIL_SEND_ERROR"},
-        )
-
-    logger.info("Password reset token generated for user %s", user.id)
+        db.add(reset_token)
+        db.commit()
+        try:
+            from app.backend.services.email_service import email_service, get_tenant_email_service
+            frontend_url = os.environ.get("FRONTEND_URL", "http://localhost:5173")
+            reset_url = f"{frontend_url}/reset-password/{token}"
+            html_body = (
+                f"<h2>Password Reset Request</h2>"
+                f"<p>Click the link below to reset your password. This link expires in 1 hour.</p>"
+                f'<p><a href="{reset_url}">Reset Password</a></p>'
+                f"<p>If you didn't request this, you can safely ignore this email.</p>"
+                f"<hr><p style='color:gray;font-size:12px;'>"
+                f"This is an automated message from ARIA Resume Intelligence.</p>"
+            )
+            tenant_svc = get_tenant_email_service(db, user.tenant_id) if user.tenant_id else None
+            if tenant_svc:
+                tenant_svc.send_email(user.email, "Password Reset - ARIA Platform", html_body)
+            else:
+                email_service.send_email(user.email, "Password Reset - ARIA Platform", html_body)
+        except (smtplib.SMTPException, OSError, ValueError, RuntimeError) as e:
+            logger.error(
+                "Failed to send password reset email: %s", e,
+                extra={"error_code": "EMAIL_SEND_ERROR"},
+            )
+        logger.info("Password reset token generated for user %s", user.id)
 
     return {"message": "If an account with that email exists, a reset link has been sent."}
 

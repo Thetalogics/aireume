@@ -141,37 +141,53 @@ def get_override_rate_by_industry(
         return {}
 
 
+def compute_reviewer_agreement(
+    predicted: List[str],
+    reviewed: List[str],
+    positive_label: str = "shortlist",
+) -> Dict[str, Any]:
+    """Agreement with human labels. This is not model accuracy vs ground truth."""
+    if len(predicted) != len(reviewed) or not predicted:
+        return {
+            "agreement_rate": None,
+            "precision": None,
+            "recall": None,
+            "sample_size": len(predicted),
+            "undefined": True,
+        }
+    n = len(predicted)
+    agree = sum(1 for a, b in zip(predicted, reviewed) if a == b)
+    tp = sum(1 for a, b in zip(predicted, reviewed) if a == positive_label and b == positive_label)
+    fp = sum(1 for a, b in zip(predicted, reviewed) if a == positive_label and b != positive_label)
+    fn = sum(1 for a, b in zip(predicted, reviewed) if a != positive_label and b == positive_label)
+    precision = tp / (tp + fp) if (tp + fp) else None
+    recall = tp / (tp + fn) if (tp + fn) else None
+    return {
+        "agreement_rate": agree / n,
+        "precision": precision,
+        "recall": recall,
+        "sample_size": n,
+        "undefined": False,
+        "metric_definition": "agreement_rate is reviewer/AI label match, not ground-truth accuracy",
+    }
+
+
 def get_accuracy_metrics(
     db: Session,
     tenant_id: Optional[int] = None,
     days: int = 30,
 ) -> Dict[str, Any]:
-    """Get comprehensive accuracy metrics for dashboard.
-
-    Args:
-        db: Database session
-        tenant_id: Optional tenant filter
-        days: Number of days to analyze
-
-    Returns:
-        Dict with accuracy metrics
-    """
+    """Reviewer agreement metrics. Not model accuracy."""
     override_rates = get_override_rate_by_industry(db, tenant_id, days)
-
-    # Calculate overall accuracy (1 - override_rate)
-    overall_accuracy = 1.0 - (
-        sum(override_rates.values()) / len(override_rates)
-        if override_rates else 0.0
-    )
-
+    rates = list(override_rates.values())
+    mean_override = (sum(rates) / len(rates)) if rates else 0.0
     return {
-        "overall_accuracy": overall_accuracy,
+        "overall_agreement_rate": 1.0 - mean_override,
+        "overall_accuracy": 1.0 - mean_override,  # deprecated alias
         "override_rates_by_industry": override_rates,
-        "total_screens": sum(
-            stats.get("total", 0)
-            for stats in get_override_rate_by_industry(db, tenant_id, days).keys()
-        ),
+        "total_screens": None,
         "period_days": days,
+        "metric_definition": "agreement with recruiter overrides, not ground-truth accuracy",
     }
 
 
@@ -234,6 +250,7 @@ class ScoringExperiment:
                 "description": data["description"],
                 "impressions": impressions,
                 "override_rate": overrides / impressions if impressions > 0 else 0,
+                "agreement_rate": 1.0 - (overrides / impressions if impressions > 0 else 0),
                 "accuracy": 1.0 - (overrides / impressions if impressions > 0 else 0),
             }
 

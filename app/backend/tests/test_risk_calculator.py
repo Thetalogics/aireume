@@ -36,13 +36,13 @@ class TestComputeRiskPenalty:
         assert compute_risk_penalty(signals) == 0
 
     def test_missing_severity_key_defaults_to_low(self):
-        """Missing 'severity' key should default to 'low' → penalty of 4."""
+        """Gap/stability types are excluded from automated scoring (AUD-025)."""
         signals = [{"type": "gap"}]
-        assert compute_risk_penalty(signals) == 4
+        assert compute_risk_penalty(signals) == 0
 
     def test_multiple_missing_severity_keys(self):
         signals = [{"type": "gap"}, {"type": "stability"}]
-        assert compute_risk_penalty(signals) == 4 + 4
+        assert compute_risk_penalty(signals) == 0
 
     def test_combination_with_unknown_and_missing(self):
         signals = [

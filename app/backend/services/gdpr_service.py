@@ -82,6 +82,41 @@ def hard_delete_candidate(db: Session, candidate_id: int, tenant_id: int, reason
         # Store anonymized audit info
         candidate_hash = hashlib.sha256(f"{candidate.email}|{candidate_id}".encode()).hexdigest()[:16]
 
+        if candidate.resume_file_key or candidate.resume_pdf_key:
+            from app.backend.models.db_models import PendingObjectDeletion
+            from app.backend.services.object_storage import ObjectStorageService
+            storage_ok = True
+            for key in (candidate.resume_file_key, candidate.resume_pdf_key):
+                if not key:
+                    continue
+                deleted_ok = False
+                try:
+                    if ObjectStorageService.is_available():
+                        deleted_ok = bool(ObjectStorageService.delete(key))
+                    else:
+                        deleted_ok = False
+                except Exception as exc:
+                    storage_ok = False
+                    deleted["object_storage_error"] = str(exc)
+                    deleted_ok = False
+                if not deleted_ok:
+                    storage_ok = False
+                    db.add(PendingObjectDeletion(
+                        tenant_id=tenant_id,
+                        storage_key=key,
+                        candidate_id=candidate_id,
+                        attempts=1,
+                        last_error=deleted.get("object_storage_error") or "delete_failed",
+                    ))
+            deleted["object_storage_complete"] = storage_ok
+            if not storage_ok:
+                db.commit()
+                return {
+                    "error": "object_storage_delete_incomplete",
+                    "deleted": False,
+                    **deleted,
+                }
+
         # Delete screening results
         results = db.query(ScreeningResult).filter(
             ScreeningResult.candidate_id == candidate_id
@@ -150,12 +185,53 @@ def anonymize_candidate(db: Session, candidate_id: int, tenant_id: int, reason: 
             return {"error": "Candidate not found", **anonymized}
 
         candidate_hash = hashlib.sha256(f"{candidate.email or 'unknown'}|{candidate_id}".encode()).hexdigest()[:16]
+        markers = {
+            value for value in (
+                candidate.name, candidate.email, candidate.phone,
+                getattr(candidate, "linkedin_url", None),
+                getattr(candidate, "github_url", None),
+            ) if value
+        }
 
         for field in PII_FIELDS_TO_ANONYMIZE:
             if hasattr(candidate, field):
                 setattr(candidate, field, f"[ANONYMIZED_{candidate_hash}]")
                 anonymized["fields"] += 1
 
+        candidate.raw_resume_text = None
+        candidate.parser_snapshot_json = None
+        candidate.ai_professional_summary = None
+        from app.backend.models.db_models import ScreeningResult, CandidateNote, Comment, TranscriptAnalysis, VoiceScreeningSession
+        results = db.query(ScreeningResult).filter(ScreeningResult.candidate_id == candidate_id).all()
+        marker_fields = ("resume_text", "parsed_data", "analysis_result", "narrative_json", "jd_text")
+        for result in results:
+            for field in marker_fields:
+                value = getattr(result, field, None)
+                if isinstance(value, str):
+                    cleaned = value
+                    for marker in markers:
+                        cleaned = cleaned.replace(marker, "[ANONYMIZED]")
+                    setattr(result, field, "[ANONYMIZED]" if cleaned != value or any(m in (value or "") for m in markers) else "[ANONYMIZED]")
+                    anonymized["fields"] += 1
+            comments = db.query(Comment).filter(Comment.result_id == result.id).all()
+            for comment in comments:
+                comment.text = "[ANONYMIZED]"
+                anonymized["fields"] += 1
+        notes = db.query(CandidateNote).filter(CandidateNote.candidate_id == candidate_id).all()
+        for note in notes:
+            note.text = "[ANONYMIZED]"
+            anonymized["fields"] += 1
+        transcripts = db.query(TranscriptAnalysis).filter(TranscriptAnalysis.candidate_id == candidate_id).all()
+        for row in transcripts:
+            row.transcript_text = "[ANONYMIZED]"
+            if getattr(row, "analysis_result", None):
+                row.analysis_result = "{}"
+            anonymized["fields"] += 1
+        sessions = db.query(VoiceScreeningSession).filter(VoiceScreeningSession.candidate_id == candidate_id).all()
+        for session in sessions:
+            if getattr(session, "transcript_json", None):
+                session.transcript_json = "[]"
+                anonymized["fields"] += 1
         # Mark as anonymized
         if hasattr(candidate, "status"):
             candidate.status = "anonymized"
@@ -238,7 +314,8 @@ def export_candidate_data(db: Session, candidate_id: int, tenant_id: int) -> Dic
     and voice screening sessions.
     """
     from app.backend.models.db_models import (
-        Candidate, ScreeningResult, VoiceScreeningSession,
+        Candidate, ScreeningResult, VoiceScreeningSession, CandidateNote, Comment,
+        RequisitionCandidate,
     )
 
     candidate = db.query(Candidate).filter(
@@ -250,6 +327,8 @@ def export_candidate_data(db: Session, candidate_id: int, tenant_id: int) -> Dic
         return {"error": "Candidate not found"}
 
     export = {
+        "export_version": "1.0",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
         "candidate": {
             "name": candidate.name,
             "email": candidate.email,
@@ -259,6 +338,9 @@ def export_candidate_data(db: Session, candidate_id: int, tenant_id: int) -> Dic
             "created_at": candidate.created_at.isoformat() if candidate.created_at else None,
         },
         "screening_results": [],
+        "comments": [],
+        "notes": [],
+        "requisition_associations": [],
         "voice_sessions": [],
     }
 
@@ -267,15 +349,41 @@ def export_candidate_data(db: Session, candidate_id: int, tenant_id: int) -> Dic
     ).all()
 
     for r in results:
+        analysis = {}
+        try:
+            analysis = json.loads(r.analysis_result or "{}")
+        except (TypeError, json.JSONDecodeError):
+            analysis = {}
+        created = getattr(r, "timestamp", None) or getattr(r, "created_at", None)
         export["screening_results"].append({
             "id": r.id,
-            "fit_score": r.fit_score,
-            "deterministic_score": r.deterministic_score,
-            "eligibility_status": r.eligibility_status,
-            "matched_skills": r.matched_skills,
-            "missing_skills": r.missing_skills,
-            "final_recommendation": r.final_recommendation,
-            "created_at": r.created_at.isoformat() if r.created_at else None,
+            "fit_score": analysis.get("fit_score"),
+            "deterministic_score": getattr(r, "deterministic_score", None),
+            "eligibility_status": getattr(r, "eligibility_status", None),
+            "matched_skills": getattr(r, "matched_skills", None),
+            "missing_skills": getattr(r, "missing_skills", None),
+            "final_recommendation": getattr(r, "final_recommendation", None) or getattr(r, "status", None),
+            "created_at": created.isoformat() if created else None,
+        })
+        comments = db.query(Comment).filter(Comment.result_id == r.id).all()
+        for comment in comments:
+            export["comments"].append({
+                "result_id": r.id,
+                "text": comment.text,
+                "created_at": comment.created_at.isoformat() if comment.created_at else None,
+            })
+
+    notes = db.query(CandidateNote).filter(CandidateNote.candidate_id == candidate_id).all()
+    for note in notes:
+        export["notes"].append({"text": note.text})
+
+    associations = db.query(RequisitionCandidate).filter(
+        RequisitionCandidate.candidate_id == candidate_id
+    ).all()
+    for assoc in associations:
+        export["requisition_associations"].append({
+            "requisition_id": assoc.requisition_id,
+            "pipeline_status": assoc.pipeline_status,
         })
 
     sessions = db.query(VoiceScreeningSession).filter(

@@ -79,7 +79,25 @@ GUARDRAIL_TOKEN_BUDGET_EXCEEDED_TOTAL = Counter(
 RESUME_PARSE_DURATION = Histogram(
     "aria_resume_parse_duration_seconds",
     "Duration of resume parsing in seconds",
-    buckets=[0.1, 0.5, 1, 2, 5, 10]
+    buckets=[0.5, 1, 2, 5, 10, 30]
+)
+
+SCREENING_TOTAL = Counter(
+    "aria_screening_total",
+    "Screening completions",
+    ["result"],
+)
+
+QUEUE_WAIT_SECONDS = Histogram(
+    "aria_queue_wait_seconds",
+    "Time from enqueue to processing start",
+    buckets=[1, 5, 15, 30, 60, 120, 300],
+)
+
+QUOTA_REJECTED_TOTAL = Counter(
+    "aria_quota_rejected_total",
+    "Quota rejections",
+    ["surface"],
 )
 
 # Custom metrics for batch operations

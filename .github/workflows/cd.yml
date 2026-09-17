@@ -59,7 +59,7 @@ jobs:
       DH_USER: ${{ secrets.DOCKERHUB_USERNAME }}
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
@@ -76,7 +76,9 @@ jobs:
         context: .
         file: ./app/backend/Dockerfile
         push: true
-        tags: ${{ env.DH_USER }}/resume-backend:${{ env.IMAGE_TAG }}
+        tags: |
+          ${{ env.DH_USER }}/resume-backend:${{ github.sha }}
+          ${{ env.DH_USER }}/resume-backend:${{ env.IMAGE_TAG }}
         build-args: |
           BUILD_ID=${{ github.sha }}
           GIT_SHA=${{ github.sha }}
@@ -89,7 +91,9 @@ jobs:
       with:
         context: ./app/frontend
         push: true
-        tags: ${{ env.DH_USER }}/resume-frontend:${{ env.IMAGE_TAG }}
+        tags: |
+          ${{ env.DH_USER }}/resume-frontend:${{ github.sha }}
+          ${{ env.DH_USER }}/resume-frontend:${{ env.IMAGE_TAG }}
         build-args: |
           BUILD_ID=${{ github.sha }}
           GIT_SHA=${{ github.sha }}
@@ -102,7 +106,9 @@ jobs:
       with:
         context: ./nginx
         push: true
-        tags: ${{ env.DH_USER }}/resume-nginx:${{ env.IMAGE_TAG }}
+        tags: |
+          ${{ env.DH_USER }}/resume-nginx:${{ github.sha }}
+          ${{ env.DH_USER }}/resume-nginx:${{ env.IMAGE_TAG }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
         provenance: false
@@ -113,7 +119,9 @@ jobs:
         context: .
         file: ./app/voice_agent/Dockerfile.livekit
         push: true
-        tags: ${{ env.DH_USER }}/resume-livekit:${{ env.IMAGE_TAG }}
+        tags: |
+          ${{ env.DH_USER }}/resume-livekit:${{ github.sha }}
+          ${{ env.DH_USER }}/resume-livekit:${{ env.IMAGE_TAG }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
         provenance: false
@@ -124,7 +132,9 @@ jobs:
         context: .
         file: ./app/speech_service/Dockerfile
         push: true
-        tags: ${{ env.DH_USER }}/resume-speech-service:${{ env.IMAGE_TAG }}
+        tags: |
+          ${{ env.DH_USER }}/resume-speech-service:${{ github.sha }}
+          ${{ env.DH_USER }}/resume-speech-service:${{ env.IMAGE_TAG }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
         provenance: false
@@ -135,7 +145,9 @@ jobs:
         context: .
         file: ./app/voice_agent/Dockerfile
         push: true
-        tags: ${{ env.DH_USER }}/resume-voice-agent:${{ env.IMAGE_TAG }}
+        tags: |
+          ${{ env.DH_USER }}/resume-voice-agent:${{ github.sha }}
+          ${{ env.DH_USER }}/resume-voice-agent:${{ env.IMAGE_TAG }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
         provenance: false
@@ -156,4 +168,4 @@ jobs:
           echo "  Promote a production release manually on the VPS:"
           echo "    docker compose -f docker-compose.prod.yml pull"
           echo "    docker compose -f docker-compose.prod.yml up -d"
-          echo "  (Set WATCHTOWER_MONITOR_ONLY=false to re-enable auto-deploys.)"
+          echo "Immutable git SHA tags were also pushed: ${{ github.sha }}"

@@ -1041,7 +1041,8 @@ class HandoffShareLink(Base):
     __tablename__ = "handoff_share_links"
 
     id = Column(Integer, primary_key=True, index=True)
-    token = Column(String(64), unique=True, nullable=False, index=True)
+    token = Column(String(64), unique=True, nullable=True, index=True)
+    token_hash = Column(String(64), unique=True, nullable=True, index=True)
     tenant_id = Column(Integer, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
     role_template_id = Column(Integer, ForeignKey("role_templates.id", ondelete="CASCADE"), nullable=True, index=True)
     requisition_id = Column(Integer, ForeignKey("requisitions.id", ondelete="CASCADE"), nullable=True, index=True)
@@ -1050,12 +1051,25 @@ class HandoffShareLink(Base):
     expires_at = Column(DateTime(timezone=True), nullable=True)
     revoked_at = Column(DateTime(timezone=True), nullable=True)
     view_count = Column(Integer, nullable=False, default=0)
-    passcode_hash = Column(String(64), nullable=True)
+    passcode_hash = Column(String(128), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     role_template = relationship("RoleTemplate")
     requisition = relationship("Requisition")
     created_by_user = relationship("User")
+
+
+class PendingObjectDeletion(Base):
+    """Retryable object-storage deletion after GDPR/hard-delete failures."""
+    __tablename__ = "pending_object_deletions"
+
+    id = Column(Integer, primary_key=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    storage_key = Column(String(500), nullable=False)
+    candidate_id = Column(Integer, nullable=True)
+    attempts = Column(Integer, nullable=False, default=0)
+    last_error = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
 # ─── Historical learning system ────────────────────────────────────────────────

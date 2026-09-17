@@ -446,11 +446,11 @@ class TestCsvImportNotAnAts:
         assert "ATS" not in source
         resp = auth_client.post(
             "/api/candidates/import/csv",
-            files={"file_id": ("id.txt", b"x", "text/plain")},
+            files={"file": ("people.csv", b"name,email\nAda,ada@example.com\n", "text/csv")},
         )
-        assert resp.status_code in (501, 422)
-        if resp.status_code == 501:
-            assert "ATS" not in str(resp.json().get("detail", "")).upper()
+        assert resp.status_code in (200, 403, 422)
+        if resp.status_code == 200:
+            assert "created" in resp.json()
 
 
 class TestProductionStorageFailClosed:

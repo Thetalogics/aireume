@@ -511,7 +511,9 @@ def change_tenant_plan(
         # Apply proration through the active payment provider
         if not proration.get("skipped", False):
             try:
+                from app.backend.services.plan_entitlement_service import stripe_price_id_for_plan
                 provider = get_payment_provider(db)
+                proration = {**proration, "stripe_price_id": stripe_price_id_for_plan(new_plan)}
                 provider_result = provider.prorate_plan_change(
                     tenant_id=tenant.id,
                     subscription_id=tenant.stripe_subscription_id or "",

@@ -1113,19 +1113,20 @@ def create_req_share_link(
     db: Session = Depends(get_db),
 ):
     import secrets
-    import hashlib
     from datetime import timedelta
     from app.backend.models.db_models import HandoffShareLink
+    from app.backend.services.share_crypto import hash_passcode, hash_share_token, new_share_token
 
     req = _load_req(db, req_id, current_user.tenant_id)
     expires_in = int(body.get("expires_in_days") or 14)
-    token = secrets.token_urlsafe(32)
+    token = new_share_token()
     passcode = body.get("passcode")
     passcode_hash = None
     if isinstance(passcode, str) and passcode.strip():
-        passcode_hash = hashlib.sha256(passcode.encode("utf-8")).hexdigest()
+        passcode_hash = hash_passcode(passcode)
     link = HandoffShareLink(
-        token=token,
+        token=None,
+        token_hash=hash_share_token(token),
         tenant_id=current_user.tenant_id,
         requisition_id=req_id,
         role_template_id=req.legacy_role_template_id,
@@ -1140,8 +1141,8 @@ def create_req_share_link(
     base = str(request.base_url).rstrip("/")
     return {
         "id": link.id,
-        "token": link.token,
-        "url": f"{base}/handoff/{link.token}",
+        "token": token,
+        "url": f"{base}/handoff/{token}",
         "label": link.label,
         "expires_at": link.expires_at.isoformat() if link.expires_at else None,
     }
@@ -1171,8 +1172,8 @@ def list_req_share_links(
     return [
         {
             "id": l.id,
-            "token": l.token,
-            "url": f"{base}/handoff/{l.token}",
+            "token": None,
+            "url": None,
             "label": l.label,
             "view_count": l.view_count or 0,
         }

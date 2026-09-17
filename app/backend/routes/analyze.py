@@ -119,6 +119,7 @@ from app.backend.routes.analyze_helpers import (
     _enrich_skills_with_market_data,
     _check_scoring_weights_size,
     _validate_optional_analyze_payloads,
+    _parse_user_scoring_weights,
     _assert_custom_weights_allowed,
     _assert_custom_weights_allowed_if_provided,
     _parse_resume_with_doc_conversion,
@@ -219,7 +220,7 @@ async def jd_parse_preview(
     _check_jd_size(jd_text)
 
     # Use the same caching logic as /api/analyze
-    jd_analysis = _get_or_cache_jd(db, jd_text)
+    jd_analysis = _get_or_cache_jd(db, jd_text, current_user.tenant_id)
 
     # Enrich skills with confidence/source metadata
     seniority = jd_analysis.get("seniority", "mid")
@@ -495,12 +496,7 @@ async def analyze_endpoint(
     if not allowed:
         raise HTTPException(status_code=429, detail=message)
 
-    weights = None
-    if scoring_weights:
-        try:
-            weights = json.loads(scoring_weights)
-        except json.JSONDecodeError as e:
-            log.warning("Non-critical: Invalid scoring_weights JSON, using defaults: %s", e)
+    weights = _parse_user_scoring_weights(scoring_weights)
     
     # Parse skill_overrides JSON (accepts strings or proficiency dicts)
     parsed_skill_overrides = None
@@ -586,7 +582,7 @@ async def analyze_endpoint(
                                    "phone": existing.phone},
             }
             gap_analysis = json.loads(existing.gap_analysis_json or "{}")
-            jd_analysis  = _get_or_cache_jd(db, job_description)
+            jd_analysis  = _get_or_cache_jd(db, job_description, current_user.tenant_id)
             _apply_skill_overrides(jd_analysis, parsed_skill_overrides)
 
             # Build Phase 3 context for scoring integration
@@ -672,7 +668,7 @@ async def analyze_endpoint(
         pdf_bytes = None
 
     gap_analysis = analyze_gaps(parsed_data.get("work_experience", []))
-    jd_analysis  = _get_or_cache_jd(db, job_description)
+    jd_analysis  = _get_or_cache_jd(db, job_description, current_user.tenant_id)
     _apply_skill_overrides(jd_analysis, parsed_skill_overrides)
 
     # Build Phase 3 context for scoring integration
@@ -955,7 +951,7 @@ async def analyze_stream_endpoint(
         raise HTTPException(status_code=429, detail=message)
 
     gap_analysis = analyze_gaps(parsed_data.get("work_experience", []))
-    jd_analysis  = _get_or_cache_jd(db, job_description)
+    jd_analysis  = _get_or_cache_jd(db, job_description, current_user.tenant_id)
     _apply_skill_overrides(jd_analysis, parsed_skill_overrides)
 
     # Build Phase 3 context for scoring integration
@@ -1419,7 +1415,7 @@ async def batch_analyze_chunked_endpoint(
     )
 
     # Pre-parse JD once
-    _get_or_cache_jd(db, job_description)
+    _get_or_cache_jd(db, job_description, current_user.tenant_id)
 
     # Process all resumes with semaphore-wrapped calls (fast Python scoring)
     tasks = [
@@ -1744,7 +1740,7 @@ async def batch_analyze_stream_endpoint(
     )
 
     # Pre-parse JD once
-    _get_or_cache_jd(db, job_description)
+    _get_or_cache_jd(db, job_description, current_user.tenant_id)
 
     # Extract tenant_id while session is still active
     tenant_id = current_user.tenant_id
@@ -2006,7 +2002,7 @@ async def batch_analyze_endpoint(
     )
 
     # Pre-parse JD once for all resumes in this batch
-    _get_or_cache_jd(db, job_description)
+    _get_or_cache_jd(db, job_description, current_user.tenant_id)
 
     if not file_data:
         raise HTTPException(status_code=400, detail="No valid resume files provided")

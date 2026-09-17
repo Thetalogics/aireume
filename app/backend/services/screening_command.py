@@ -101,6 +101,7 @@ def build_screening_command(
     algorithm_version: str = ALGORITHM_VERSION_DEFAULT,
 ) -> ScreeningCommand:
     from app.backend.models.db_models import Requisition
+    from app.backend.services.scoring_weights import scoring_weights_for_command
 
     criteria_version = None
     resolved_template_id = role_template_id
@@ -114,6 +115,7 @@ def build_screening_command(
         criteria_version = req.current_criteria_version
         if resolved_template_id is None:
             resolved_template_id = req.legacy_role_template_id
+    normalized_weights = scoring_weights_for_command(scoring_weights) if scoring_weights else None
     return ScreeningCommand(
         schema_version="v1",
         tenant_id=tenant_id,
@@ -126,7 +128,7 @@ def build_screening_command(
         requisition_id=requisition_id,
         role_template_id=resolved_template_id,
         criteria_version=criteria_version,
-        scoring_weights=scoring_weights,
+        scoring_weights=normalized_weights,
         skill_overrides=skill_overrides,
     )
 

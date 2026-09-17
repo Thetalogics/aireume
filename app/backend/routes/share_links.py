@@ -1,7 +1,4 @@
 """HM magic links — tokenized public handoff access."""
-import hashlib
-import hmac
-import secrets
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
@@ -15,6 +12,12 @@ from app.backend.middleware.rbac import require_recruiter_or_admin
 from app.backend.models.db_models import HandoffShareLink, RoleTemplate, User
 from app.backend.services.audit_service import log_audit, log_tenant_event
 from app.backend.services.handoff_service import build_handoff_package
+from app.backend.services.share_crypto import (
+    hash_passcode,
+    hash_share_token,
+    new_share_token,
+    verify_passcode,
+)
 
 router = APIRouter(prefix="/api", tags=["share-links"])
 public_router = APIRouter(prefix="/api/public", tags=["public-handoff"])
@@ -27,7 +30,7 @@ class ShareLinkCreate(BaseModel):
 
 
 def _hash_passcode(passcode: str) -> str:
-    return hashlib.sha256(passcode.encode("utf-8")).hexdigest()
+    return hash_passcode(passcode)
 
 
 class ShareLinkOut(BaseModel):
@@ -46,12 +49,13 @@ def _link_url(request: Request, token: str) -> str:
     return f"{base}/handoff/{token}"
 
 
-def _serialize_link(link: HandoffShareLink, request: Request) -> ShareLinkOut:
+def _serialize_link(link: HandoffShareLink, request: Request, token: str | None = None) -> ShareLinkOut:
+    shown = token or ""
     return ShareLinkOut(
         id=link.id,
-        token=link.token,
+        token=shown,
         label=link.label,
-        url=_link_url(request, link.token),
+        url=_link_url(request, shown) if shown else "",
         expires_at=link.expires_at.isoformat() if link.expires_at else None,
         revoked_at=link.revoked_at.isoformat() if link.revoked_at else None,
         view_count=link.view_count or 0,
@@ -59,8 +63,19 @@ def _serialize_link(link: HandoffShareLink, request: Request) -> ShareLinkOut:
     )
 
 
+def _lookup_share_link(db: Session, token: str) -> HandoffShareLink | None:
+    token_hash = hash_share_token(token)
+    return (
+        db.query(HandoffShareLink)
+        .filter(
+            (HandoffShareLink.token_hash == token_hash) | (HandoffShareLink.token == token)
+        )
+        .first()
+    )
+
+
 def _get_valid_link(db: Session, token: str) -> HandoffShareLink:
-    link = db.query(HandoffShareLink).filter(HandoffShareLink.token == token).first()
+    link = _lookup_share_link(db, token)
     if not link:
         raise HTTPException(status_code=404, detail="Link not found")
     if link.revoked_at:
@@ -89,10 +104,11 @@ def create_share_link(
     if not jd:
         raise HTTPException(status_code=404, detail="Job description not found")
 
-    token = secrets.token_urlsafe(32)
+    token = new_share_token()
     expires_at = datetime.now(timezone.utc) + timedelta(days=body.expires_in_days)
     link = HandoffShareLink(
-        token=token,
+        token=None,
+        token_hash=hash_share_token(token),
         tenant_id=current_user.tenant_id,
         role_template_id=jd_id,
         created_by=current_user.id,
@@ -111,7 +127,7 @@ def create_share_link(
     )
     db.commit()
     db.refresh(link)
-    return _serialize_link(link, request)
+    return _serialize_link(link, request, token=token)
 
 
 @router.get("/jd/{jd_id}/share-links", response_model=List[ShareLinkOut])
@@ -179,8 +195,7 @@ def get_public_handoff(token: str, request: Request, db: Session = Depends(get_d
     link = _get_valid_link(db, token)
     passcode = request.headers.get("X-Handoff-Passcode")
     if link.passcode_hash:
-        provided = _hash_passcode(passcode or "")
-        if not hmac.compare_digest(provided, link.passcode_hash):
+        if not verify_passcode(passcode or "", link.passcode_hash):
             raise HTTPException(status_code=401, detail="Passcode required")
     package = build_handoff_package(
         db,
@@ -207,7 +222,7 @@ def get_public_handoff(token: str, request: Request, db: Session = Depends(get_d
         action="handoff.view",
         resource_type="handoff_share_link",
         resource_id=link.id,
-        details={"token_suffix": token[-6:], "ip": ip},
+        details={"token_suffix": token[-6:] if token else "", "ip": ip},
         ip_address=ip,
         tenant_id=link.tenant_id,
     )

@@ -87,30 +87,34 @@ def _compute_group_outcomes(records: List[Dict[str, Any]], group_field: str) -> 
     return outcomes
 
 
-def _four_fifths_rule(outcomes: List[GroupOutcome]) -> List[Dict[str, Any]]:
-    """Check the EEOC four-fifths (80%) rule.
+def _four_fifths_rule(outcomes: List[GroupOutcome], min_group_n: int = 30) -> List[Dict[str, Any]]:
+    """Adverse impact ratio (selection-rate disparity), not a legal conclusion.
 
-    The selection rate for any group should be at least 4/5 (80%) of the
-    rate for the group with the highest selection rate.
+    Groups below ``min_group_n`` are omitted; the ratio is undefined when no
+    eligible comparison groups remain.
     """
-    if len(outcomes) < 2:
+    eligible = [o for o in outcomes if o.total_candidates >= min_group_n]
+    if len(eligible) < 2:
         return []
 
-    max_rate = max(o.shortlist_rate for o in outcomes)
+    max_rate = max(o.shortlist_rate for o in eligible)
     if max_rate == 0:
         return []
 
     threshold = max_rate * 0.80
     violations = []
 
-    for o in outcomes:
+    for o in eligible:
         ratio = _safe_div(o.shortlist_rate, max_rate)
         if ratio < 0.80:
             violations.append({
                 "group": o.group_label,
-                "shortlist_rate": round(o.shortlist_rate, 4),
-                "max_group_rate": round(max_rate, 4),
-                "ratio": round(ratio, 4),
+                "metric": "adverse_impact_ratio",
+                "selection_rate": round(o.shortlist_rate, 4),
+                "reference_selection_rate": round(max_rate, 4),
+                "adverse_impact_ratio": round(ratio, 4),
+                "sample_size": o.total_candidates,
+                "undefined": False,
                 "threshold": 0.80,
                 "severity": "high" if ratio < 0.60 else "moderate" if ratio < 0.70 else "low",
             })
@@ -204,7 +208,7 @@ def run_bias_audit(
                 "recommendation": row[5] or "reject",
             })
 
-        if len(records) < 10:
+        if len(records) < 30:
             return BiasAuditResult(
                 audit_date=datetime.now(timezone.utc).isoformat(),
                 tenant_id=tenant_id,
@@ -212,7 +216,7 @@ def run_bias_audit(
                 groups=[],
                 four_fifths_violations=[],
                 score_disparities=[],
-                recommendation="Insufficient data for bias analysis (minimum 10 candidates required).",
+                recommendation="Insufficient sample for disparity analysis (minimum 30 candidates). Metrics are undefined.",
                 risk_level="none",
             )
 
@@ -224,9 +228,8 @@ def run_bias_audit(
         if any(v["severity"] == "high" for v in violations):
             risk_level = "high"
             recommendation = (
-                "CRITICAL: Four-fifths rule violations detected with high severity. "
-                "Immediate review of screening criteria and scoring weights recommended. "
-                "Consider consulting with legal/HR for EEOC compliance."
+                "Selection-rate disparity exceeded the 0.80 adverse-impact-ratio threshold. "
+                "This is a statistical signal, not a legal determination. Review screening criteria."
             )
         elif violations or any(d["severity"] == "high" for d in disparities):
             risk_level = "moderate"

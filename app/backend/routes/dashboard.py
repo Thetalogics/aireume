@@ -61,7 +61,7 @@ def _period_to_start(period: str) -> datetime:
 # ── GET /api/dashboard/summary ─────────────────────────────────────────────────
 
 @router.get("/api/dashboard/summary")
-async def get_dashboard_summary(
+def get_dashboard_summary(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -142,11 +142,6 @@ async def get_dashboard_summary(
         })
 
     # ── Pipeline by Requisition (primary) ────────────────────────────────────
-    from app.backend.services.requisition_service import migrate_legacy_data
-
-    migrate_legacy_data(db, tenant_id)
-    db.commit()
-
     requisitions = (
         db.query(Requisition)
         .filter(Requisition.tenant_id == tenant_id)

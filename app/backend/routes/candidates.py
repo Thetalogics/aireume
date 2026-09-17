@@ -13,7 +13,7 @@ import json
 import logging
 from datetime import datetime, date, timezone
 from decimal import Decimal
-from fastapi import APIRouter, Depends, File, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
@@ -41,27 +41,69 @@ router = APIRouter(prefix="/api/candidates", tags=["candidates"])
 # ─── Bulk Import ───────────────────────────────────────────────────────────────
 
 @router.post("/import/csv")
-async def import_candidates_csv(
-    file_id: str = File(...),
+def import_candidates_csv(
+    file: UploadFile = File(...),
     current_user: User = Depends(require_active_recruiter),
     db: Session = Depends(get_db),
 ):
-    """
-    Bulk import candidates from CSV file.
-
-    Expected CSV columns:
-    - name (required)
-    - email (required)
-    - phone (optional)
-    - resume_url (optional) - URL to resume file
-    - notes (optional)
-    """
+    """Bulk import candidates from CSV (name,email required; phone/notes optional)."""
     import csv
     import io
 
-    # Get file from upload service or cache
-    # This is a placeholder - actual implementation would retrieve from storage
-    raise HTTPException(status_code=501, detail="CSV import is not available. Add candidates by uploading resumes.")
+    filename = (file.filename or "").lower()
+    if not filename.endswith(".csv"):
+        raise HTTPException(status_code=400, detail="Only .csv files are accepted")
+    raw = file.file.read()
+    if len(raw) > 1024 * 1024:
+        raise HTTPException(status_code=413, detail="CSV too large (max 1MB)")
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise HTTPException(status_code=400, detail="CSV must be UTF-8") from exc
+    reader = csv.DictReader(io.StringIO(text))
+    if not reader.fieldnames:
+        raise HTTPException(status_code=400, detail="CSV is missing a header row")
+    created = []
+    errors = []
+    for index, row in enumerate(reader, start=2):
+        if index > 501:
+            errors.append({"row": index, "error": "Row limit of 500 exceeded"})
+            break
+        name = (row.get("name") or "").strip()[:200]
+        email = (row.get("email") or "").strip().lower()[:255]
+        phone = (row.get("phone") or "").strip()[:50] or None
+        if not name or not email or "@" not in email:
+            errors.append({"row": index, "error": "name and valid email are required"})
+            continue
+        existing = (
+            db.query(Candidate)
+            .filter(Candidate.tenant_id == current_user.tenant_id, Candidate.email == email)
+            .first()
+        )
+        if existing:
+            errors.append({"row": index, "error": "duplicate email in this workspace", "candidate_id": existing.id})
+            continue
+        cand = Candidate(
+            tenant_id=current_user.tenant_id,
+            name=name,
+            email=email,
+            phone=phone,
+        )
+        db.add(cand)
+        db.flush()
+        note_text = (row.get("notes") or "").strip()[:2000]
+        if note_text:
+            db.add(CandidateNote(
+                candidate_id=cand.id,
+                user_id=current_user.id,
+                tenant_id=current_user.tenant_id,
+                text=note_text,
+            ))
+        db.add(cand)
+        db.flush()
+        created.append({"id": cand.id, "email": email})
+    db.commit()
+    return {"created": created, "errors": errors, "created_count": len(created)}
 
 
 def _json_default(obj):
@@ -139,10 +181,7 @@ def list_candidates(
             | (Candidate.email.ilike(q))
             | (Candidate.current_role.ilike(q))
             | (Candidate.current_company.ilike(q))
-            | (Candidate.parsed_skills.ilike(q))
-            | (Candidate.parsed_education.ilike(q))
-            | (Candidate.parsed_work_exp.ilike(q))
-            | (Candidate.raw_resume_text.ilike(q))
+            | (Candidate.phone.ilike(q))
         )
 
     # Skill filter: find candidates whose screening results contain that skill
@@ -1561,7 +1600,7 @@ async def analyze_existing_candidate(
         }
     gap_analysis = json.loads(candidate.gap_analysis_json or "{}")
 
-    jd_analysis = _get_or_cache_jd(db, job_description)
+    jd_analysis = _get_or_cache_jd(db, job_description, current_user.tenant_id)
 
     from app.backend.services.hybrid_pipeline import run_hybrid_pipeline
     try:

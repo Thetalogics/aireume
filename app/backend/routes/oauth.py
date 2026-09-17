@@ -114,7 +114,13 @@ def _get_or_create_oauth_user(
         tenant = db.query(Tenant).filter(Tenant.id == user.tenant_id).first()
         return user, tenant, False
 
-    existing = db.query(User).filter(User.email == email, User.is_active == True).first()
+    matches = db.query(User).filter(User.email == email, User.is_active == True).all()
+    if len(matches) > 1:
+        raise HTTPException(
+            status_code=409,
+            detail="Multiple workspaces exist for this email. Sign in with email and password, then link OAuth from that workspace.",
+        )
+    existing = matches[0] if matches else None
     if existing:
         if mode == "signup":
             raise HTTPException(

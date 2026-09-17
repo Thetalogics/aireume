@@ -155,7 +155,7 @@ class TestJdCache:
 
         jd = LONG_JD
         _get_or_cache_jd(db, jd)
-        expected_hash = hashlib.md5(jd[:2000].encode()).hexdigest()
+        expected_hash = hashlib.md5(f"0:{jd}".encode()).hexdigest()
         cached = db.query(JdCache).filter(JdCache.hash == expected_hash).first()
         assert cached is not None
         data = json.loads(cached.result_json)
