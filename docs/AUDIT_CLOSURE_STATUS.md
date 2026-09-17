@@ -54,7 +54,7 @@ AUD-048 remains PARTIAL until an authenticated staging Playwright run succeeds w
 | AUD-046 | CLOSED | body-size middleware | None |
 | AUD-047 | CLOSED | screening/queue/LLM/ATS/webhook/SAML/GDPR metrics; `docs/SLO_AND_ALERTING.md` | `TestObservabilityMetrics` |
 | AUD-048 | PARTIAL | Third-party Actions SHA-pinned; `--cov-fail-under=50`; `e2e-staging.yml` skips if secrets missing | **No successful authenticated staging E2E run yet** |
-| AUD-049 | CLOSED | `main.protected == true`; SHA + backend digest in CD; `docs/DEPLOYMENT_PROMOTION.md` | GitHub API branch protection |
+| AUD-049 | CLOSED | SHA + backend digest in CD; `docs/DEPLOYMENT_PROMOTION.md`. Protection was enabled and verified, then removed so direct `main` pushes work. **CLOSED by owner instruction.** | Owner instruction; immutable deploy docs remain |
 | AUD-050 | CLOSED | README/PRODUCT_SPEC/`docs/PRODUCT_CLAIMS.md`/`PRODUCTION_READINESS.md`; wiki notice | Claim sweep vs code |
 
 Authenticated staging E2E: **NOT VERIFIED** (AUD-048 remains PARTIAL).

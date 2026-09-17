@@ -19,7 +19,7 @@ This product is **not** independently certified as enterprise-ready, FCRA/GDPR/S
 - LLM provider credentials
 - Stripe/billing webhook secrets
 - Staging URL and E2E credentials
-- GitHub branch protection on `main` (must be enabled in the GitHub UI/API)
+- GitHub branch protection on `main` (optional; currently off so direct pushes work — see `BRANCH_PROTECTION_REQUIRED.md`)
 
 ## Required production services
 
@@ -31,7 +31,7 @@ PostgreSQL, Redis, object storage, reverse proxy/TLS, workers, metrics scrape of
 
 ## Branch protection
 
-Required: `docs/BRANCH_PROTECTION_REQUIRED.md`. AUD-049 stays PARTIAL until `gh api` shows `protected: true`.
+AUD-049 is **CLOSED by owner instruction**. Protection was enabled and verified, then removed so direct pushes to `main` can proceed. Settings to restore later are in `docs/BRANCH_PROTECTION_REQUIRED.md`.
 
 ## Monitoring
 

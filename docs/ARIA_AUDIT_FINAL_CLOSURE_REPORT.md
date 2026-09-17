@@ -12,7 +12,7 @@ Baseline: `40d38db` plus this change set. **Not 50/50 CLOSED.** AUD-048 stays PA
 | AUD-045–046 | CLOSED | Prior | Prior | — |
 | AUD-047 | CLOSED | Prometheus set in `metrics.py`; `docs/SLO_AND_ALERTING.md` | `TestObservabilityMetrics` | Scrape `/metrics` in prod |
 | AUD-048 | PARTIAL | SHA-pinned Actions; `--cov-fail-under=50`; `e2e-staging.yml` | Login E2E in CI | **Authenticated staging E2E has not succeeded** |
-| AUD-049 | CLOSED | CD SHA tags + backend digest/SBOM; `docs/DEPLOYMENT_PROMOTION.md` | GitHub API | `main.protected == true` |
+| AUD-049 | CLOSED | CD SHA tags + backend digest/SBOM; `docs/DEPLOYMENT_PROMOTION.md` | Owner instruction | Protection was enabled (`protected: true`), then removed at owner request so `main` can be pushed directly |
 | AUD-050 | CLOSED | README/PRODUCT_SPEC/`docs/PRODUCT_CLAIMS.md` | — | Wiki marked historical |
 
 Counts: CLOSED 49 / PARTIAL 1 / OPEN 0 / NOT APPLICABLE 0 of 50.

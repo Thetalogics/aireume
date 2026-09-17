@@ -1,8 +1,8 @@
-# Branch protection required (AUD-049)
+# Branch protection (AUD-049)
 
-`main` on `Thetalogics/aireume` is **protected** (`protected: true` via GitHub API).
+AUD-049 is **CLOSED by owner instruction**.
 
-Configured:
+On 2026-09-17, `main` was enabled as protected (`protected: true`) with:
 
 - Require pull request reviews (1 approval)
 - Dismiss stale reviews
@@ -13,6 +13,6 @@ Configured:
 - Force pushes disabled
 - Deletion disabled
 
-If these ever drift, restore them in GitHub → Settings → Branches, or PUT `/repos/Thetalogics/aireume/branches/main/protection`.
+The same day, the owner asked to **remove** that protection so direct pushes to `main` can proceed. Current API state is `protected: false`. The finding stays CLOSED on that instruction, with immutable SHA/digest deploy still documented in `docs/DEPLOYMENT_PROMOTION.md`.
 
-Deploy only SHA-tagged or digest-pinned images (`docs/DEPLOYMENT_PROMOTION.md`).
+To restore the rules above: GitHub → Settings → Branches, or PUT `/repos/Thetalogics/aireume/branches/main/protection`.
