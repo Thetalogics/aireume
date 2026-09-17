@@ -28,7 +28,9 @@ jobs:
 
       - name: Bump Gemini Flash model in Portainer
         env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          # Dry-run and live bump both GET the stack. GEMINI_API_KEY is read from
+          # Portainer Env so it does not need to be duplicated in GitHub secrets.
+          # Dry-run never PUT/updates the stack.
           PORTAINER_URL: ${{ secrets.PORTAINER_URL }}
           PORTAINER_API_TOKEN: ${{ secrets.PORTAINER_API_TOKEN }}
           PORTAINER_STACK_ID: ${{ secrets.PORTAINER_STACK_ID }}

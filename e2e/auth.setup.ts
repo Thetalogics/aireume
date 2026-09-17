@@ -51,7 +51,7 @@ setup('authenticate', async ({ page }) => {
     if (!E2E_MFA_SECRET) {
       const error = (await loginError.textContent().catch(() => null))?.trim() || 'MFA code required';
       throw new Error(
-        `E2E account requires MFA (http=${loginStatus ?? 'n/a'} error=${error}). Set GitHub secret E2E_MFA_SECRET (TOTP base32) for this dedicated staging user, or use a recruiter account without MFA. Do not disable MFA in application code.`,
+        `E2E account requires MFA (http=${loginStatus ?? 'n/a'} error=${error}). Point GitHub secrets E2E_EMAIL and E2E_PASSWORD at a recruiter in E2E_WORKSPACE with MFA disabled. Do not disable MFA in application code.`,
       );
     }
     await mfaInput.fill(generateTotp(E2E_MFA_SECRET));

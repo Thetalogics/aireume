@@ -3,12 +3,14 @@
 Option C: bump Gemini Flash model to stable_n_minus_1 and patch Portainer stack env.
 
 Usage (CI or manual):
-  export GEMINI_API_KEY=...
   export PORTAINER_URL=https://portainer.example.com
   export PORTAINER_API_TOKEN=...
   export PORTAINER_STACK_ID=123
   export PORTAINER_ENDPOINT_ID=1
   python scripts/bump_gemini_model_portainer.py [--dry-run]
+
+GEMINI_API_KEY is optional in process env. If unset, it is read from the
+Portainer stack Env. --dry-run GETs the stack and never PUTs.
 
 Only updates Gemini primary slots (not Ollama/OpenRouter fallbacks):
   GEMINI_MODEL, GEMINI_KIT_MODEL, GEMINI_NARRATIVE_MODEL, GEMINI_MODEL_VOICE,
@@ -93,6 +95,40 @@ def smoke_test_model(api_key: str, model: str) -> None:
     _http_json("POST", url, headers={"x-goog-api-key": api_key}, body=body)
 
 
+def env_map_from_stack(stack: dict) -> dict[str, str]:
+    env = stack.get("Env") or []
+    return {
+        str(item.get("name")): str(item.get("value") or "")
+        for item in env
+        if item.get("name")
+    }
+
+
+def gemini_api_key_from_sources(*, process_env: dict[str, str], stack_env: dict[str, str]) -> str:
+    """Resolve the Gemini key without requiring it in GitHub Actions secrets.
+
+    Prefer an explicit process env (local/dev). Otherwise read GEMINI_API_KEY
+    from the Portainer stack Env. Never log the key.
+    """
+    key = (process_env.get("GEMINI_API_KEY") or "").strip()
+    if key:
+        return key
+    key = (stack_env.get("GEMINI_API_KEY") or "").strip()
+    if key:
+        return key
+    raise RuntimeError("GEMINI_API_KEY is not set in the environment or Portainer stack Env")
+
+
+def _portainer_creds() -> tuple[str, str, str, str] | None:
+    url = os.getenv("PORTAINER_URL", "").strip()
+    token = os.getenv("PORTAINER_API_TOKEN", "").strip()
+    stack_id = os.getenv("PORTAINER_STACK_ID", "").strip()
+    endpoint_id = os.getenv("PORTAINER_ENDPOINT_ID", "1").strip() or "1"
+    if url and token and stack_id:
+        return url, token, stack_id, endpoint_id
+    return None
+
+
 def portainer_get_stack(base_url: str, token: str, endpoint_id: int, stack_id: int) -> dict:
     url = f"{base_url.rstrip('/')}/api/stacks/{stack_id}?endpointId={endpoint_id}"
     return _http_json("GET", url, headers={"X-API-Key": token})
@@ -131,9 +167,23 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true", help="Print chosen model and env diff only")
     args = parser.parse_args()
 
-    api_key = os.getenv("GEMINI_API_KEY", "").strip()
-    if not api_key:
-        print("GEMINI_API_KEY is required", file=sys.stderr)
+    creds = _portainer_creds()
+    stack_env: dict[str, str] = {}
+    if creds:
+        portainer_url, portainer_token, stack_id, endpoint_id = creds
+        stack = portainer_get_stack(portainer_url, portainer_token, int(endpoint_id), int(stack_id))
+        stack_env = env_map_from_stack(stack)
+
+    try:
+        api_key = gemini_api_key_from_sources(process_env=dict(os.environ), stack_env=stack_env)
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        if not creds:
+            print(
+                "Pass PORTAINER_URL, PORTAINER_API_TOKEN, and PORTAINER_STACK_ID "
+                "to read GEMINI_API_KEY from the stack Env (no GitHub Gemini secret required).",
+                file=sys.stderr,
+            )
         return 1
 
     flash_models = list_gemini_flash_models(api_key)
@@ -143,6 +193,8 @@ def main() -> int:
     print(f"Available Flash models ({len(flash_models)}): {', '.join(flash_models)}")
     print(f"Selected stable_n_minus_1: {chosen}")
     print(f"LiveKit model: {livekit_value}")
+    if creds and not (os.getenv("GEMINI_API_KEY") or "").strip():
+        print("Gemini API key source: Portainer stack Env (value not logged)")
 
     smoke_test_model(api_key, chosen)
     print("Smoke test passed")
@@ -150,18 +202,14 @@ def main() -> int:
     env_updates = {name: chosen for name in GEMINI_VARS}
     env_updates[LIVEKIT_VAR] = livekit_value
 
-    portainer_url = os.getenv("PORTAINER_URL", "").strip()
-    portainer_token = os.getenv("PORTAINER_API_TOKEN", "").strip()
-    stack_id = os.getenv("PORTAINER_STACK_ID", "").strip()
-    endpoint_id = os.getenv("PORTAINER_ENDPOINT_ID", "1").strip()
-
-    if args.dry_run or not (portainer_url and portainer_token and stack_id):
+    if args.dry_run or not creds:
         print("Portainer update skipped (dry-run or missing PORTAINER_* env)")
         print("Would set:")
         for k, v in env_updates.items():
             print(f"  {k}={v}")
         return 0
 
+    portainer_url, portainer_token, stack_id, endpoint_id = creds
     portainer_update_stack_env(
         portainer_url,
         portainer_token,

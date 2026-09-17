@@ -4,9 +4,10 @@ name: E2E - Staging (authenticated)
 # secret configuration as a successful product test — the job records
 # "not configured" and skips Playwright.
 #
-# Dedicated tenant: E2E_WORKSPACE must be a stable recruiter/admin workspace with
-# screening quota, completed onboarding, and password login (not SSO-enforced).
-# If that account has MFA enabled, set E2E_MFA_SECRET (TOTP base32). Do not disable MFA in app code.
+# Dedicated tenant: point E2E_EMAIL / E2E_PASSWORD at a recruiter in E2E_WORKSPACE
+# with screening quota, completed onboarding, password login, and MFA disabled.
+# Tenant admins typically have MFA enabled and will fail this workflow. Do not
+# disable MFA in application code.
 # Staging is same-origin (SPA + /api). Set E2E_API_URL only if the API is a separate origin.
 on:
   schedule:
