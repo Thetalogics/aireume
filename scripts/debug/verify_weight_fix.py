@@ -41,7 +41,7 @@ def verify_fix():
         "education": 0.05,
         "career_trajectory": 0.10,
         "role_excellence": 0.05,
-        "risk": -0.10,
+        "risk": 0.10,
     }
     score_custom = compute_deterministic_score(features, eligibility, weights=custom_weights)
     print(f"2. Custom weights score:  {score_custom}")

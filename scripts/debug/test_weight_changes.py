@@ -48,7 +48,7 @@ skill_heavy_weights = {
     "education": 0.10,
     "career_trajectory": 0.10,
     "role_excellence": 0.10,
-    "risk": -0.10
+    "risk": 0.10
 }
 print(f"Custom weights: {skill_heavy_weights}")
 converted = convert_to_new_schema(skill_heavy_weights)
@@ -69,7 +69,7 @@ ai_weights = {
     "education": 0.10,
     "career_trajectory": 0.10,
     "role_excellence": 0.10,
-    "risk": -0.10
+    "risk": 0.10
 }
 print(f"AI weights: {ai_weights}")
 converted_ai = convert_to_new_schema(ai_weights)
@@ -90,7 +90,7 @@ exp_heavy_weights = {
     "education": 0.10,
     "career_trajectory": 0.15,
     "role_excellence": 0.10,
-    "risk": -0.10
+    "risk": 0.10
 }
 print(f"Experience-heavy weights: {exp_heavy_weights}")
 converted_exp = convert_to_new_schema(exp_heavy_weights)

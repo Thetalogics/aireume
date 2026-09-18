@@ -479,7 +479,7 @@ class TestInvoiceWebhookIntegration:
         assert len(invoices) == 0
 
     def test_invoice_generation_failure_does_not_break_webhook(self, db):
-        """If invoice generation fails, the webhook still succeeds (graceful degradation)."""
+        """Invoice failure rolls back the webhook transaction (no partial success)."""
         tenant = _make_tenant(db, stripe_customer_id="cus_resilient", subscription_status="past_due")
         now_ts = int(datetime.now(timezone.utc).timestamp())
 
@@ -491,7 +491,6 @@ class TestInvoiceWebhookIntegration:
                 "period_end": now_ts,
             }
         }
-        # Mock create_invoice_from_payment to raise
         from unittest.mock import patch
         with patch("app.backend.services.billing.webhook_processor.create_invoice_from_payment", side_effect=Exception("DB error")):
             result = process_webhook_event(
@@ -499,7 +498,7 @@ class TestInvoiceWebhookIntegration:
                 data=data, raw_payload=json.dumps(data),
             )
 
-        # Webhook should still succeed
-        assert result["processed"] is True
+        assert result["processed"] is False
+        assert result["reason"] == "error"
         db.refresh(tenant)
-        assert tenant.subscription_status == "active"
+        assert tenant.subscription_status == "past_due"

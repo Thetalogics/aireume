@@ -34,12 +34,11 @@ def is_structured_llm_enabled() -> bool:
 
 
 def _outlines_available() -> bool:
-    try:
-        import outlines  # noqa: F401
-
-        return True
-    except ImportError:
-        return False
+    # find_spec avoids importing torch/transformers during availability checks.
+    # Runtime imports in _try_outlines_* still catch ImportError if the package
+    # is present but unloadable.
+    import importlib.util
+    return importlib.util.find_spec("outlines") is not None
 
 
 def parse_outlines_json_text(raw: str, output_type: type[T]) -> dict[str, Any] | None:

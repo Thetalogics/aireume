@@ -191,8 +191,7 @@ class TestComputeFitScore:
             "domain_score": 100,
         }
         result = compute_fit_score(scores)
-        expected = round(100 * 0.30 + 100 * 0.20 + 100 * 0.15 + 100 * 0.10 + 100 * 0.10 + 100 * 0.10)
-        assert result["fit_score"] == expected
+        assert result["fit_score"] == 100
 
     def test_risk_signals_affect_penalty(self):
         scores = {
@@ -205,8 +204,7 @@ class TestComputeFitScore:
         }
         risk_signals = [{"severity": "high"}]  # penalty = 20
         result = compute_fit_score(scores, risk_signals=risk_signals)
-        expected = round(100 * 0.30 + 100 * 0.20 + 100 * 0.15 + 100 * 0.10 + 100 * 0.10 + 100 * 0.10 - 20 * 0.15)
-        assert result["fit_score"] == expected
+        assert result["fit_score"] == 97
         assert result["risk_penalty"] == 20
 
     def test_score_clamped_to_100_max(self):
@@ -244,8 +242,7 @@ class TestComputeFitScore:
         }
         result = compute_fit_score(scores, risk_signals=[])
         assert result["risk_penalty"] == 0
-        expected = round(100 * 0.30 + 100 * 0.20 + 100 * 0.15 + 100 * 0.10 + 100 * 0.10 + 100 * 0.10)
-        assert result["fit_score"] == expected
+        assert result["fit_score"] == 100
 
     def test_dict_breakdown_scores_accepted(self):
         """score_breakdown dict format (experience_match/skill_match) must not crash fit scoring."""

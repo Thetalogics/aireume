@@ -172,6 +172,9 @@ def rescore_endpoint(
     if not result:
         raise HTTPException(status_code=404, detail="Result not found")
 
+    # Rescore is a deterministic recalculation of stored evidence, not a new
+    # AI processing of candidate data. Consent policy is not applied here.
+
     # ── 2. Parse stored JSON blobs ────────────────────────────────────────────
     try:
         analysis = json.loads(result.analysis_result)
@@ -449,6 +452,8 @@ def rescore_endpoint(
         kit_status=getattr(result, "interview_kit_status", None),
     )
 
+    # fit_score is the public final/effective score. deterministic_score is the
+    # uncapped component used for blending and must not be overwritten by the blend.
     analysis.update({
         "skill_analysis":        skill_analysis,
         "jd_analysis":          jd_analysis,
@@ -460,13 +465,19 @@ def rescore_endpoint(
         "matched_skills":       matched_skills,
         "missing_skills":       missing_skills,
         "required_skills_count": len(required_skills),
-        "deterministic_score":  final_fit_score,
+        "deterministic_score":  deterministic_score,
+        "component_fit_score":  fit_r["fit_score"],
         "deterministic_features": det_features if det_features else analysis.get("deterministic_features"),
     })
 
     # ── 9. Persist to database ────────────────────────────────────────────────
+    from app.backend.routes.analyze_helpers import _write_ai_decision_log
+
     result.analysis_result = json.dumps(analysis, default=_json_default)
     _populate_denormalized_columns(result, analysis)
+    _write_ai_decision_log(
+        db, result, analysis, decision_type="RESCORE", actor_id=current_user.id, required=True,
+    )
     db.commit()
 
     log.info(json.dumps({

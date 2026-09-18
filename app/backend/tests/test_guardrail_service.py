@@ -13,6 +13,8 @@ import pytest
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from app.backend.services.constants import DEFAULT_WEIGHTS
+from app.backend.services.fit_scorer import compute_fit_score
 from app.backend.services.guardrail_service import (
     # Tier 1
     llm_invoke_with_retry,
@@ -248,7 +250,22 @@ class TestRecomputeFitScore:
         fs = {"score_breakdown": {"experience_match": 70, "risk_penalty": 10}}
         jd = {}
         score = _recompute_fit_score(sa, fs, jd)
-        expected = round(80 * 0.30 + 70 * 0.20 + 60 * 0.15 + 50 * 0.10 + 70 * 0.10 + 70 * 0.10 - 10 * 0.15)
+        # Delegates to compute_fit_score(DEFAULT_WEIGHTS): timeline is a custom key
+        # so it is kept, positives are canonicalized to 1.0, risk is subtractive.
+        expected = compute_fit_score(
+            {
+                "skill_score": 80,
+                "exp_score": 70,
+                "arch_score": 60,
+                "edu_score": 50,
+                "timeline_score": 70,
+                "domain_score": 70,
+            },
+            DEFAULT_WEIGHTS,
+            risk_signals=[],
+            risk_penalty=10,
+            jd_analysis=jd,
+        )["fit_score"]
         assert score == expected
         assert 0 <= score <= 100
 
@@ -256,8 +273,9 @@ class TestRecomputeFitScore:
         sa = {"skill_score": 100, "architecture_score": 100, "domain_fit_score": 100, "education_score": 100, "timeline_score": 100}
         fs = {"score_breakdown": {"experience_match": 100, "risk_penalty": 0}}
         score = _recompute_fit_score(sa, fs, {})
-        # weights sum to 0.95, so all-100 inputs yield 95; clamp still bounds to [0,100]
-        assert score == 95
+        # All-100 positives with zero risk clamp at 100 after canonical renormalization.
+        assert score == 100
+        assert 0 <= score <= 100
 
     def test_clamping_to_zero(self):
         sa = {"skill_score": 0, "architecture_score": 0, "domain_fit_score": 0, "education_score": 0, "timeline_score": 0}

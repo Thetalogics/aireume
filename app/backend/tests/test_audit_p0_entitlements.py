@@ -240,6 +240,7 @@ def test_checkout_webhook_applies_desired_paid_plan(db, seed_subscription_plans)
         },
         "{}",
     )
+    db.commit()
     db.refresh(tenant)
     assert tenant.plan_id == growth.id
     assert tenant.subscription_status == "active"
@@ -272,6 +273,7 @@ def test_checkout_webhook_activates_metadata_plan_not_mutated_desired(db, seed_s
         },
         "{}",
     )
+    db.commit()
     db.refresh(tenant)
     assert tenant.plan_id == starter.id
     assert tenant.desired_plan_id == starter.id
@@ -328,6 +330,7 @@ def test_checkout_contract_maps_price_metadata_and_webhook_plan(db, seed_subscri
         },
         "{}",
     )
+    db.commit()
     db.refresh(tenant)
     assert tenant.plan_id == growth.id
     assert tenant.subscription_status == "active"

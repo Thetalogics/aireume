@@ -27,10 +27,11 @@ class TestPopulateDenormalizedColumns:
         assert sr.eligibility_status is True
         assert sr.eligibility_reason is None
 
-    def test_falls_back_to_fit_score_when_deterministic_none(self):
+    def test_does_not_copy_fit_score_into_deterministic_score(self):
         from app.backend.routes.analyze import _populate_denormalized_columns
 
         sr = MagicMock()
+        sr.deterministic_score = None
         result = {
             "deterministic_score": None,
             "fit_score": 55,
@@ -41,17 +42,20 @@ class TestPopulateDenormalizedColumns:
 
         _populate_denormalized_columns(sr, result)
 
-        assert sr.deterministic_score == 55
+        assert sr.deterministic_score is None
 
     def test_handles_missing_keys_gracefully(self):
         from app.backend.routes.analyze import _populate_denormalized_columns
 
         sr = MagicMock()
+        sr.deterministic_score = None
+        sr.core_skill_score = None
+        sr.domain_match_score = None
         result = {"fit_score": 42}
 
         _populate_denormalized_columns(sr, result)
 
-        assert sr.deterministic_score == 42
+        assert sr.deterministic_score is None
         assert sr.core_skill_score is None
         assert sr.domain_match_score is None
 

@@ -48,7 +48,7 @@ def test_weights_affect_score():
         "education": 0.05,
         "career_trajectory": 0.10,
         "role_excellence": 0.05,
-        "risk": -0.10,
+        "risk": 0.10,
     }
     score_new = compute_deterministic_score(features, eligibility, weights=new_weights_skill_heavy)
     print(f"Score: {score_new}")
@@ -67,7 +67,7 @@ def test_weights_affect_score():
         "education": 0.05,
         "career_trajectory": 0.10,
         "role_excellence": 0.10,
-        "risk": -0.10,
+        "risk": 0.10,
     }
     score_exp = compute_deterministic_score(features, eligibility, weights=new_weights_exp_heavy)
     print(f"Score: {score_exp}")
@@ -174,7 +174,7 @@ def test_caps_still_work():
         "education": 0.05,
         "career_trajectory": 0.05,
         "role_excellence": 0.05,
-        "risk": -0.10,
+        "risk": 0.10,
     }
     
     score = compute_deterministic_score(features, ineligible, weights=weights)

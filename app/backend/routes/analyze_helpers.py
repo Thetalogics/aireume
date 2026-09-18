@@ -292,9 +292,9 @@ def _populate_denormalized_columns(sr: ScreeningResult, result: dict) -> None:
     if not isinstance(result, dict):
         return
     try:
-        sr.deterministic_score = result.get("deterministic_score")
-        if sr.deterministic_score is None:
-            sr.deterministic_score = result.get("fit_score")
+        # Keep deterministic_score distinct from blended fit_score / final_score.
+        if "deterministic_score" in result:
+            sr.deterministic_score = result.get("deterministic_score")
 
         skill_analysis = result.get("skill_analysis", {})
         if isinstance(skill_analysis, dict):
@@ -331,20 +331,33 @@ def _should_preserve_analysis_scores(
     )
 
 
-def _restore_preserved_scores(existing: ScreeningResult, pipeline_result: dict) -> dict:
-    """Restore fit scores from prior analysis when re-running against same JD."""
+def _restore_preserved_scores(
+    pipeline_result: dict,
+    *,
+    previous_analysis_result: str | None,
+    previous_deterministic_score=None,
+) -> dict:
+    """Restore fit scores from a captured prior analysis JSON (never from mutated row)."""
     try:
-        prior = json.loads(existing.analysis_result or "{}")
+        prior = json.loads(previous_analysis_result or "{}")
     except json.JSONDecodeError:
         prior = {}
     restored = dict(pipeline_result)
     for key in ("fit_score", "deterministic_score", "final_recommendation", "overall_score"):
         if prior.get(key) is not None:
             restored[key] = prior[key]
-    if existing.deterministic_score is not None:
-        restored["deterministic_score"] = existing.deterministic_score
-        restored["fit_score"] = existing.deterministic_score
+    if previous_deterministic_score is not None and restored.get("deterministic_score") is None:
+        restored["deterministic_score"] = previous_deterministic_score
     return restored
+
+
+def _is_auditable_decision(pipeline_result: dict | None) -> bool:
+    if not isinstance(pipeline_result, dict) or not pipeline_result:
+        return False
+    return any(
+        pipeline_result.get(k) is not None
+        for k in ("fit_score", "deterministic_score", "final_recommendation", "overall_score")
+    )
 
 
 def _upsert_screening_result(
@@ -372,26 +385,50 @@ def _upsert_screening_result(
     existing = q.first()
 
     if existing:
+        previous_analysis_result = existing.analysis_result
+        previous_deterministic_score = existing.deterministic_score
         preserve_scores = _should_preserve_analysis_scores(existing, resume_text, jd_text)
-        existing.resume_text = resume_text
-        existing.jd_text = jd_text
-        existing.parsed_data = parsed_data
-        existing.analysis_result = analysis_result
-        existing.is_active = True
-        existing.version_number = (existing.version_number or 1) + 1
-        existing.status_updated_at = datetime.now(timezone.utc)
-        if requisition_id is not None:
-            existing.requisition_id = requisition_id
-        if narrative_status is not None:
-            existing.narrative_status = narrative_status
-        if pipeline_result is not None:
-            if preserve_scores:
-                pipeline_result = _restore_preserved_scores(existing, pipeline_result)
-            _populate_denormalized_columns(existing, pipeline_result)
-        db.commit()
-        db.refresh(existing)
-        return existing
+        final_pipeline = dict(pipeline_result) if pipeline_result is not None else None
+        if final_pipeline is not None and preserve_scores:
+            final_pipeline = _restore_preserved_scores(
+                final_pipeline,
+                previous_analysis_result=previous_analysis_result,
+                previous_deterministic_score=previous_deterministic_score,
+            )
+        if final_pipeline is not None:
+            persisted_analysis = json.dumps(final_pipeline, default=_json_default)
+        else:
+            persisted_analysis = analysis_result
+        try:
+            existing.resume_text = resume_text
+            existing.jd_text = jd_text
+            existing.parsed_data = parsed_data
+            existing.analysis_result = persisted_analysis
+            existing.is_active = True
+            existing.version_number = (existing.version_number or 1) + 1
+            existing.status_updated_at = datetime.now(timezone.utc)
+            if requisition_id is not None:
+                existing.requisition_id = requisition_id
+            if narrative_status is not None:
+                existing.narrative_status = narrative_status
+            if final_pipeline is not None:
+                _populate_denormalized_columns(existing, final_pipeline)
+            db.flush()
+            if final_pipeline is not None and _is_auditable_decision(final_pipeline):
+                _write_ai_decision_log(
+                    db, existing, final_pipeline, decision_type="REANALYSIS", required=True,
+                )
+            db.commit()
+            db.refresh(existing)
+            return existing
+        except Exception:
+            db.rollback()
+            raise
 
+    final_pipeline = dict(pipeline_result) if pipeline_result is not None else None
+    persisted_analysis = (
+        json.dumps(final_pipeline, default=_json_default) if final_pipeline is not None else analysis_result
+    )
     new_result = ScreeningResult(
         tenant_id=tenant_id,
         candidate_id=candidate_id,
@@ -400,60 +437,48 @@ def _upsert_screening_result(
         resume_text=resume_text,
         jd_text=jd_text,
         parsed_data=parsed_data,
-        analysis_result=analysis_result,
+        analysis_result=persisted_analysis,
     )
-    if pipeline_result is not None:
-        _populate_denormalized_columns(new_result, pipeline_result)
+    if final_pipeline is not None:
+        _populate_denormalized_columns(new_result, final_pipeline)
     if narrative_status is not None:
         new_result.narrative_status = narrative_status
 
     db.add(new_result)
+    db.flush()
+    if final_pipeline is not None and _is_auditable_decision(final_pipeline):
+        _write_ai_decision_log(
+            db, new_result, final_pipeline, decision_type="INITIAL_ANALYSIS", required=True,
+        )
     db.commit()
     db.refresh(new_result)
-    _write_ai_decision_log(db, new_result, pipeline_result)
     return new_result
 
 
-def _write_ai_decision_log(db: Session, result: ScreeningResult, pipeline_result: dict | None) -> None:
+def _write_ai_decision_log(
+    db: Session,
+    result: ScreeningResult,
+    pipeline_result: dict | None,
+    *,
+    decision_type: str = "INITIAL_ANALYSIS",
+    actor_id: int | None = None,
+    required: bool = True,
+) -> None:
     """Persist an auditable AI decision record (GDPR Art. 22 / EU AI Act).
 
-    Best-effort: never raises into the analysis path.
+    Required writes share the caller's transaction: failure rolls back the
+    screening mutation. Set required=False only for best-effort side channels.
     """
-    if pipeline_result is None:
-        return
-    try:
-        from app.backend.models.db_models import AIDecisionLog
+    from app.backend.services.ai_decision_log_service import write_log_from_pipeline
 
-        meta = pipeline_result.get("_meta", {}) if isinstance(pipeline_result, dict) else {}
-        guardrails = meta.get("guardrails_triggered") or pipeline_result.get("guardrails_triggered") or []
-        final_score = (
-            pipeline_result.get("fit_score")
-            or pipeline_result.get("overall_score")
-            or pipeline_result.get("score")
-        )
-        with db.begin_nested():
-            db.add(AIDecisionLog(
-                tenant_id=result.tenant_id,
-                screening_result_id=result.id,
-                candidate_id=result.candidate_id,
-                model_name=meta.get("model_name") or pipeline_result.get("model_used"),
-                model_version=meta.get("model_version"),
-                prompt_template_version=meta.get("prompt_template_version"),
-                prompt_hash=meta.get("prompt_hash"),
-                guardrails_triggered=guardrails if isinstance(guardrails, list) else [],
-                fallback_used=bool(meta.get("fallback_used") or pipeline_result.get("fallback_used")),
-                deterministic_score=meta.get("deterministic_score"),
-                llm_score=meta.get("llm_score"),
-                final_score=final_score,
-            ))
-        db.commit()
-    except (ValueError, TypeError, KeyError, json.JSONDecodeError, SQLAlchemyError) as e:
-        log.warning(
-            "Non-critical: failed to write AIDecisionLog: %s", e,
-            extra={"error_code": "DB_ERROR" if isinstance(e, SQLAlchemyError) else "VALIDATION_ERROR"},
-        )
-        # The savepoint already reverted a failed insert. Do not roll back the
-        # outer session: that undoes ScreeningResult / job rows already flushed.
+    write_log_from_pipeline(
+        db,
+        result,
+        pipeline_result,
+        decision_type=decision_type,
+        actor_id=actor_id,
+        required=required,
+    )
 
 
 def _apply_skill_overrides(jd_analysis: dict, overrides: dict | None) -> dict:

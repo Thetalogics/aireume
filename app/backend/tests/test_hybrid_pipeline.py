@@ -6,6 +6,18 @@ import asyncio
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import json
+
+
+@pytest.fixture(autouse=True)
+def _disable_outlines_import_in_hybrid_tests(monkeypatch):
+    """Avoid importing outlines/transformers/torch during unit tests.
+
+    Those imports hang on this Windows environment while scanning package
+    metadata. Hybrid unit tests mock the chat LLM and do not need Outlines.
+    """
+    monkeypatch.setenv("OUTLINES_STRUCTURED_JSON", "0")
+
 
 # ─── Import the module under test ─────────────────────────────────────────────
 from app.backend.services.hybrid_pipeline import (
@@ -741,24 +753,20 @@ class TestLlmResponseNeedsCompactRetry:
 class TestBindNumPredict:
 
     def test_uses_options_not_top_level_kwarg(self):
-        from langchain_ollama import ChatOllama
-        from langchain_core.messages import HumanMessage
         from app.backend.services.hybrid_pipeline import _bind_num_predict
 
-        llm = ChatOllama(
-            model="qwen2.5:3b",
-            base_url="http://localhost:11434",
-            num_predict=3000,
-            num_ctx=8192,
-            temperature=0.1,
-        )
-        bound = _bind_num_predict(llm, 1500)
-        params = bound._chat_params(
-            [HumanMessage(content="hi")],
-            options={"num_predict": 1500, "num_ctx": 8192, "temperature": 0.1},
-        )
-        assert "num_predict" not in params
-        assert params["options"]["num_predict"] == 1500
+        llm = MagicMock()
+        llm.num_ctx = 8192
+        llm.temperature = 0.1
+        bound = MagicMock()
+        llm.bind.return_value = bound
+        result = _bind_num_predict(llm, 1500)
+        llm.bind.assert_called_once()
+        kwargs = llm.bind.call_args.kwargs
+        assert "num_predict" not in kwargs
+        assert kwargs["options"]["num_predict"] == 1500
+        assert kwargs["options"]["num_ctx"] == 8192
+        assert result is bound
 
 
 class TestExplainWithLlm:
@@ -899,12 +907,32 @@ class TestRunHybridPipeline:
         mock_llm = MagicMock()
         mock_llm.ainvoke = AsyncMock(return_value=mock_resp)
 
-        with patch("app.backend.services.hybrid_pipeline._get_llm", return_value=mock_llm):
+        with patch("app.backend.services.hybrid_pipeline._get_llm", return_value=mock_llm), patch(
+            "app.backend.services.hybrid_pipeline.explain_with_llm",
+            new=AsyncMock(return_value={
+                "strengths": ["Strong Python"],
+                "weaknesses": ["Limited Redis"],
+                "recommendation_rationale": "Good match.",
+                "explainability": {"skill_rationale": "", "experience_rationale": "", "overall_rationale": ""},
+                "interview_questions": {
+                    "technical_questions": ["Question 1"],
+                    "behavioral_questions": ["Behavioral 1"],
+                    "culture_fit_questions": ["Culture 1"],
+                },
+                "ai_enhanced": True,
+            }),
+        ):
             result = await run_hybrid_pipeline(
                 resume_text=self._parsed_data()["raw_text"],
                 job_description=self._jd_text(),
                 parsed_data=self._parsed_data(),
                 gap_analysis=self._gap_analysis(),
+                jd_analysis={
+                    "role_title": "Senior Python Backend Engineer",
+                    "domain": "backend",
+                    "required_skills": ["python", "fastapi"],
+                    "_profile_source": "merged",
+                },
             )
 
         assert isinstance(result["fit_score"], int)
@@ -928,6 +956,12 @@ class TestRunHybridPipeline:
                 job_description=self._jd_text(),
                 parsed_data=self._parsed_data(),
                 gap_analysis=self._gap_analysis(),
+                jd_analysis={
+                    "role_title": "Senior Python Backend Engineer",
+                    "domain": "backend",
+                    "required_skills": ["python"],
+                    "_profile_source": "merged",
+                },
             )
 
         # Must always return scores — never raise
@@ -951,17 +985,22 @@ class TestRunHybridPipeline:
             "role_title": "Pre-built", "domain": "backend", "seniority": "senior",
             "required_skills": ["python"], "required_years": 5,
             "nice_to_have_skills": [], "key_responsibilities": [],
+            "_profile_source": "merged",
         }
 
         with patch("app.backend.services.hybrid_pipeline._get_llm", return_value=mock_llm):
             with patch("app.backend.services.hybrid_pipeline.parse_jd_rules") as mock_parse:
-                result = await run_hybrid_pipeline(
-                    resume_text="python developer 5 years experience",
-                    job_description="this text should not be parsed",
-                    parsed_data=self._parsed_data(),
-                    gap_analysis=self._gap_analysis(),
-                    jd_analysis=prebuilt_jd,
-                )
+                with patch("app.backend.services.hybrid_pipeline.explain_with_llm", new=AsyncMock(return_value={
+                    "strengths": [], "weaknesses": [], "recommendation_rationale": "",
+                    "explainability": {}, "interview_questions": {},
+                })):
+                    result = await run_hybrid_pipeline(
+                        resume_text="python developer 5 years experience",
+                        job_description="this text should not be parsed",
+                        parsed_data=self._parsed_data(),
+                        gap_analysis=self._gap_analysis(),
+                        jd_analysis=prebuilt_jd,
+                    )
                 mock_parse.assert_not_called()
 
         assert result["job_role"] == "Pre-built"
@@ -1041,12 +1080,20 @@ class TestDomainAgnosticPipeline:
 
         with patch("app.backend.services.hybrid_pipeline._get_llm", return_value=mock_llm):
             with patch("app.backend.services.jd_profile_service.extract_jd_profile", new=AsyncMock(return_value=mock_llm_profile)):
-                result = await run_hybrid_pipeline(
-                    resume_text=resume_text,
-                    job_description=jd_text,
-                    parsed_data=self._parsed_data(resume_text),
-                    gap_analysis=self._gap_analysis(),
-                )
+                with patch("app.backend.services.hybrid_pipeline.explain_with_llm", new=AsyncMock(return_value={
+                    "strengths": ["Strong SAP MM experience"],
+                    "weaknesses": [],
+                    "recommendation_rationale": "Good fit.",
+                    "explainability": {},
+                    "interview_questions": {},
+                    "ai_enhanced": True,
+                })):
+                    result = await run_hybrid_pipeline(
+                        resume_text=resume_text,
+                        job_description=jd_text,
+                        parsed_data=self._parsed_data(resume_text),
+                        gap_analysis=self._gap_analysis(),
+                    )
 
         # A qualified SAP/MM candidate should not be hard-rejected by a tech-only cap
         assert result["fit_score"] > 40

@@ -2,21 +2,9 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
 import os
 
-DATABASE_URL = os.getenv("DATABASE_URL", "./resume_screener.db")
+from app.backend.db.database_url import normalize_database_url
 
-# Normalize SQLite paths; leave PostgreSQL URLs unchanged
-if not DATABASE_URL.startswith(("postgresql://", "postgres://")):
-    if DATABASE_URL.startswith("./") or DATABASE_URL.startswith("/"):
-        DATABASE_URL = f"sqlite:///{DATABASE_URL}"
-    elif not DATABASE_URL.startswith("sqlite:///"):
-        DATABASE_URL = f"sqlite:///{DATABASE_URL}"
-
-# asyncpg-style postgres:// → postgresql:// for SQLAlchemy 2.x
-if DATABASE_URL.startswith("postgres://"):
-    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
-
-# Detect if using PostgreSQL
-_is_postgres = DATABASE_URL.startswith("postgresql")
+DATABASE_URL, _is_postgres = normalize_database_url(os.getenv("DATABASE_URL", "./resume_screener.db"))
 
 # Pool settings only for PostgreSQL (SQLite doesn't support pool settings).
 # Sizes are env-configurable so multi-worker deployments can keep the total
@@ -43,8 +31,8 @@ engine = create_engine(
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 _replica_url = os.getenv("DATABASE_READ_REPLICA_URL", "").strip()
-if _replica_url.startswith("postgres://"):
-    _replica_url = _replica_url.replace("postgres://", "postgresql://", 1)
+if _replica_url:
+    _replica_url, _ = normalize_database_url(_replica_url)
 if _replica_url:
     replica_engine = create_engine(_replica_url, pool_pre_ping=True, **_pool_kwargs)
     ReplicaSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=replica_engine)

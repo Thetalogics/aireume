@@ -77,7 +77,7 @@ def test_weight_mapper():
         "education": 0.10,
         "career_trajectory": 0.10,
         "role_excellence": 0.10,
-        "risk": -0.10
+        "risk": 0.10
     }
     
     schema_type = detect_weight_schema(new_weights)
@@ -148,7 +148,7 @@ def test_pipeline_compatibility():
             "education": 0.10,
             "career_trajectory": 0.10,
             "role_excellence": 0.10,
-            "risk": -0.10
+            "risk": 0.10
         }
         
         result = compute_fit_score(scores, new_weights)

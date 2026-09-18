@@ -23,6 +23,13 @@ os.environ.setdefault("INTEGRATION_MASTER_KEY", "0" * 64)
 os.environ.setdefault("OLLAMA_MODEL", "qwen2.5:7b")
 os.environ.setdefault("OLLAMA_MODEL_BACKEND", "qwen2.5:7b")
 os.environ.setdefault("OLLAMA_MODEL_VOICE", "qwen2.5:3b")
+# Existing production env knobs — keep retries/delays short if a test leaks a provider call.
+os.environ.setdefault("LLM_JSON_TIER_DELAY", "0")
+os.environ.setdefault("GUARDRAIL_RETRY_DELAY", "0")
+os.environ.setdefault("GUARDRAIL_MAX_RETRIES", "1")
+os.environ.setdefault("GUARDRAIL_PER_CALL_TIMEOUT", "2")
+os.environ.setdefault("OUTLINES_STRUCTURED_JSON", "0")
+os.environ.setdefault("LLM_NARRATIVE_TIMEOUT", "2")
 
 from app.backend.db import database
 from app.backend.main import app
@@ -286,6 +293,105 @@ def _clear_feature_flag_cache():
     invalidate_cache()
     yield
     invalidate_cache()
+
+
+_ADAPTER_LLM_TEST_FILES = frozenset({
+    "test_app_llm_client.py",
+    "test_recruiter_llm.py",
+})
+_HTTP_PASSTHROUGH_LLM_TEST_FILES = _ADAPTER_LLM_TEST_FILES | frozenset({
+    "test_llm_service.py",
+})
+
+
+def pytest_collection_modifyitems(config, items):
+    """Skip @pytest.mark.external unless the run explicitly selected that marker."""
+    markexpr = (getattr(config.option, "markexpr", None) or "").strip()
+    if "external" in markexpr:
+        return
+    skip_ext = pytest.mark.skip(reason="external/live provider test (run with -m external)")
+    for item in items:
+        if item.get_closest_marker("external"):
+            item.add_marker(skip_ext)
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_llm_providers(monkeypatch, request):
+    """Block accidental Gemini/Ollama/OpenRouter calls in ordinary tests."""
+    if request.node.get_closest_marker("external"):
+        return
+    path = getattr(request.node, "path", None) or getattr(request.node, "fspath", None)
+    filename = getattr(path, "name", None) or (str(path).rsplit("/", 1)[-1] if path else "")
+    if filename in _ADAPTER_LLM_TEST_FILES:
+        return
+
+    async def _no_provider(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr("app.backend.services.app_llm_client._try_gemini", _no_provider)
+    monkeypatch.setattr("app.backend.services.app_llm_client._try_ollama", _no_provider)
+    monkeypatch.setattr("app.backend.services.app_llm_client._try_openrouter", _no_provider)
+    monkeypatch.setattr(
+        "app.backend.services.structured_llm_service._try_outlines_gemini",
+        _no_provider,
+    )
+    monkeypatch.setattr(
+        "app.backend.services.structured_llm_service._try_outlines_ollama",
+        _no_provider,
+    )
+    if filename != "test_structured_llm_service.py":
+        monkeypatch.setattr(
+            "app.backend.services.structured_llm_service.invoke_outlines_json_resilient",
+            _no_provider,
+        )
+
+    dummy = MagicMock(name="hermetic_llm")
+    dummy.ainvoke = AsyncMock(side_effect=RuntimeError("hermetic tests: LLM provider blocked"))
+    dummy.invoke = MagicMock(side_effect=RuntimeError("hermetic tests: LLM provider blocked"))
+
+    monkeypatch.setattr(
+        "app.backend.services.wip.agent_pipeline.get_fast_llm",
+        lambda *a, **k: dummy,
+    )
+    monkeypatch.setattr(
+        "app.backend.services.wip.agent_pipeline.get_reasoning_llm",
+        lambda *a, **k: dummy,
+    )
+    monkeypatch.setattr(
+        "app.backend.services.hybrid_pipeline._get_llm",
+        lambda *a, **k: dummy,
+    )
+    monkeypatch.setattr("app.backend.services.hybrid_pipeline._REASONING_LLM", None, raising=False)
+    monkeypatch.setattr("app.backend.services.wip.agent_pipeline._fast_llm", None, raising=False)
+    monkeypatch.setattr("app.backend.services.wip.agent_pipeline._reasoning_llm", None, raising=False)
+
+    if filename in _HTTP_PASSTHROUGH_LLM_TEST_FILES:
+        return
+
+    import httpx
+
+    blocked_needles = (
+        "generativelanguage.googleapis.com",
+        "openrouter.ai",
+        ":11434",
+        "ollama:",
+        "localhost:11434",
+        "127.0.0.1:11434",
+    )
+
+    orig_async_request = httpx.AsyncClient.request
+
+    def _blocked(url: object) -> bool:
+        target = str(url).lower()
+        return any(needle in target for needle in blocked_needles)
+
+    async def _async_request(self, method, url, *args, **kwargs):
+        if _blocked(url):
+            req = httpx.Request(method, str(url))
+            raise httpx.ConnectError("hermetic tests blocked LLM host", request=req)
+        return await orig_async_request(self, method, url, *args, **kwargs)
+
+    monkeypatch.setattr(httpx.AsyncClient, "request", _async_request)
 
 
 @pytest.fixture(scope="function")

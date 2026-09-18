@@ -1,6 +1,6 @@
 from sqlalchemy import (
     Column, Integer, String, DateTime, Date, Text, Boolean, LargeBinary,
-    ForeignKey, Float, func, BigInteger, UniqueConstraint, Index, JSON, Uuid
+    ForeignKey, Float, func, BigInteger, UniqueConstraint, Index, JSON, Uuid, text
 )
 from datetime import datetime, timezone
 import json
@@ -949,12 +949,27 @@ class Invoice(Base):
     issued_at    = Column(DateTime(timezone=True), server_default=func.now())
     paid_at      = Column(DateTime(timezone=True), nullable=True)
 
-    # Tenant relationship
     tenant = relationship("Tenant", backref="invoices")
 
     __table_args__ = (
         Index("ix_invoices_tenant_issued", "tenant_id", "issued_at"),
+        Index(
+            "uq_invoice_provider_invoice_id",
+            "payment_provider",
+            "provider_invoice_id",
+            unique=True,
+            sqlite_where=text("provider_invoice_id IS NOT NULL"),
+            postgresql_where=text("provider_invoice_id IS NOT NULL"),
+        ),
     )
+
+
+class InvoiceYearCounter(Base):
+    """Atomic yearly invoice-number allocator (SELECT FOR UPDATE / unique year PK)."""
+    __tablename__ = "invoice_year_counters"
+
+    year = Column(Integer, primary_key=True)
+    last_value = Column(Integer, nullable=False, default=0)
 
 
 class DunningRecord(Base):
@@ -1724,6 +1739,11 @@ class AIDecisionLog(Base):
     llm_score              = Column(Float, nullable=True)
     final_score            = Column(Float, nullable=True)
     created_at             = Column(DateTime(timezone=True), server_default=func.now())
+    decision_type          = Column(String(32), nullable=True, index=True)
+    scoring_weights        = Column(JSON, nullable=True)
+    algorithm_version      = Column(String(32), nullable=True)
+    actor_id               = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    recommendation         = Column(String(50), nullable=True)
 
     __table_args__ = (
         Index("ix_ai_decision_tenant_created", "tenant_id", "created_at"),

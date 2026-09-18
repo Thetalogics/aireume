@@ -460,7 +460,7 @@ NEW_DEFAULT_WEIGHTS = {
     "education": 0.10,
     "career_trajectory": 0.10,
     "role_excellence": 0.10,
-    "risk": -0.10,
+    "risk": 0.10,
 }
 
 # Old backend schema (7 tech-centric weights)

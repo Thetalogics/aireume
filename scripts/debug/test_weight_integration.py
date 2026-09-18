@@ -84,7 +84,7 @@ def test_ai_weights_affect_score():
         "education": 0.10,
         "career_trajectory": 0.10,
         "role_excellence": 0.10,
-        "risk": -0.10
+        "risk": 0.10
     }
     
     result_balanced = _run_python_phase(
@@ -111,7 +111,7 @@ def test_ai_weights_affect_score():
         "education": 0.05,          # Decreased from 0.10
         "career_trajectory": 0.10,
         "role_excellence": 0.10,
-        "risk": -0.10
+        "risk": 0.10
     }
     
     result_skill_heavy = _run_python_phase(
@@ -138,7 +138,7 @@ def test_ai_weights_affect_score():
         "education": 0.05,          # Decreased from 0.10
         "career_trajectory": 0.10,
         "role_excellence": 0.10,
-        "risk": -0.10
+        "risk": 0.10
     }
     
     result_exp_heavy = _run_python_phase(

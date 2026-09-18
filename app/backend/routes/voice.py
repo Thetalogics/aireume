@@ -223,6 +223,17 @@ def schedule_voice_call(
     if candidate is None:
         raise HTTPException(status_code=404, detail="Candidate not found or not in your tenant")
 
+    from app.backend.services.candidate_processing_policy import (
+        PROCESSING_VOICE_INTERVIEW,
+        enforce_candidate_processing_policy,
+    )
+    enforce_candidate_processing_policy(
+        db,
+        tenant_id=user.tenant_id,
+        candidate_id=body.candidate_id,
+        processing_type=PROCESSING_VOICE_INTERVIEW,
+    )
+
     # Ensure config exists
     config = db.execute(
         select(VoiceTenantConfig).where(VoiceTenantConfig.tenant_id == user.tenant_id)

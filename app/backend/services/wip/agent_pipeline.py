@@ -29,12 +29,14 @@ import os
 import re
 from datetime import datetime, date
 from decimal import Decimal
-from typing import TypedDict, Annotated, Any, Dict, List, Optional
+from typing import TypedDict, Annotated, Any, Dict, List, Optional, TYPE_CHECKING
 import operator
 import logging
 
 from langgraph.graph import StateGraph, START, END
-from langchain_ollama import ChatOllama
+
+if TYPE_CHECKING:
+    from langchain_ollama import ChatOllama
 
 from app.backend.services.constants import (
     RECOMMENDATION_THRESHOLDS,
@@ -114,8 +116,8 @@ STREAMABLE_NODES = {"jd_parser", "resume_analyser", "scorer"}
 # Creating a new ChatOllama per call adds connection overhead and prevents Ollama
 # from reusing its internal HTTP keep-alive sessions.
 
-_fast_llm: Optional[ChatOllama] = None
-_reasoning_llm: Optional[ChatOllama] = None
+_fast_llm: Optional[Any] = None
+_reasoning_llm: Optional[Any] = None
 
 # In-memory JD cache: MD5(jd_text[:8000] + prompt_version) → parsed jd_analysis dict.
 # For batch screening (same JD, many resumes) this skips the jd_parser LLM call
@@ -133,8 +135,10 @@ _GUARDRAIL_TOKEN_BUDGET = os.getenv("GUARDRAIL_TOKEN_BUDGET", "true").lower() ==
 logger = logging.getLogger(__name__)
 
 
-def get_fast_llm(seed: Optional[int] = None) -> ChatOllama:
+def get_fast_llm(seed: Optional[int] = None) -> Any:
     """Fast model for jd_parser + resume_analyser. Singleton — never re-initialised."""
+    from langchain_ollama import ChatOllama
+
     global _fast_llm
     if _fast_llm is None and seed is None:
         _is_cloud = _is_ollama_cloud(OLLAMA_BASE_URL)
@@ -168,8 +172,10 @@ def get_fast_llm(seed: Optional[int] = None) -> ChatOllama:
     return _fast_llm
 
 
-def get_reasoning_llm(seed: Optional[int] = None) -> ChatOllama:
+def get_reasoning_llm(seed: Optional[int] = None) -> Any:
     """Reasoning model for combined scorer + interview questions. Singleton."""
+    from langchain_ollama import ChatOllama
+
     global _reasoning_llm
     if _reasoning_llm is None and seed is None:
         _is_cloud = _is_ollama_cloud(OLLAMA_BASE_URL)

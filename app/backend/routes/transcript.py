@@ -119,6 +119,17 @@ async def analyze_transcript_endpoint(
             raise HTTPException(status_code=404, detail="Candidate not found")
         candidate_name = candidate.name or ""
 
+    from app.backend.services.candidate_processing_policy import (
+        PROCESSING_TRANSCRIPT_ANALYSIS,
+        enforce_candidate_processing_policy,
+    )
+    enforce_candidate_processing_policy(
+        db,
+        tenant_id=current_user.tenant_id,
+        candidate_id=candidate_id,
+        processing_type=PROCESSING_TRANSCRIPT_ANALYSIS,
+    )
+
     # ── Parse and analyse ─────────────────────────────────────────────────────
     clean_text = await asyncio.to_thread(parse_transcript, raw_text, filename)
     result     = await analyze_transcript(clean_text, jd_text, candidate_name)

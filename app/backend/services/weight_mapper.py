@@ -34,41 +34,22 @@ log = logging.getLogger(__name__)
 
 
 def normalize_weights(weights: Dict[str, float]) -> Dict[str, float]:
-    """
-    Normalize weights to sum to 1.0 (excluding negative risk penalty).
-    
-    Args:
-        weights: Dictionary of weight values
-        
-    Returns:
-        Normalized weights that sum to 1.0
-    """
+    """Normalize positive weights to sum to 1.0. Risk is a positive penalty magnitude."""
+    from app.backend.services.scoring_weights import normalize_risk_weight
+
     if not weights:
         return NEW_DEFAULT_WEIGHTS.copy()
-    
-    # Separate positive weights from risk penalty
-    # Risk can be negative (penalty) or positive (old schema)
+
     positive_weights = {k: v for k, v in weights.items() if k != "risk" and v > 0}
-    risk_value = weights.get("risk", -0.10)
-    
-    # Calculate sum of positive weights
+    risk_value = weights.get("risk", NEW_DEFAULT_WEIGHTS["risk"])
+
     total = sum(positive_weights.values())
-    
     if total == 0:
         log.warning("All weights are zero, using defaults")
         return NEW_DEFAULT_WEIGHTS.copy()
-    
-    # Normalize positive weights to sum to 1.0
+
     normalized = {k: v / total for k, v in positive_weights.items()}
-    
-    # Convert positive risk to negative if needed (old schema compatibility)
-    if risk_value > 0:
-        # Old schema had positive risk, convert to negative penalty
-        normalized["risk"] = -min(risk_value / total, 0.15)
-    else:
-        # Already negative, keep as is
-        normalized["risk"] = risk_value
-    
+    normalized["risk"] = normalize_risk_weight(risk_value)
     return normalized
 
 
@@ -115,7 +96,7 @@ def map_legacy_to_new(legacy_weights: Dict[str, float]) -> Dict[str, float]:
         new_weights["role_excellence"] = 0.10
     
     # Add risk penalty (standard default)
-    new_weights["risk"] = -0.10
+    new_weights["risk"] = 0.10
     
     return normalize_weights(new_weights)
 
@@ -141,6 +122,8 @@ def map_old_backend_to_new(old_weights: Dict[str, float]) -> Dict[str, float]:
     """
     if not old_weights:
         return NEW_DEFAULT_WEIGHTS.copy()
+
+    from app.backend.services.scoring_weights import normalize_risk_weight
     
     # Direct 1:1 mapping - preserve exact values
     new_weights = {
@@ -150,7 +133,7 @@ def map_old_backend_to_new(old_weights: Dict[str, float]) -> Dict[str, float]:
         "education": old_weights.get("education", 0.10),
         "career_trajectory": old_weights.get("timeline", 0.10),
         "domain_fit": old_weights.get("domain", 0.20),
-        "risk": old_weights.get("risk", -0.10),
+        "risk": normalize_risk_weight(old_weights.get("risk", 0.10)),
     }
     
     # Only normalize if weights don't sum correctly

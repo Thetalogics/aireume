@@ -199,6 +199,16 @@ def execute_screening(
                 converted_pdf_content=converted_pdf_content,
                 resume_text=parsed.get("raw_text", resume_text),
             )
+        from app.backend.services.candidate_processing_policy import (
+            PROCESSING_RESUME_ANALYSIS,
+            enforce_candidate_processing_policy,
+        )
+        enforce_candidate_processing_policy(
+            db,
+            tenant_id=cmd.tenant_id,
+            candidate_id=candidate_id,
+            processing_type=PROCESSING_RESUME_ANALYSIS,
+        )
         cand = db.get(Candidate, candidate_id)
         if cand and action != "use_existing":
             _store_candidate_profile(
@@ -242,15 +252,30 @@ def apply_screening_pipeline_result(db, db_result, pipeline_result: dict | None)
         _populate_denormalized_columns,
         _restore_preserved_scores,
         _should_preserve_analysis_scores,
+        _write_ai_decision_log,
     )
 
     if db_result is None:
         return None
-    payload = pipeline_result or {}
+    previous_analysis_result = db_result.analysis_result
+    previous_deterministic_score = db_result.deterministic_score
+    payload = dict(pipeline_result or {})
     if _should_preserve_analysis_scores(db_result, db_result.resume_text, db_result.jd_text):
-        payload = _restore_preserved_scores(db_result, payload)
+        payload = _restore_preserved_scores(
+            payload,
+            previous_analysis_result=previous_analysis_result,
+            previous_deterministic_score=previous_deterministic_score,
+        )
+    was_new = not previous_analysis_result or previous_analysis_result in ("{}", "")
     db_result.analysis_result = json.dumps(payload, default=str)
     _populate_denormalized_columns(db_result, payload)
+    _write_ai_decision_log(
+        db,
+        db_result,
+        payload,
+        decision_type="INITIAL_ANALYSIS" if was_new else "REANALYSIS",
+        required=True,
+    )
     db.commit()
     db.refresh(db_result)
     return db_result

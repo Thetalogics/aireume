@@ -43,7 +43,7 @@ OUTPUT VALID JSON ONLY (no markdown, no explanation outside JSON):
     "education": 0.05-0.15,
     "career_trajectory": 0.10-0.15,
     "role_excellence": 0.10-0.20,
-    "risk": -0.05 to -0.15
+    "risk": 0.05 to 0.15
   }},
   "weight_evidence": {{
     "core_competencies": ["Verbatim JD phrase justifying this weight"],
@@ -172,7 +172,7 @@ def get_default_weights_for_category(role_category: str) -> Dict[str, float]:
             "education": 0.05,
             "career_trajectory": 0.10,
             "role_excellence": 0.15,
-            "risk": -0.10,
+            "risk": 0.10,
         },
         "sales": {
             "core_competencies": 0.35,
@@ -181,7 +181,7 @@ def get_default_weights_for_category(role_category: str) -> Dict[str, float]:
             "education": 0.05,
             "career_trajectory": 0.10,
             "role_excellence": 0.10,
-            "risk": -0.10,
+            "risk": 0.10,
         },
         "hr": {
             "core_competencies": 0.30,
@@ -190,7 +190,7 @@ def get_default_weights_for_category(role_category: str) -> Dict[str, float]:
             "education": 0.10,
             "career_trajectory": 0.15,
             "role_excellence": 0.05,
-            "risk": -0.10,
+            "risk": 0.10,
         },
         "marketing": {
             "core_competencies": 0.35,
@@ -199,7 +199,7 @@ def get_default_weights_for_category(role_category: str) -> Dict[str, float]:
             "education": 0.05,
             "career_trajectory": 0.10,
             "role_excellence": 0.10,
-            "risk": -0.10,
+            "risk": 0.10,
         },
         "operations": {
             "core_competencies": 0.30,
@@ -208,7 +208,7 @@ def get_default_weights_for_category(role_category: str) -> Dict[str, float]:
             "education": 0.10,
             "career_trajectory": 0.15,
             "role_excellence": 0.05,
-            "risk": -0.10,
+            "risk": 0.10,
         },
         "leadership": {
             "core_competencies": 0.25,
@@ -217,7 +217,7 @@ def get_default_weights_for_category(role_category: str) -> Dict[str, float]:
             "education": 0.05,
             "career_trajectory": 0.10,
             "role_excellence": 0.10,
-            "risk": -0.10,
+            "risk": 0.10,
         },
     }
 

@@ -94,6 +94,7 @@ from app.backend.routes.analyze_helpers import (
     _populate_denormalized_columns,
     _should_preserve_analysis_scores,
     _restore_preserved_scores,
+    _is_auditable_decision,
     _upsert_screening_result,
     _write_ai_decision_log,
     _apply_skill_overrides,
@@ -452,6 +453,16 @@ async def analyze_endpoint(
     _enforce_screening_mode(db, current_user.tenant_id, requisition_id)
     require_explicit_use_existing_candidate(
         db, current_user.tenant_id, action, candidate_id
+    )
+    from app.backend.services.candidate_processing_policy import (
+        PROCESSING_RESUME_ANALYSIS,
+        enforce_candidate_processing_policy,
+    )
+    enforce_candidate_processing_policy(
+        db,
+        tenant_id=current_user.tenant_id,
+        candidate_id=candidate_id,
+        processing_type=PROCESSING_RESUME_ANALYSIS,
     )
 
     # ─── VALIDATE FILES FIRST (before incrementing usage) ─────────────────────
@@ -823,6 +834,16 @@ async def analyze_stream_endpoint(
     require_explicit_use_existing_candidate(
         db, current_user.tenant_id, action, candidate_id
     )
+    from app.backend.services.candidate_processing_policy import (
+        PROCESSING_RESUME_ANALYSIS,
+        enforce_candidate_processing_policy,
+    )
+    enforce_candidate_processing_policy(
+        db,
+        tenant_id=current_user.tenant_id,
+        candidate_id=candidate_id,
+        processing_type=PROCESSING_RESUME_ANALYSIS,
+    )
 
     # ─── VALIDATE FILES FIRST (before incrementing usage) ─────────────────────
     # Validate file extension
@@ -1127,10 +1148,35 @@ async def analyze_stream_endpoint(
             try:
                 sr = save_db.query(ScreeningResult).filter(ScreeningResult.id == screening_result_id).first()
                 if sr:
+                    previous_analysis_result = sr.analysis_result
+                    previous_deterministic_score = sr.deterministic_score
                     if _should_preserve_analysis_scores(sr, sr.resume_text, sr.jd_text):
-                        final_result = _restore_preserved_scores(sr, final_result)
+                        final_result = _restore_preserved_scores(
+                            final_result,
+                            previous_analysis_result=previous_analysis_result,
+                            previous_deterministic_score=previous_deterministic_score,
+                        )
                     sr.analysis_result = json.dumps(final_result, default=_json_default)
                     _populate_denormalized_columns(sr, final_result)
+                    prev_payload = {}
+                    if previous_analysis_result:
+                        try:
+                            prev_payload = (
+                                json.loads(previous_analysis_result)
+                                if isinstance(previous_analysis_result, str)
+                                else dict(previous_analysis_result)
+                            )
+                        except (TypeError, ValueError, json.JSONDecodeError):
+                            prev_payload = {}
+                    # Owner: first persistence of an auditable payload. Skip if
+                    # upsert/apply already wrote INITIAL_ANALYSIS/REANALYSIS.
+                    if not _is_auditable_decision(prev_payload) and _is_auditable_decision(final_result):
+                        from app.backend.routes.analyze_helpers import _write_ai_decision_log
+                        _write_ai_decision_log(
+                            save_db, sr, final_result,
+                            decision_type="INITIAL_ANALYSIS",
+                            required=True,
+                        )
                     # Also update candidate profile
                     cand = save_db.query(Candidate).filter(Candidate.id == candidate_id).first()
                     if cand and action != "use_existing":
@@ -1264,6 +1310,16 @@ async def batch_analyze_chunked_endpoint(
         )
 
     _enforce_screening_mode(db, current_user.tenant_id, requisition_id)
+    from app.backend.services.candidate_processing_policy import (
+        PROCESSING_RESUME_ANALYSIS,
+        enforce_candidate_processing_policy,
+    )
+    enforce_candidate_processing_policy(
+        db,
+        tenant_id=current_user.tenant_id,
+        candidate_id=None,
+        processing_type=PROCESSING_RESUME_ANALYSIS,
+    )
 
     from app.backend.routes.upload import CHUNK_STORAGE_DIR
 
@@ -1546,6 +1602,16 @@ async def batch_analyze_stream_endpoint(
         )
 
     _enforce_screening_mode(db, current_user.tenant_id, requisition_id)
+    from app.backend.services.candidate_processing_policy import (
+        PROCESSING_RESUME_ANALYSIS,
+        enforce_candidate_processing_policy,
+    )
+    enforce_candidate_processing_policy(
+        db,
+        tenant_id=current_user.tenant_id,
+        candidate_id=None,
+        processing_type=PROCESSING_RESUME_ANALYSIS,
+    )
 
     from app.backend.routes.upload import CHUNK_STORAGE_DIR
 
@@ -1937,6 +2003,16 @@ async def batch_analyze_endpoint(
         )
 
     _enforce_screening_mode(db, current_user.tenant_id, requisition_id)
+    from app.backend.services.candidate_processing_policy import (
+        PROCESSING_RESUME_ANALYSIS,
+        enforce_candidate_processing_policy,
+    )
+    enforce_candidate_processing_policy(
+        db,
+        tenant_id=current_user.tenant_id,
+        candidate_id=None,
+        processing_type=PROCESSING_RESUME_ANALYSIS,
+    )
 
     if not resumes:
         raise HTTPException(status_code=400, detail="At least one resume required")

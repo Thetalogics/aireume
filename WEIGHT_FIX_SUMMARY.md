@@ -141,7 +141,7 @@ User changes weights → compute_fit_score uses custom weights ✓
   "education": 0.05,
   "career_trajectory": 0.10,
   "role_excellence": 0.05,
-  "risk": -0.10
+  "risk": 0.10
 }
 ```
 

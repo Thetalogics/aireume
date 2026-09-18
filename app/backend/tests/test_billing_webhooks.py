@@ -385,15 +385,10 @@ class TestWebhookEdgeCases:
             db, provider="stripe", event_type="invoice.paid",
             data=data, raw_payload=json.dumps(data),
         )
-        # The handler returns (doesn't crash) but no tenant was updated
-        # Since the handler can't find a tenant, it logs an error event
-        # and returns without setting processed=True at the handler level.
-        # The process_webhook_event wrapper still reports processed=True
-        # because the handler executed without exception.
-        # Actually, looking at the code: the handler doesn't raise,
-        # it logs and returns. process_webhook_event will mark processed=True
-        # because no exception was raised.
-        assert result["processed"] is True
+        # Handler logs an error on the claimed event and returns without raising.
+        # process_webhook_event must not mark that event successful.
+        assert result["processed"] is False
+        assert result["reason"] == "error"
 
         # Verify error is logged in audit
         evt = db.query(BillingEvent).filter(
@@ -410,7 +405,8 @@ class TestWebhookEdgeCases:
             db, provider="razorpay", event_type="subscription.activated",
             data=data, raw_payload=json.dumps(data),
         )
-        assert result["processed"] is True  # handler ran without exception
+        assert result["processed"] is False
+        assert result["reason"] == "error"
 
         evt = db.query(BillingEvent).filter(
             BillingEvent.event_type == "subscription.activated",
@@ -425,7 +421,8 @@ class TestWebhookEdgeCases:
             db, provider="manual", event_type="payment.approved",
             data=data, raw_payload=json.dumps(data),
         )
-        assert result["processed"] is True  # handler ran without exception
+        assert result["processed"] is False
+        assert result["reason"] == "error"
 
         evt = db.query(BillingEvent).filter(
             BillingEvent.event_type == "payment.approved",

@@ -26,7 +26,7 @@ This is the modern, universal-adaptive schema used by the AI weight suggestion s
   "education": 0.10,            // Degrees, certs, learning
   "career_trajectory": 0.10,    // Progression + stability
   "role_excellence": 0.10,      // Role-specific differentiator
-  "risk": -0.10                 // Red flags penalty (negative)
+  "risk": 0.10                  // Red flags penalty magnitude (positive; legacy negatives are abs()'d)
 }
 ```
 
@@ -137,7 +137,7 @@ The system includes several presets for common scenarios:
   "education": 0.10,
   "career_trajectory": 0.10,
   "role_excellence": 0.10,
-  "risk": -0.10
+  "risk": 0.10
 }
 ```
 
@@ -151,7 +151,7 @@ For roles where technical skills are paramount:
   "education": 0.05,
   "career_trajectory": 0.10,
   "role_excellence": 0.10,
-  "risk": -0.10
+  "risk": 0.10
 }
 ```
 
@@ -165,7 +165,7 @@ For senior roles requiring proven track record:
   "education": 0.05,
   "career_trajectory": 0.10,
   "role_excellence": 0.10,
-  "risk": -0.10
+  "risk": 0.10
 }
 ```
 
@@ -179,7 +179,7 @@ For specialized roles requiring industry knowledge:
   "education": 0.05,
   "career_trajectory": 0.10,
   "role_excellence": 0.10,
-  "risk": -0.10
+  "risk": 0.10
 }
 ```
 
@@ -205,7 +205,7 @@ Form data: job_description=<JD text>
     "education": 0.05,
     "career_trajectory": 0.10,
     "role_excellence": 0.05,
-    "risk": -0.10
+    "risk": 0.10
   },
   "role_excellence_label": "Architecture & System Design",
   "reasoning": "This senior technical role emphasizes core competencies...",

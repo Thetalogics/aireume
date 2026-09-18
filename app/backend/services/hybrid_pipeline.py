@@ -2229,6 +2229,8 @@ def _run_python_phase(
         "domain":       new_weights.get("domain_fit", 0.10),
         "risk":         new_weights.get("risk", 0.15),
     }
+    from app.backend.services.scoring_weights import normalize_risk_weight
+    internal_weights["risk"] = normalize_risk_weight(internal_weights.get("risk"))
     log.debug("Internal weights for compute_fit_score: %s", internal_weights)
 
     # Extract industry from JD analysis for industry-specific weights

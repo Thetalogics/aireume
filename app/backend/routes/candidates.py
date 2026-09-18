@@ -1560,6 +1560,17 @@ async def analyze_existing_candidate(
     if not candidate:
         raise HTTPException(status_code=404, detail="Candidate not found")
 
+    from app.backend.services.candidate_processing_policy import (
+        PROCESSING_RESUME_ANALYSIS,
+        enforce_candidate_processing_policy,
+    )
+    enforce_candidate_processing_policy(
+        db,
+        tenant_id=current_user.tenant_id,
+        candidate_id=candidate.id,
+        processing_type=PROCESSING_RESUME_ANALYSIS,
+    )
+
     if not candidate.raw_resume_text:
         raise HTTPException(
             status_code=422,
@@ -1715,6 +1726,11 @@ async def analyze_existing_candidate(
     )
     _populate_denormalized_columns(db_result, result)
     db.add(db_result)
+    db.flush()
+    from app.backend.routes.analyze_helpers import _write_ai_decision_log
+    _write_ai_decision_log(
+        db, db_result, result, decision_type="REANALYSIS", actor_id=current_user.id, required=True,
+    )
     db.commit()
     db.refresh(db_result)
 

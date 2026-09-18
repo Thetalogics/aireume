@@ -8,9 +8,12 @@ dispatched to the appropriate handler.
 import hashlib
 import json
 import logging
+from contextvars import ContextVar
 from datetime import datetime, timezone, timedelta
 from typing import Any, Callable, Dict, Optional
 
+from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError, DatabaseError
 from sqlalchemy.orm import Session
 
 from app.backend.models.db_models import BillingEvent, Tenant
@@ -20,6 +23,14 @@ from app.backend.services.webhook_service import dispatch_event_background
 from app.backend.db.database import SessionLocal
 
 log = logging.getLogger(__name__)
+
+# Bound to the claimed BillingEvent.event_id for handler audit upserts.
+_active_billing_event_id: ContextVar[Optional[str]] = ContextVar(
+    "active_billing_event_id", default=None
+)
+_pending_subscription_fires: ContextVar[Optional[list]] = ContextVar(
+    "pending_subscription_fires", default=None
+)
 
 
 # ─── Tenant lookup helpers ──────────────────────────────────────────────────
@@ -95,26 +106,43 @@ def _log_billing_event(
     error_detail: Optional[str] = None,
     event_id: Optional[str] = None,
 ) -> BillingEvent:
-    """Persist a BillingEvent row for audit.
+    """Upsert the claimed BillingEvent for this provider event.
 
     The caller is responsible for calling db.commit() after this.
     """
-    evt = BillingEvent(
-        provider=provider,
-        event_id=event_id,
-        event_type=event_type,
-        tenant_id=tenant_id,
-        raw_payload=raw_payload[:10000] if raw_payload else None,  # cap size
-        result=result,
-        error_detail=error_detail[:2000] if error_detail else None,
-    )
-    db.add(evt)
-    return evt
+    resolved_id = event_id or _active_billing_event_id.get()
+    row = None
+    if resolved_id:
+        row = (
+            db.query(BillingEvent)
+            .filter(BillingEvent.provider == provider, BillingEvent.event_id == resolved_id)
+            .first()
+        )
+    if row is None:
+        row = BillingEvent(
+            provider=provider,
+            event_id=resolved_id,
+            event_type=event_type,
+            tenant_id=tenant_id,
+            raw_payload=raw_payload[:10000] if raw_payload else None,
+            result=result,
+            error_detail=error_detail[:2000] if error_detail else None,
+        )
+        db.add(row)
+        return row
+    row.event_type = event_type or row.event_type
+    if tenant_id is not None:
+        row.tenant_id = tenant_id
+    if raw_payload:
+        row.raw_payload = raw_payload[:10000]
+    row.result = result
+    row.error_detail = error_detail[:2000] if error_detail else None
+    return row
 
 
 # ─── Notification helper ────────────────────────────────────────────────────
 
-def _fire_subscription_changed(tenant_id: int, new_status: str):
+def _dispatch_subscription_changed(tenant_id: int, new_status: str):
     """Fire the subscription.changed webhook event via the existing dispatch service."""
     try:
         dispatch_event_background(
@@ -128,6 +156,15 @@ def _fire_subscription_changed(tenant_id: int, new_status: str):
         )
     except Exception:
         log.exception("Failed to fire subscription.changed webhook for tenant %s", tenant_id)
+
+
+def _fire_subscription_changed(tenant_id: int, new_status: str):
+    """Queue until the webhook processor commits, then dispatch."""
+    pending = _pending_subscription_fires.get()
+    if pending is not None:
+        pending.append((tenant_id, new_status))
+        return
+    _dispatch_subscription_changed(tenant_id, new_status)
 
 
 # ─── Stripe event handlers ──────────────────────────────────────────────────
@@ -155,7 +192,6 @@ def _handle_stripe_checkout_completed(db: Session, data: dict, raw_payload: str)
             tenant_id=None, raw_payload=raw_payload, result="error",
             error_detail=f"No tenant found for tenant_id={tenant_id_str} customer_id={customer_id}",
         )
-        db.commit()
         return
 
     subscription_id = session_obj.get("subscription", "")
@@ -175,7 +211,6 @@ def _handle_stripe_checkout_completed(db: Session, data: dict, raw_payload: str)
             tenant_id=tenant.id, raw_payload=raw_payload, result="error",
             error_detail="checkout session missing immutable plan_id metadata",
         )
-        db.commit()
         return
 
     old_status = tenant.subscription_status
@@ -187,7 +222,6 @@ def _handle_stripe_checkout_completed(db: Session, data: dict, raw_payload: str)
             tenant_id=tenant.id, raw_payload=raw_payload, result="error",
             error_detail=str(exc),
         )
-        db.commit()
         return
     tenant.subscription_updated_at = datetime.now(timezone.utc)
 
@@ -195,7 +229,6 @@ def _handle_stripe_checkout_completed(db: Session, data: dict, raw_payload: str)
         db, provider="stripe", event_type="checkout.session.completed",
         tenant_id=tenant.id, raw_payload=raw_payload, result="success",
     )
-    db.commit()
 
     if old_status != "active":
         _fire_subscription_changed(tenant.id, "active")
@@ -219,7 +252,6 @@ def _handle_stripe_invoice_paid(db: Session, data: dict, raw_payload: str):
             tenant_id=None, raw_payload=raw_payload, result="error",
             error_detail=f"No tenant found for customer_id={customer_id} subscription_id={subscription_id}",
         )
-        db.commit()
         return
 
     from app.backend.services.plan_entitlement_service import mark_subscription_active
@@ -257,14 +289,14 @@ def _handle_stripe_invoice_paid(db: Session, data: dict, raw_payload: str):
             period_start=period_start_dt,
             period_end=period_end_dt,
             payment_provider="stripe",
-            provider_invoice_id=stripe_invoice_id,
+            provider_invoice_id=stripe_invoice_id or None,
         )
     except Exception:
         log.exception("Failed to generate invoice for stripe/invoice.paid tenant=%s", tenant.id)
+        raise
 
     # Resolve any active dunning for this tenant
     dunning_service.resolve_dunning(db, tenant.id)
-    db.commit()
 
     if old_status != "active":
         _fire_subscription_changed(tenant.id, "active")
@@ -288,7 +320,6 @@ def _handle_stripe_invoice_payment_failed(db: Session, data: dict, raw_payload: 
             tenant_id=None, raw_payload=raw_payload, result="error",
             error_detail=f"No tenant found for customer_id={customer_id} subscription_id={subscription_id}",
         )
-        db.commit()
         return
 
     old_status = tenant.subscription_status
@@ -307,7 +338,6 @@ def _handle_stripe_invoice_payment_failed(db: Session, data: dict, raw_payload: 
         )
     except Exception:
         log.exception("Failed to initiate dunning for tenant %s", tenant.id)
-    db.commit()
 
     if old_status != "past_due":
         _fire_subscription_changed(tenant.id, "past_due")
@@ -325,7 +355,6 @@ def _handle_stripe_subscription_updated(db: Session, data: dict, raw_payload: st
             tenant_id=None, raw_payload=raw_payload, result="error",
             error_detail=f"No tenant found for subscription_id={subscription_id}",
         )
-        db.commit()
         return
 
     # Map Stripe subscription status to our status
@@ -363,7 +392,6 @@ def _handle_stripe_subscription_updated(db: Session, data: dict, raw_payload: st
         db, provider="stripe", event_type="customer.subscription.updated",
         tenant_id=tenant.id, raw_payload=raw_payload, result="success",
     )
-    db.commit()
 
     if old_status != new_status:
         _fire_subscription_changed(tenant.id, new_status)
@@ -381,7 +409,6 @@ def _handle_stripe_subscription_deleted(db: Session, data: dict, raw_payload: st
             tenant_id=None, raw_payload=raw_payload, result="error",
             error_detail=f"No tenant found for subscription_id={subscription_id}",
         )
-        db.commit()
         return
 
     old_status = tenant.subscription_status
@@ -394,7 +421,6 @@ def _handle_stripe_subscription_deleted(db: Session, data: dict, raw_payload: st
         db, provider="stripe", event_type="customer.subscription.deleted",
         tenant_id=tenant.id, raw_payload=raw_payload, result="success",
     )
-    db.commit()
 
     if old_status != "cancelled":
         _fire_subscription_changed(tenant.id, "cancelled")
@@ -414,7 +440,6 @@ def _handle_razorpay_subscription_activated(db: Session, data: dict, raw_payload
             tenant_id=None, raw_payload=raw_payload, result="error",
             error_detail=f"No tenant found for subscription_id={subscription_id}",
         )
-        db.commit()
         return
 
     old_status = tenant.subscription_status
@@ -461,10 +486,10 @@ def _handle_razorpay_subscription_activated(db: Session, data: dict, raw_payload
         )
     except Exception:
         log.exception("Failed to generate invoice for razorpay/subscription.activated tenant=%s", tenant.id)
+        raise
 
     # Resolve any active dunning for this tenant
     dunning_service.resolve_dunning(db, tenant.id)
-    db.commit()
 
     if old_status != "active":
         _fire_subscription_changed(tenant.id, "active")
@@ -482,7 +507,6 @@ def _handle_razorpay_subscription_charged(db: Session, data: dict, raw_payload: 
             tenant_id=None, raw_payload=raw_payload, result="error",
             error_detail=f"No tenant found for subscription_id={subscription_id}",
         )
-        db.commit()
         return
 
     old_status = tenant.subscription_status
@@ -525,10 +549,10 @@ def _handle_razorpay_subscription_charged(db: Session, data: dict, raw_payload: 
         )
     except Exception:
         log.exception("Failed to generate invoice for razorpay/subscription.charged tenant=%s", tenant.id)
+        raise
 
     # Resolve any active dunning for this tenant
     dunning_service.resolve_dunning(db, tenant.id)
-    db.commit()
 
     if old_status != "active":
         _fire_subscription_changed(tenant.id, "active")
@@ -546,7 +570,6 @@ def _handle_razorpay_subscription_pending(db: Session, data: dict, raw_payload: 
             tenant_id=None, raw_payload=raw_payload, result="error",
             error_detail=f"No tenant found for subscription_id={subscription_id}",
         )
-        db.commit()
         return
 
     old_status = tenant.subscription_status
@@ -565,7 +588,6 @@ def _handle_razorpay_subscription_pending(db: Session, data: dict, raw_payload: 
         )
     except Exception:
         log.exception("Failed to initiate dunning for tenant %s", tenant.id)
-    db.commit()
 
     if old_status != "past_due":
         _fire_subscription_changed(tenant.id, "past_due")
@@ -583,7 +605,6 @@ def _handle_razorpay_subscription_cancelled(db: Session, data: dict, raw_payload
             tenant_id=None, raw_payload=raw_payload, result="error",
             error_detail=f"No tenant found for subscription_id={subscription_id}",
         )
-        db.commit()
         return
 
     old_status = tenant.subscription_status
@@ -596,7 +617,6 @@ def _handle_razorpay_subscription_cancelled(db: Session, data: dict, raw_payload
         db, provider="razorpay", event_type="subscription.cancelled",
         tenant_id=tenant.id, raw_payload=raw_payload, result="success",
     )
-    db.commit()
 
     if old_status != "cancelled":
         _fire_subscription_changed(tenant.id, "cancelled")
@@ -618,7 +638,6 @@ def _handle_manual_payment_approved(db: Session, data: dict, raw_payload: str):
             tenant_id=tenant_id, raw_payload=raw_payload, result="error",
             error_detail=f"No tenant found for tenant_id={tenant_id}",
         )
-        db.commit()
         return
 
     old_status = tenant.subscription_status
@@ -663,10 +682,10 @@ def _handle_manual_payment_approved(db: Session, data: dict, raw_payload: str):
         )
     except Exception:
         log.exception("Failed to generate invoice for manual/payment.approved tenant=%s", tenant.id)
+        raise
 
     # Resolve any active dunning for this tenant
     dunning_service.resolve_dunning(db, tenant.id)
-    db.commit()
 
     if old_status != "active":
         _fire_subscription_changed(tenant.id, "active")
@@ -686,7 +705,6 @@ def _handle_manual_payment_rejected(db: Session, data: dict, raw_payload: str):
             tenant_id=tenant_id, raw_payload=raw_payload, result="error",
             error_detail=f"No tenant found for tenant_id={tenant_id}",
         )
-        db.commit()
         return
 
     old_status = tenant.subscription_status
@@ -705,7 +723,6 @@ def _handle_manual_payment_rejected(db: Session, data: dict, raw_payload: str):
         )
     except Exception:
         log.exception("Failed to initiate dunning for tenant %s", tenant.id)
-    db.commit()
 
     if old_status != "past_due":
         _fire_subscription_changed(tenant.id, "past_due")
@@ -744,6 +761,82 @@ _HANDLER_MAP: Dict[tuple[str, str], Callable] = {
 }
 
 
+def _claim_billing_event(
+    db: Session,
+    *,
+    provider: str,
+    event_type: str,
+    event_id: str,
+    raw_payload: str,
+) -> tuple[str, BillingEvent]:
+    """Atomically claim a provider event. Returns (status, row).
+
+    status: claimed | duplicate | in_progress | retry
+
+    Insert uses a SAVEPOINT so a unique race does not roll back caller work.
+    Production correctness is the UNIQUE(provider, event_id) constraint, not a
+    process mutex.
+
+    Retry policy: result=error is retryable. result=ignored is terminal.
+    result=success is terminal. result=processing means another worker owns it.
+    """
+    row = BillingEvent(
+        provider=provider,
+        event_id=event_id,
+        event_type=event_type,
+        raw_payload=raw_payload[:10000] if raw_payload else None,
+        result="processing",
+    )
+    try:
+        with db.begin_nested():
+            db.add(row)
+            db.flush()
+        return "claimed", row
+    except (IntegrityError, DatabaseError):
+        pass
+
+    existing = (
+        db.query(BillingEvent)
+        .filter(BillingEvent.provider == provider, BillingEvent.event_id == event_id)
+        .with_for_update()
+        .first()
+    )
+    if existing is None:
+        return "duplicate", row
+    if existing.result == "success":
+        return "duplicate", existing
+    if existing.result == "processing":
+        return "in_progress", existing
+    if existing.result == "ignored":
+        return "duplicate", existing
+    existing.result = "processing"
+    existing.error_detail = None
+    existing.event_type = event_type
+    existing.raw_payload = raw_payload[:10000] if raw_payload else existing.raw_payload
+    db.flush()
+    return "retry", existing
+
+
+def _record_failed_event(db: Session, *, provider: str, event_id: str, event_type: str, raw_payload: str, detail: str) -> None:
+    row = (
+        db.query(BillingEvent)
+        .filter(BillingEvent.provider == provider, BillingEvent.event_id == event_id)
+        .first()
+    )
+    if row is None:
+        db.add(BillingEvent(
+            provider=provider,
+            event_id=event_id,
+            event_type=event_type,
+            raw_payload=raw_payload[:10000] if raw_payload else None,
+            result="error",
+            error_detail=detail[:2000],
+        ))
+        return
+    row.result = "error"
+    row.error_detail = detail[:2000]
+
+
 def process_webhook_event(
     db: Session,
     *,
@@ -753,98 +846,107 @@ def process_webhook_event(
     raw_payload: str,
     event_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Process a validated webhook event and update tenant state.
+    """Process a validated webhook event.
 
-    This is the main entry point called from the route after signature
-    verification succeeds.  It:
+    Transaction owner: this function. Handlers must flush only, never commit.
+    Claim + handler mutations + terminal event state commit together.
 
-    1. Looks up the handler for (provider, event_type)
-    2. Executes the handler which updates the tenant record atomically
-    3. Logs the event for audit
-    4. Fires subscription.changed webhook for downstream consumers
-
-    Returns a normalised result dict.  Unknown events are logged and
-    ignored gracefully — we never raise so the HTTP response is always 200.
+    Failed handler: rollback business+claim, then a separate transaction records
+    result=error (retryable). ignored is terminal (no handler).
     """
-    # ── Idempotency: skip events we've already processed successfully ─────────
     event_id = _idempotency_event_id(provider, event_type, event_id, raw_payload)
-    existing = (
-        db.query(BillingEvent)
-        .filter(
-            BillingEvent.provider == provider,
-            BillingEvent.event_id == event_id,
-            BillingEvent.result == "success",
-        )
-        .first()
-    )
-    if existing:
-        log.info(
-            "Duplicate webhook ignored: provider=%s event_id=%s type=%s",
-            provider, event_id, event_type,
-        )
-        return {
-            "processed": False,
-            "reason": "duplicate",
-            "provider": provider,
-            "event_type": event_type,
-        }
-
-    handler = _HANDLER_MAP.get((provider, event_type))
-
-    if handler is None:
-        _log_billing_event(
-            db, provider=provider, event_type=event_type,
-            tenant_id=None, raw_payload=raw_payload, result="ignored",
-            error_detail="No handler registered for this event type",
-            event_id=event_id,
-        )
-        db.commit()
-        return {
-            "processed": False,
-            "reason": "ignored",
-            "provider": provider,
-            "event_type": event_type,
-        }
-
+    token = _active_billing_event_id.set(event_id)
+    pending: list = []
+    fire_token = _pending_subscription_fires.set(pending)
     try:
-        handler(db, data, raw_payload)
-    except Exception as exc:
-        log.exception(
-            "Error processing %s/%s webhook: %s", provider, event_type, exc
+        claim_status, claimed = _claim_billing_event(
+            db,
+            provider=provider,
+            event_type=event_type,
+            event_id=event_id,
+            raw_payload=raw_payload,
         )
-        # Attempt to log the error — if the session is broken, rollback first
-        try:
-            db.rollback()
-            _log_billing_event(
-                db, provider=provider, event_type=event_type,
-                tenant_id=None, raw_payload=raw_payload, result="error",
-                error_detail=str(exc)[:2000], event_id=event_id,
+
+        if claim_status in ("duplicate", "in_progress"):
+            log.info(
+                "Duplicate webhook ignored: provider=%s event_id=%s type=%s status=%s",
+                provider, event_id, event_type, claim_status,
             )
-            db.commit()
-        except Exception:
-            log.exception("Failed to log billing event error")
+            db.rollback()
+            return {
+                "processed": False,
+                "reason": "duplicate",
+                "provider": provider,
+                "event_type": event_type,
+            }
 
+        handler = _HANDLER_MAP.get((provider, event_type))
+
+        if handler is None:
+            claimed.result = "ignored"
+            claimed.error_detail = "No handler registered for this event type"
+            db.commit()
+            return {
+                "processed": False,
+                "reason": "ignored",
+                "provider": provider,
+                "event_type": event_type,
+            }
+
+        try:
+            handler(db, data, raw_payload)
+        except Exception as exc:
+            log.exception(
+                "Error processing %s/%s webhook: %s", provider, event_type, exc
+            )
+            db.rollback()
+            try:
+                _record_failed_event(
+                    db, provider=provider, event_id=event_id, event_type=event_type,
+                    raw_payload=raw_payload, detail=str(exc),
+                )
+                db.commit()
+            except Exception:
+                log.exception("Failed to log billing event error")
+                db.rollback()
+            return {
+                "processed": False,
+                "reason": "error",
+                "provider": provider,
+                "event_type": event_type,
+            }
+
+        claimed = (
+            db.query(BillingEvent)
+            .filter(BillingEvent.provider == provider, BillingEvent.event_id == event_id)
+            .first()
+        )
+        if claimed is None:
+            db.rollback()
+            return {
+                "processed": False,
+                "reason": "error",
+                "provider": provider,
+                "event_type": event_type,
+            }
+        if claimed.result == "processing":
+            claimed.result = "success"
+        if claimed.result != "success":
+            db.commit()
+            return {
+                "processed": False,
+                "reason": claimed.result,
+                "provider": provider,
+                "event_type": event_type,
+            }
+        db.commit()
+        for tenant_id, new_status in pending:
+            _dispatch_subscription_changed(tenant_id, new_status)
         return {
-            "processed": False,
-            "reason": "error",
+            "processed": True,
             "provider": provider,
             "event_type": event_type,
         }
-
-    # Record a success audit row keyed by event_id so replays are de-duplicated.
-    try:
-        _log_billing_event(
-            db, provider=provider, event_type=event_type,
-            tenant_id=None, raw_payload=raw_payload, result="success",
-            event_id=event_id,
-        )
-        db.commit()
-    except Exception:
-        log.exception("Failed to log billing event success")
-        db.rollback()
-
-    return {
-        "processed": True,
-        "provider": provider,
-        "event_type": event_type,
-    }
+    finally:
+        _active_billing_event_id.reset(token)
+        _pending_subscription_fires.reset(fire_token)

@@ -113,6 +113,7 @@ def compute_fit_score(
     - team_gaps: adds a team_fit dimension with weight redistribution
     """
     from app.backend.services.constants import get_industry_weights
+    from app.backend.services.scoring_weights import effective_scoring_weights, normalize_risk_weight
 
     # Determine weights: custom > industry > default
     if scoring_weights:
@@ -121,6 +122,7 @@ def compute_fit_score(
         w = get_industry_weights(industry)
     else:
         w = DEFAULT_WEIGHTS.copy()
+    w["risk"] = normalize_risk_weight(w.get("risk"))
 
     skill_score    = scalar_breakdown_score(scores.get("skill_score", 50))
     exp_score      = scalar_breakdown_score(scores.get("exp_score", 50))
@@ -300,27 +302,29 @@ def compute_fit_score(
     if timeline_w == 0 and not (scoring_weights and "timeline" in scoring_weights):
         skills_w = skills_w + w.get("timeline", DEFAULT_WEIGHTS.get("timeline", 0))
 
-    if team_gap_bonus > 0:
-        fit_score = round(
-            skill_score      * (skills_w - 0.05)       +
-            team_gap_bonus   * 0.05                                                       +
-            exp_score        * w.get("experience", DEFAULT_WEIGHTS["experience"])   +
-            arch_score       * w.get("architecture", DEFAULT_WEIGHTS["architecture"]) +
-            edu_score        * w.get("education", DEFAULT_WEIGHTS["education"])    +
-            timeline_score   * timeline_w     +
-            domain_score     * w.get("domain", DEFAULT_WEIGHTS["domain"])       -
-            risk_penalty     * w.get("risk", DEFAULT_WEIGHTS["risk"])
-        )
-    else:
-        fit_score = round(
-            skill_score    * skills_w       +
-            exp_score      * w.get("experience", DEFAULT_WEIGHTS["experience"])   +
-            arch_score     * w.get("architecture", DEFAULT_WEIGHTS["architecture"]) +
-            edu_score      * w.get("education", DEFAULT_WEIGHTS["education"])    +
-            timeline_score * timeline_w     +
-            domain_score   * w.get("domain", DEFAULT_WEIGHTS["domain"])       -
-            risk_penalty   * w.get("risk", DEFAULT_WEIGHTS["risk"])
-        )
+    merged = {
+        "skills": skills_w,
+        "experience": w.get("experience", DEFAULT_WEIGHTS["experience"]),
+        "architecture": w.get("architecture", DEFAULT_WEIGHTS["architecture"]),
+        "education": w.get("education", DEFAULT_WEIGHTS["education"]),
+        "domain": w.get("domain", DEFAULT_WEIGHTS["domain"]),
+        "risk": w.get("risk", DEFAULT_WEIGHTS["risk"]),
+    }
+    if scoring_weights and "timeline" in scoring_weights:
+        merged["timeline"] = timeline_w
+    eff = effective_scoring_weights(merged, team_gap_active=team_gap_bonus > 0)
+    risk_w = normalize_risk_weight(eff.get("risk"))
+
+    fit_score = round(
+        skill_score      * eff["skills"] +
+        team_gap_bonus   * eff.get("team_gap", 0.0) +
+        exp_score        * eff["experience"] +
+        arch_score       * eff["architecture"] +
+        edu_score        * eff["education"] +
+        timeline_score   * (eff.get("timeline", 0.0) if scoring_weights and "timeline" in scoring_weights else 0.0) +
+        domain_score     * eff["domain"] -
+        risk_penalty     * risk_w
+    )
     fit_score = max(0, min(100, fit_score))
 
     # ── Recommendation ────────────────────────────────────────────────────────
