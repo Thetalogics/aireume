@@ -67,8 +67,8 @@ jobs:
           --health-retries 5
     env:
       DATABASE_URL: postgresql://aria:aria@localhost:5432/aria_rel
-      RELIABILITY_POSTGRES_URL: postgresql+psycopg://aria:aria@localhost:5432/aria_rel
-      PHASE0_POSTGRES_URL: postgresql+psycopg://aria:aria@localhost:5432/aria_rel
+      RELIABILITY_POSTGRES_URL: postgresql+psycopg2://aria:aria@localhost:5432/aria_rel
+      PHASE0_POSTGRES_URL: postgresql+psycopg2://aria:aria@localhost:5432/aria_rel
       RELIABILITY_REQUIRED: "1"
       PYTHONPATH: ${{ github.workspace }}
     steps:
