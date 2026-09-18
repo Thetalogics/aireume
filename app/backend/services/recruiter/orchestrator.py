@@ -229,7 +229,12 @@ class RecruiterOrchestrator:
         )
         return interview_session.id
 
-    async def on_interview_completed(self, session_id: str) -> None:
+    async def on_interview_completed(
+        self,
+        session_id: str,
+        *,
+        expected_voice_generation: int | None = None,
+    ) -> bool:
         """
         Post-interview processing pipeline:
         transcript -> evaluation agents -> fitment adjustment -> recommendation -> scorecard.
@@ -239,7 +244,7 @@ class RecruiterOrchestrator:
         interview_session = self._get_session(session_id)
         if interview_session is None:
             logger.error("Recruiter interview session %s not found", session_id)
-            return
+            return False
 
         # Ensure tenant-scoped access
         tenant_id = interview_session.tenant_id
@@ -247,6 +252,8 @@ class RecruiterOrchestrator:
         # Load transcript from voice session
         transcript: list[dict[str, Any]] = []
         voice_session = interview_session.voice_session
+        if voice_session and expected_voice_generation is None:
+            expected_voice_generation = voice_session.result_generation
         if voice_session:
             entries = self.db.execute(
                 select(VoiceTranscriptEntry)
@@ -382,6 +389,18 @@ class RecruiterOrchestrator:
         recommender = RecommendationAgent()
         recommendation = await recommender.recommend(scorecard, adjusted_fitment, context)
 
+        if voice_session:
+            self.db.refresh(voice_session, with_for_update=True)
+            if voice_session.result_generation != expected_voice_generation:
+                self.db.rollback()
+                logger.info(
+                    "Discarded stale recruiter scorecard session_id=%s expected_generation=%s current_generation=%s",
+                    session_id,
+                    expected_voice_generation,
+                    voice_session.result_generation,
+                )
+                return False
+
         # Persist scorecard
         scorecard_record = RecruiterScorecard(
             id=str(uuid.uuid4()),
@@ -491,6 +510,7 @@ class RecruiterOrchestrator:
             recommendation.get("recommendation"),
             recommendation.get("overall_score"),
         )
+        return True
 
     def get_session_status(self, session_id: str) -> dict[str, Any]:
         """Returns current session status with progress info."""

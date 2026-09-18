@@ -786,7 +786,11 @@ def export_recruiter_sessions(
 
 # ─── Internal Callback (Voice Agent → Backend) ──────────────────────────────
 
-async def _generate_scorecard_background(session_id: str) -> None:
+async def _generate_scorecard_background(
+    session_id: str,
+    *,
+    expected_voice_generation: int,
+) -> None:
     """Background task to generate scorecard after interview completes.
 
     Runs after the HTTP response is sent so the voice agent gets an immediate 200.
@@ -797,7 +801,10 @@ async def _generate_scorecard_background(session_id: str) -> None:
     db = SessionLocal()
     try:
         orchestrator = RecruiterOrchestrator(db)
-        await orchestrator.on_interview_completed(session_id)
+        await orchestrator.on_interview_completed(
+            session_id,
+            expected_voice_generation=expected_voice_generation,
+        )
     except (ValueError, TypeError, KeyError, json.JSONDecodeError) as e:
         logger.error(
             "Scorecard generation failed for session %s: %s",
@@ -865,9 +872,16 @@ async def on_recruiter_interview_complete(
     body = await request.json()
     session_id = body.get("session_id")
     result = body.get("result", {})
+    expected_generation = body.get("expected_generation")
+    event_id = body.get("event_id")
 
     if not session_id:
         raise HTTPException(status_code=400, detail="session_id required")
+    if not isinstance(expected_generation, int) or not event_id:
+        raise HTTPException(
+            status_code=400,
+            detail="expected_generation and event_id are required",
+        )
 
     # ── Resolve session ────────────────────────────────────────────────────
     # The voice agent may send either the RecruiterInterviewSession UUID or
@@ -892,6 +906,23 @@ async def on_recruiter_interview_complete(
 
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found")
+    if not session.voice_session_id:
+        raise HTTPException(status_code=409, detail="Voice session identity required")
+
+    from app.backend.services.reliability.stale import claim_voice_completion
+
+    claim = claim_voice_completion(
+        db,
+        session_id=session.voice_session_id,
+        expected_generation=expected_generation,
+        event_id=str(event_id),
+    )
+    if claim.stale:
+        db.rollback()
+        return {"status": "stale", "session_id": session.id}
+    if claim.duplicate:
+        db.rollback()
+        return {"status": "ok", "session_id": session.id, "message": "Already completed"}
 
     # Idempotent: already completed with a scorecard → return early
     if session.status == "completed" and session.scorecard is not None:
@@ -1006,6 +1037,7 @@ async def on_recruiter_interview_complete(
     background_tasks.add_task(
         _generate_scorecard_background,
         session_id=session.id,
+        expected_voice_generation=expected_generation,
     )
 
     return {"status": "ok", "session_id": session.id}

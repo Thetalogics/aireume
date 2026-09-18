@@ -29,7 +29,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, R
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import NoResultFound, SQLAlchemyError
 
 from app.backend.db.database import get_db
 from app.backend.middleware.auth import get_current_user, require_internal_service
@@ -1322,23 +1322,31 @@ def _handle_quick_screen_escalation(session: VoiceScreeningSession, db: Session)
     )
 
 
-async def _generate_scorecard_background(session_id: str) -> None:
+async def _generate_scorecard_background(
+    session_id: str,
+    *,
+    expected_voice_generation: int,
+) -> None:
     """Background task to generate recruiter scorecard after interview completes."""
     from app.backend.db.database import SessionLocal
 
     db = SessionLocal()
     try:
         orchestrator = RecruiterOrchestrator(db)
-        await orchestrator.on_interview_completed(session_id)
+        applied = await orchestrator.on_interview_completed(
+            session_id,
+            expected_voice_generation=expected_voice_generation,
+        )
 
         # Auto-update candidate status from AI recommendation if enabled
-        try:
-            _apply_auto_status_update(db, session_id)
-        except (ValueError, TypeError, KeyError, json.JSONDecodeError, SQLAlchemyError) as e:
-            logger.warning(
-                "Auto-status-update failed for session %s: %s", session_id, e,
-                extra={"error_code": "DB_ERROR" if isinstance(e, SQLAlchemyError) else "VALIDATION_ERROR"},
-            )
+        if applied:
+            try:
+                _apply_auto_status_update(db, session_id)
+            except (ValueError, TypeError, KeyError, json.JSONDecodeError, SQLAlchemyError) as e:
+                logger.warning(
+                    "Auto-status-update failed for session %s: %s", session_id, e,
+                    extra={"error_code": "DB_ERROR" if isinstance(e, SQLAlchemyError) else "VALIDATION_ERROR"},
+                )
     except (ValueError, TypeError, KeyError, json.JSONDecodeError) as e:
         logger.error(
             "Scorecard generation failed for session %s: %s",
@@ -1443,9 +1451,16 @@ async def on_interview_complete(
     body = await request.json()
     session_id = body.get("session_id")
     result = body.get("result", {})
+    expected_generation = body.get("expected_generation")
+    event_id = body.get("event_id")
 
     if not session_id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="session_id required")
+    if not isinstance(expected_generation, int) or not event_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="expected_generation and event_id required",
+        )
 
     try:
         voice_session_id = int(session_id)
@@ -1455,12 +1470,24 @@ async def on_interview_complete(
             detail="session_id must be an integer voice session ID",
         )
 
-    voice_session = db.execute(
-        select(VoiceScreeningSession).where(VoiceScreeningSession.id == voice_session_id)
-    ).scalar_one_or_none()
+    from app.backend.services.reliability.stale import claim_voice_completion
 
-    if voice_session is None:
+    try:
+        completion = claim_voice_completion(
+            db,
+            session_id=voice_session_id,
+            expected_generation=expected_generation,
+            event_id=str(event_id),
+        )
+    except NoResultFound:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Voice session not found")
+    if completion.stale:
+        db.rollback()
+        return {"status": "stale", "session_id": voice_session_id}
+    if completion.duplicate:
+        db.rollback()
+        return {"status": "ok", "session_id": voice_session_id, "duplicate": True}
+    voice_session = completion.session
 
     # Update common call metadata
     duration = result.get("duration_seconds")
@@ -1515,8 +1542,13 @@ async def on_interview_complete(
 
     if voice_session.interview_depth == "quick":
         from app.backend.services.voice_screening_service import process_completed_call
+        assessment_applied = False
         try:
-            await process_completed_call(db, voice_session_id)
+            assessment_applied = await process_completed_call(
+                db,
+                voice_session_id,
+                expected_generation=expected_generation,
+            )
         except (ValueError, TypeError, json.JSONDecodeError, KeyError) as e:
             logger.warning(
                 "Post-call assessment failed for voice session %s: %s",
@@ -1532,13 +1564,14 @@ async def on_interview_complete(
             )
 
         # Adaptive depth escalation: auto-schedule standard interview if score exceeds threshold
-        try:
-            _handle_quick_screen_escalation(voice_session, db)
-        except (ValueError, TypeError, KeyError, json.JSONDecodeError, SQLAlchemyError) as e:
-            logger.warning(
-                "Auto-escalation check failed: %s", e,
-                extra={"error_code": "DB_ERROR" if isinstance(e, SQLAlchemyError) else "VALIDATION_ERROR"},
-            )
+        if assessment_applied:
+            try:
+                _handle_quick_screen_escalation(voice_session, db)
+            except (ValueError, TypeError, KeyError, json.JSONDecodeError, SQLAlchemyError) as e:
+                logger.warning(
+                    "Auto-escalation check failed: %s", e,
+                    extra={"error_code": "DB_ERROR" if isinstance(e, SQLAlchemyError) else "VALIDATION_ERROR"},
+                )
 
         return {"status": "ok", "session_id": voice_session_id, "depth": "quick"}
 
@@ -1641,6 +1674,7 @@ async def on_interview_complete(
     background_tasks.add_task(
         _generate_scorecard_background,
         session_id=recruiter_session.id,
+        expected_voice_generation=expected_generation,
     )
 
     return {"status": "ok", "session_id": recruiter_session.id, "depth": "deep"}

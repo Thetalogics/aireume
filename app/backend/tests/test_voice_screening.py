@@ -576,6 +576,7 @@ class TestUpdateVoiceSession:
         db.refresh(session)
 
         resp = auth_client.patch(f"/api/voice/sessions/{session.id}", json={
+            "expected_generation": 1,
             "status": "in_progress",
             "call_sid": "test-sid-123",
         }, headers=_INTERNAL_HEADERS)
@@ -589,7 +590,10 @@ class TestUpdateVoiceSession:
 
     def test_patch_session_not_found(self, auth_client):
         """Should return 404 for unknown session."""
-        resp = auth_client.patch("/api/voice/sessions/99999", json={"status": "completed"},
+        resp = auth_client.patch("/api/voice/sessions/99999", json={
+            "expected_generation": 1,
+            "status": "completed",
+        },
                                  headers=_INTERNAL_HEADERS)
         assert resp.status_code == 404
 
@@ -607,6 +611,7 @@ class TestUpdateVoiceSession:
         db.refresh(session)
 
         resp = auth_client.patch(f"/api/voice/sessions/{session.id}", json={
+            "expected_generation": 1,
             "tenant_id": 999,  # Not allowed
             "phone_number": "+99999999999",  # Not allowed
         }, headers=_INTERNAL_HEADERS)
@@ -616,6 +621,28 @@ class TestUpdateVoiceSession:
         db.refresh(session)
         assert session.tenant_id == tenant_id
         assert session.phone_number == "+14155551234"
+
+    def test_patch_rejects_stale_generation(self, auth_client, db):
+        tenant_id = _get_tenant_id(auth_client, db)
+        candidate = _create_candidate(db, tenant_id)
+        session = VoiceScreeningSession(
+            tenant_id=tenant_id,
+            candidate_id=candidate.id,
+            phone_number="+14155551235",
+            status="scheduled",
+            result_generation=2,
+        )
+        db.add(session)
+        db.commit()
+
+        resp = auth_client.patch(
+            f"/api/voice/sessions/{session.id}",
+            json={"expected_generation": 1, "status": "completed"},
+            headers=_INTERNAL_HEADERS,
+        )
+        assert resp.status_code == 409
+        db.refresh(session)
+        assert session.status == "scheduled"
 
 
 # ─── Voice Screening Service Tests ────────────────────────────────────────────
@@ -812,6 +839,10 @@ class TestCancelVoiceSession:
         tenant_id = _get_tenant_id(auth_client, db)
         candidate = _create_candidate(db, tenant_id)
         session = _create_voice_session(db, tenant_id, candidate.id, status="scheduled")
+        session.assessment_json = '{"old":true}'
+        session.transcript_json = '{"old":true}'
+        session.duration_seconds = 12
+        db.commit()
 
         resp = auth_client.post(f"/api/voice/sessions/{session.id}/cancel")
         assert resp.status_code == 200
@@ -870,6 +901,11 @@ class TestRescheduleVoiceSession:
         data = resp.json()
         assert data["status"] == "scheduled"
         assert data["message"] == "Call rescheduled successfully"
+        db.refresh(session)
+        assert session.result_generation == 2
+        assert session.assessment_json is None
+        assert session.transcript_json is None
+        assert session.duration_seconds is None
 
     def test_reschedule_failed_session(self, auth_client, db):
         """Can reschedule a failed session."""

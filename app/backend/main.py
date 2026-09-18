@@ -465,6 +465,16 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         log.exception("Error stopping queue worker: %s", e)
 
+    # Cancel and await narrative/enrichment tasks so no writes outlive shutdown.
+    try:
+        from app.backend.services.hybrid_pipeline import shutdown_background_tasks
+
+        await shutdown_background_tasks(
+            timeout=float(os.getenv("BACKGROUND_TASK_SHUTDOWN_TIMEOUT", "5"))
+        )
+    except Exception as e:
+        log.exception("Error stopping analysis background tasks: %s", e)
+
     # Stop background scheduler
     try:
         from app.backend.services.scheduler import stop_scheduler
@@ -748,18 +758,44 @@ def root():
 
 @app.get("/health")
 async def health_check():
-    """Liveness + cheap DB ping for orchestrators."""
+    """Liveness: process is up. Does not touch PostgreSQL, Redis, or providers."""
+    return {
+        "status": "ok",
+        "live": True,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@app.get("/ready")
+async def readiness_check():
+    """Readiness: this instance can accept traffic. PostgreSQL is required.
+
+    Redis is checked only when REDIS_REQUIRED=1 (SAML/queue correctness).
+    Third-party providers are never probed here.
+    """
+    from sqlalchemy import text
+
     try:
-        from sqlalchemy import text
         db = SessionLocal()
         try:
             db.execute(text("SELECT 1"))
         finally:
             db.close()
     except Exception:
-        return JSONResponse(status_code=503, content={"status": "unhealthy", "database": "disconnected"})
+        return JSONResponse(status_code=503, content={"status": "not_ready", "database": "disconnected"})
+
+    redis_required = os.getenv("REDIS_REQUIRED", "").lower() in ("1", "true", "yes")
+    if redis_required:
+        try:
+            from app.backend.services.shared_cache import redis_is_healthy
+
+            if not redis_is_healthy():
+                return JSONResponse(status_code=503, content={"status": "not_ready", "redis": "unavailable"})
+        except Exception:
+            return JSONResponse(status_code=503, content={"status": "not_ready", "redis": "unavailable"})
     return {
-        "status": "ok",
+        "status": "ready",
+        "database": "connected",
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -789,16 +825,10 @@ def sync_sleep():
 
 @app.get("/api/health")
 async def api_health_check():
-    """
-    Health check with dependency validation.
-    Checks DB connectivity and Ollama/LLM reachability.
-    Returns 200 if healthy, 503 if degraded.
-    """
+    """Readiness-style check. Does not call Gemini/Ollama/Stripe."""
     errors = []
     db_status = "connected"
-    llm_status = "connected"
 
-    # Check database
     try:
         from sqlalchemy import text
         db = SessionLocal()
@@ -810,25 +840,12 @@ async def api_health_check():
         db_status = "disconnected"
         errors.append(f"Database: {str(e)}")
 
-    # Check Ollama/LLM
-    try:
-        from app.backend.services.llm_service import get_ollama_headers
-        ollama_host = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-        headers = get_ollama_headers(ollama_host)
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(f"{ollama_host}/api/tags", headers=headers)
-            if resp.status_code != 200:
-                raise Exception(f"Ollama returned {resp.status_code}")
-    except Exception as e:
-        llm_status = "disconnected"
-        errors.append(f"LLM: {str(e)}")
-
-    status = "healthy" if not errors else "degraded"
+    status = "healthy" if not errors else "unhealthy"
     status_code = 200 if not errors else 503
 
     return JSONResponse(
         status_code=status_code,
-        content={"status": status, "database": db_status, "llm": llm_status, "errors": errors},
+        content={"status": status, "database": db_status, "llm": "not_probed", "errors": errors},
     )
 
 

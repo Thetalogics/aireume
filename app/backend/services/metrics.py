@@ -112,6 +112,32 @@ QUEUE_RETRY_TOTAL = Counter(
     ["reason"],
 )
 
+JOB_STALE_DISCARD_TOTAL = Counter(
+    "aria_job_stale_discard_total",
+    "Background jobs discarded because the target generation changed",
+    ["job_type"],
+)
+
+LEASE_RECOVERY_TOTAL = Counter(
+    "aria_lease_recovery_total",
+    "Expired processing leases reclaimed",
+)
+
+QUOTA_RECONCILE_RELEASE_TOTAL = Counter(
+    "aria_quota_reconcile_release_total",
+    "Abandoned quota reservations released",
+)
+
+QUOTA_RECONCILE_FAILURE_TOTAL = Counter(
+    "aria_quota_reconcile_failure_total",
+    "Quota reservation reconciliation failures",
+)
+
+LEASE_LOST_BEFORE_COMMIT_TOTAL = Counter(
+    "aria_lease_lost_before_commit_total",
+    "Workers prevented from committing after losing their lease",
+)
+
 QUOTA_REJECTED_TOTAL = Counter(
     "aria_quota_rejected_total",
     "Quota rejections",

@@ -9,6 +9,13 @@ import random
 import re
 from dataclasses import dataclass
 from typing import Dict, Any, Optional
+from app.backend.services.reliability.timeouts import (
+    GEMINI_CONNECT,
+    GEMINI_READ,
+    OLLAMA_CONNECT,
+    OLLAMA_READ,
+    httpx_timeout,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -232,14 +239,17 @@ async def gemini_generate_content(
     if system:
         body["systemInstruction"] = {"parts": [{"text": system}]}
 
-    max_retries = int(os.getenv("GEMINI_MAX_RETRIES", "3"))
+    # Durable queue execution owns the total retry budget; provider calls are single-shot.
+    max_retries = int(os.getenv("GEMINI_MAX_RETRIES", "0"))
     last_error: Exception | None = None
     data: dict | None = None
 
     sem = get_gemini_semaphore()
     async with sem:
         await _gemini_throttle_wait()
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        async with httpx.AsyncClient(
+            timeout=httpx_timeout(GEMINI_CONNECT, GEMINI_READ),
+        ) as client:
             for attempt in range(max_retries + 1):
                 try:
                     response = await client.post(
@@ -578,7 +588,7 @@ class LLMService:
     def __init__(self):
         self.base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
         self.model = os.getenv("OLLAMA_MODEL_BACKEND", "").strip() or get_ollama_model()
-        self.max_retries = 1
+        self.max_retries = 0
         # Local model for fast skill extraction (JD profile + resume skills)
         self._local_base_url = os.getenv("OLLAMA_LOCAL_URL", "http://ollama:11434")
         self._local_model = os.getenv("OLLAMA_MODEL_SKILLS", "qwen3.5:2b")
@@ -828,8 +838,10 @@ JSON:"""
         }
 
         headers = get_ollama_headers(self.base_url)
-        _timeout = timeout or (float(os.getenv("LLM_NARRATIVE_TIMEOUT", "500")) + 30)
-        async with httpx.AsyncClient(timeout=_timeout) as client:
+        _timeout = timeout or OLLAMA_READ
+        async with httpx.AsyncClient(
+            timeout=httpx_timeout(OLLAMA_CONNECT, _timeout),
+        ) as client:
             response = await client.post(url, json=payload, headers=headers)
             response.raise_for_status()
             data = response.json()
@@ -848,9 +860,11 @@ JSON:"""
         }
 
         # Local model doesn't need auth headers
-        _timeout = timeout or 60.0
+        _timeout = timeout or OLLAMA_READ
         try:
-            async with httpx.AsyncClient(timeout=_timeout) as client:
+            async with httpx.AsyncClient(
+                timeout=httpx_timeout(OLLAMA_CONNECT, _timeout),
+            ) as client:
                 response = await client.post(url, json=payload)
                 response.raise_for_status()
                 data = response.json()
@@ -954,8 +968,10 @@ JSON:"""
         }
 
         headers = get_ollama_headers(self.base_url)
-        _timeout = timeout or (float(os.getenv("LLM_NARRATIVE_TIMEOUT", "500")) + 30)
-        async with httpx.AsyncClient(timeout=_timeout) as client:
+        _timeout = timeout or OLLAMA_READ
+        async with httpx.AsyncClient(
+            timeout=httpx_timeout(OLLAMA_CONNECT, _timeout),
+        ) as client:
             response = await client.post(url, json=payload, headers=headers)
             response.raise_for_status()
             data = response.json()

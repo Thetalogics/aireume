@@ -97,6 +97,8 @@ class QueueManager:
         self.heartbeat_interval_seconds = float(os.getenv("QUEUE_HEARTBEAT_INTERVAL", "30"))
         self.stale_job_timeout_seconds = int(os.getenv("QUEUE_STALE_TIMEOUT", "600"))  # 10 min
         self._heartbeat_tasks: set[asyncio.Task] = set()
+        self._stop_event = asyncio.Event()
+        self._worker_task: asyncio.Task | None = None
         
         # Retry configuration
         self.retry_delays = [60, 300, 900]  # 1min, 5min, 15min
@@ -181,13 +183,42 @@ class QueueManager:
                 logger.info("Duplicate job found: %s status=%s", existing.id, existing.status)
                 return existing.id
 
-            from app.backend.routes.analyze_helpers import _check_and_increment_usage
-            allowed, message = _check_and_increment_usage(db, tenant_id, user_id or 0, 1)
-            if not allowed:
-                raise AnalysisQuotaExceeded(message or "Monthly analysis quota exceeded")
+            new_job_id = uuid.uuid4()
+            quota_operation_id = str(new_job_id)
+            from app.backend.routes.analyze_helpers import _ensure_monthly_reset, _get_plan_limits
+            from app.backend.services.plan_entitlement_service import get_tenant_plan
+            from app.backend.services.reliability.quota_reservation import (
+                QuotaLimitExceeded,
+                reserve_analysis_quota,
+            )
+
+            tenant = db.get(Tenant, tenant_id)
+            if tenant is None:
+                raise AnalysisQuotaExceeded("Tenant not found")
+            _ensure_monthly_reset(tenant)
+            db.flush()
+            plan = get_tenant_plan(db, tenant_id)
+            analyses_limit = (
+                _get_plan_limits(plan).get("analyses_per_month", 20)
+                if plan is not None
+                else 20
+            )
+            try:
+                reservation = reserve_analysis_quota(
+                    db,
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                    quantity=1,
+                    operation_id=quota_operation_id,
+                    analyses_limit=analyses_limit,
+                )
+            except QuotaLimitExceeded as exc:
+                db.rollback()
+                raise AnalysisQuotaExceeded(str(exc)) from exc
 
             reserved_config = dict(job_config or {})
             reserved_config["quota_reserved"] = True
+            reserved_config["quota_operation_id"] = quota_operation_id
             reserved_config["command"] = command_to_dict(cmd)
             job_config = reserved_config
             
@@ -220,6 +251,7 @@ class QueueManager:
             
             # Create job
             job = AnalysisJob(
+                id=new_job_id,
                 tenant_id=tenant_id,
                 candidate_id=candidate_id,
                 user_id=user_id,
@@ -231,6 +263,8 @@ class QueueManager:
                 job_config=job_config,
             )
             db.add(job)
+            db.flush()
+            reservation.job_id = str(job.id)
             if owns_session:
                 db.commit()
             else:
@@ -242,9 +276,6 @@ class QueueManager:
         except IntegrityError as e:
             db.rollback()
             logger.warning("Duplicate job detected: %s", e)
-            from app.backend.routes.analyze_helpers import _release_analysis_quota
-            _release_analysis_quota(db, tenant_id, 1)
-            db.commit()
             existing = db.query(AnalysisJob).filter(
                 AnalysisJob.input_hash == input_hash,
                 AnalysisJob.tenant_id == tenant_id,
@@ -330,6 +361,7 @@ class QueueManager:
             .where(
                 AnalysisJob.id == job_id,
                 AnalysisJob.status == "processing",
+                AnalysisJob.worker_id == self.worker_id,
             )
             .values(
                 worker_heartbeat=now,
@@ -337,7 +369,21 @@ class QueueManager:
             )
         )
         db.commit()
-    
+
+    def _owns_lease(self, db: Session, job: AnalysisJob) -> bool:
+        fresh = db.query(AnalysisJob).filter(AnalysisJob.id == job.id).first()
+        if fresh is None:
+            return False
+        if fresh.worker_id != self.worker_id or fresh.status != "processing":
+            return False
+        lease = fresh.leased_until
+        if lease is None:
+            return True
+        now = datetime.now(timezone.utc)
+        if getattr(lease, "tzinfo", None) is None:
+            lease = lease.replace(tzinfo=timezone.utc)
+        return lease >= now
+
     async def process_job(self, job: AnalysisJob, db: Session) -> bool:
         """
         Process a single analysis job via the shared screening pipeline.
@@ -372,7 +418,12 @@ class QueueManager:
                 await beat_task
 
     async def _process_job_body(self, job: AnalysisJob, db: Session, start_time: float) -> bool:
+        job_id = job.id
         try:
+            if not self._owns_lease(db, job):
+                logger.warning("lease_lost before process job_id=%s", job.id)
+                db.rollback()
+                return False
             artifact = db.query(AnalysisArtifact).filter(AnalysisArtifact.id == job.artifact_id).first()
             if not artifact:
                 raise ValueError(f"Artifact not found: {job.artifact_id}")
@@ -384,8 +435,18 @@ class QueueManager:
             db.commit()
             
             from app.backend.services.queue_analysis_service import complete_queue_job
-            
-            await complete_queue_job(job.id, db)
+
+            if not self._owns_lease(db, job):
+                logger.warning("lease_lost before result commit job_id=%s", job.id)
+                db.rollback()
+                return False
+            completed = await complete_queue_job(
+                job.id,
+                db,
+                expected_worker_id=self.worker_id,
+            )
+            if not completed:
+                return False
             db.refresh(job)
             
             total_time_ms = int((time.time() - start_time) * 1000)
@@ -414,14 +475,37 @@ class QueueManager:
             return True
             
         except Exception as e:
+            db.rollback()
+            job = db.query(AnalysisJob).filter(AnalysisJob.id == job_id).first()
+            if job is None:
+                logger.error("Job failed then disappeared: %s", job_id, exc_info=True)
+                return False
+            if not self._owns_lease(db, job):
+                logger.warning(
+                    "lease_lost while handling failure job_id=%s worker_id=%s",
+                    job_id,
+                    self.worker_id,
+                )
+                db.rollback()
+                return False
             logger.error(f"Job failed: {job.id}, error={str(e)}", exc_info=True)
             
             # Determine if we should retry
-            should_retry = job.retry_count < job.max_retries
+            from app.backend.services.reliability.retry import classify_failure
+
+            decision = classify_failure(e)
+            should_retry = decision.should_retry and job.retry_count < job.max_retries
+            job.last_error_category = decision.category.value
+            job.last_error_at = datetime.now(timezone.utc)
             
             if should_retry:
                 # Calculate next retry time with exponential backoff
                 retry_delay = self.retry_delays[min(job.retry_count, len(self.retry_delays) - 1)]
+                if decision.retry_after_seconds is not None:
+                    retry_delay = min(
+                        max(0.0, decision.retry_after_seconds),
+                        float(max(self.retry_delays)),
+                    )
                 next_retry = datetime.now(timezone.utc) + timedelta(seconds=retry_delay)
                 
                 job.status = 'retrying'
@@ -533,6 +617,12 @@ class QueueManager:
             if result.rowcount != 1:
                 continue
             recovered += 1
+            try:
+                from app.backend.services.metrics import LEASE_RECOVERY_TOTAL
+
+                LEASE_RECOVERY_TOTAL.inc()
+            except Exception:
+                pass
             db.expire(job)
             if values["status"] == "failed":
                 db.refresh(job)
@@ -549,6 +639,18 @@ class QueueManager:
         if recovered:
             db.commit()
             logger.info("Recovered %s stale jobs", recovered)
+        from app.backend.services.reliability.quota_reservation import reconcile_expired_quota_reservations
+        try:
+            reconcile_expired_quota_reservations(db)
+        except Exception:
+            db.rollback()
+            try:
+                from app.backend.services.metrics import QUOTA_RECONCILE_FAILURE_TOTAL
+
+                QUOTA_RECONCILE_FAILURE_TOTAL.inc()
+            except Exception:
+                pass
+            raise
 
     # ─── Dead Letter Queue Operations ───────────────────────────────────────────
 
@@ -740,6 +842,7 @@ class QueueManager:
         """Main worker loop - processes up to max_concurrent_jobs in parallel."""
         logger.info(f"Worker loop started: {self.worker_id}")
         self.is_running = True
+        self._stop_event.clear()
         in_flight: set[asyncio.Task] = set()
         shutdown_timeout = float(os.getenv("QUEUE_SHUTDOWN_TIMEOUT", "30"))
         claim_db = _database.SessionLocal()
@@ -753,24 +856,46 @@ class QueueManager:
                     in_flight.add(task)
                     task.add_done_callback(in_flight.discard)
                 if in_flight:
-                    await asyncio.wait(in_flight, return_when=asyncio.FIRST_COMPLETED)
+                    stop_wait = asyncio.create_task(self._stop_event.wait())
+                    done, _ = await asyncio.wait(
+                        in_flight | {stop_wait},
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if stop_wait in done:
+                        break
+                    stop_wait.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await stop_wait
                 else:
-                    await asyncio.sleep(self.poll_interval_seconds)
+                    try:
+                        await asyncio.wait_for(
+                            self._stop_event.wait(),
+                            timeout=self.poll_interval_seconds,
+                        )
+                    except asyncio.TimeoutError:
+                        pass
             if in_flight:
-                await asyncio.wait(in_flight, timeout=shutdown_timeout)
+                _, pending = await asyncio.wait(in_flight, timeout=shutdown_timeout)
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    await asyncio.gather(*pending, return_exceptions=True)
         finally:
             claim_db.close()
+            self.is_running = False
 
         logger.info(f"Worker loop stopped: {self.worker_id}")
     
     def start(self):
         """Start the queue worker."""
-        asyncio.create_task(self.worker_loop())
+        if self._worker_task is None or self._worker_task.done():
+            self._worker_task = asyncio.create_task(self.worker_loop())
     
     def stop(self):
         """Stop the queue worker gracefully."""
         logger.info(f"Stopping worker: {self.worker_id}")
         self.is_running = False
+        self._stop_event.set()
     
     def get_stats(self) -> Dict[str, Any]:
         """Get worker statistics."""
@@ -810,4 +935,9 @@ async def stop_queue_worker():
     """Stop the background queue worker."""
     manager = get_queue_manager()
     manager.stop()
+    if manager._worker_task is not None:
+        try:
+            await manager._worker_task
+        finally:
+            manager._worker_task = None
     logger.info("Queue worker stopped")

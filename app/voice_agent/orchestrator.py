@@ -78,6 +78,7 @@ class OrchestratorContext:
     tenant_id: int = 0
     candidate_id: int = 0
     phone_number: str = ""
+    result_generation: int = 1
 
     # Candidate context (from backend)
     candidate_context: dict[str, Any] = field(default_factory=dict)

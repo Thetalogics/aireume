@@ -90,14 +90,24 @@ def _extract_last_user_message(chat_ctx) -> str:
     return ""
 
 
-async def _notify_backend_complete(session_id: str, result: dict, backend_url: str) -> None:
+async def _notify_backend_complete(
+    session_id: str,
+    result: dict,
+    backend_url: str,
+    expected_generation: int,
+) -> None:
     import httpx
 
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(
                 f"{backend_url}/api/interviews/internal/complete",
-                json={"session_id": session_id, "result": result},
+                json={
+                    "session_id": session_id,
+                    "expected_generation": expected_generation,
+                    "event_id": f"voice-{session_id}-{expected_generation}",
+                    "result": result,
+                },
                 headers=INTERNAL_HEADERS,
             )
             resp.raise_for_status()
@@ -112,14 +122,19 @@ async def _notify_backend_complete(session_id: str, result: dict, backend_url: s
         )
 
 
-async def _update_session(session_id: int, updates: dict, backend_url: str) -> None:
+async def _update_session(
+    session_id: int,
+    updates: dict,
+    backend_url: str,
+    expected_generation: int,
+) -> None:
     import httpx
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.patch(
                 f"{backend_url}/api/voice/sessions/{session_id}",
-                json=updates,
+                json={"expected_generation": expected_generation, **updates},
                 headers=INTERNAL_HEADERS,
             )
             log_step(
@@ -250,6 +265,7 @@ def _build_orchestrator(metadata: dict[str, Any]):
         tenant_id=metadata.get("tenant_id"),
         candidate_id=metadata.get("candidate_id"),
         phone_number=metadata.get("phone_number"),
+        result_generation=int(metadata["result_generation"]),
         candidate_context=metadata.get("candidate_context") or {},
         role_context={
             "title": metadata.get("jd_title") or "",
@@ -443,6 +459,7 @@ async def aria_rtc_entrypoint(ctx: JobContext) -> None:
                     session_id,
                     {"status": "failed", "error_log": f"SIP dial failed: {dial_err}"},
                     backend_url,
+                    orch_ctx.result_generation,
                 )
                 session_started.cancel()
                 return
@@ -474,7 +491,12 @@ async def aria_rtc_entrypoint(ctx: JobContext) -> None:
             identity=participant.identity,
             participant_kind=getattr(participant, "kind", ""),
         )
-        await _update_session(session_id, {"status": "in_progress"}, backend_url)
+        await _update_session(
+            session_id,
+            {"status": "in_progress"},
+            backend_url,
+            orch_ctx.result_generation,
+        )
 
         greeting = await orchestrator.start()
         orch_ctx.transcript.append(
@@ -508,7 +530,12 @@ async def aria_rtc_entrypoint(ctx: JobContext) -> None:
             result["voice_pipeline"] = "livekit_cloud"
             result["stt_model"] = STT_MODEL
             result["tts_model"] = TTS_MODEL
-            await _notify_backend_complete(orch_ctx.session_id, result, backend_url)
+            await _notify_backend_complete(
+                orch_ctx.session_id,
+                result,
+                backend_url,
+                orch_ctx.result_generation,
+            )
             await _update_session(
                 session_id,
                 {
@@ -516,6 +543,7 @@ async def aria_rtc_entrypoint(ctx: JobContext) -> None:
                     "duration_seconds": int(orch_ctx.elapsed),
                 },
                 backend_url,
+                orch_ctx.result_generation,
             )
             log_step(
                 logger,
@@ -539,6 +567,7 @@ async def aria_rtc_entrypoint(ctx: JobContext) -> None:
                     int(session_id),
                     {"status": "failed", "error_log": str(fatal_err)},
                     backend_url,
+                    int(metadata["result_generation"]),
                 )
             except Exception:
                 pass

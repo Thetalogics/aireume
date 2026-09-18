@@ -235,6 +235,7 @@ def execute_scheduled_call(session_id: int):
             "interview_config": interview_config or {},
             "interview_kit": interview_kit_payload,
             "screening_result_id": interview_kit_payload.get("screening_result_id"),
+            "result_generation": session.result_generation,
         }
 
         if is_cloud_voice_enabled():

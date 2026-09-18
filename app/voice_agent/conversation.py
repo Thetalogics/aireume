@@ -56,6 +56,7 @@ class InterviewContext:
     tenant_id: int = 0
     candidate_id: int = 0
     phone_number: str = ""
+    result_generation: int = 1
     bot_name: str = "ARIA Assistant"
     greeting_style: str = "professional"
     consent_script: Optional[str] = None

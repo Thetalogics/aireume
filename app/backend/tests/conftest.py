@@ -1380,3 +1380,15 @@ def other_tenant_session(db_session):
     db_session.add(session)
     db_session.commit()
     return session
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """Dedicated reliability jobs fail if any selected test was skipped."""
+    if not (
+        os.environ.get("RELIABILITY_REQUIRED") == "1"
+        or os.environ.get("RELIABILITY_REDIS_REQUIRED") == "1"
+    ):
+        return
+    reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+    if reporter and reporter.stats.get("skipped"):
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED

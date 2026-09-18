@@ -80,6 +80,12 @@ class TestRiskWeightSign:
             s = _score(risk_penalty=penalty, risk_weight=weight)["fit_score"]
             assert 0 <= s <= 100
 
+    def test_explicit_risk_zero_is_preserved(self):
+        weights = {**_BALANCED, "risk": 0}
+        canon = canonicalize_scoring_weights(weights, strict=False)
+        assert canon["risk"] == pytest.approx(0.0)
+        assert canon["risk"] != pytest.approx(float(DEFAULT_WEIGHTS["risk"]))
+
     def test_risk_clamped_to_unit_interval_not_arbitrary_030(self):
         assert normalize_risk_weight(0.30) == pytest.approx(0.30)
         assert normalize_risk_weight(0.50) == pytest.approx(0.50)

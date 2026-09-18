@@ -13,6 +13,7 @@ import logging
 import os
 import smtplib
 import ssl
+from app.backend.services.reliability.timeouts import EMAIL_CONNECT, EMAIL_READ
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Optional
@@ -87,7 +88,10 @@ class EmailService:
         msg.attach(MIMEText(body_html, "html"))
 
         try:
-            with smtplib.SMTP(self.smtp_host, self.smtp_port) as server:
+            with smtplib.SMTP(
+                self.smtp_host, self.smtp_port, timeout=EMAIL_CONNECT,
+            ) as server:
+                server.sock.settimeout(EMAIL_READ)
                 server.ehlo()
                 if self.smtp_user and self.smtp_password:
                     server.starttls()
@@ -226,21 +230,31 @@ class TenantEmailService:
                 # SMTP_SSL — entire connection is TLS from the start
                 context = ssl.create_default_context()
                 with smtplib.SMTP_SSL(
-                    self.smtp_host, self.smtp_port, context=context
+                    self.smtp_host,
+                    self.smtp_port,
+                    context=context,
+                    timeout=EMAIL_CONNECT,
                 ) as server:
+                    server.sock.settimeout(EMAIL_READ)
                     if self.smtp_user and self.smtp_password:
                         server.login(self.smtp_user, self.smtp_password)
                     server.sendmail(self.smtp_from, to, msg.as_string())
             elif self.encryption_type == "none":
                 # Plain SMTP — no encryption at all
-                with smtplib.SMTP(self.smtp_host, self.smtp_port) as server:
+                with smtplib.SMTP(
+                    self.smtp_host, self.smtp_port, timeout=EMAIL_CONNECT,
+                ) as server:
+                    server.sock.settimeout(EMAIL_READ)
                     server.ehlo()
                     if self.smtp_user and self.smtp_password:
                         server.login(self.smtp_user, self.smtp_password)
                     server.sendmail(self.smtp_from, to, msg.as_string())
             else:
                 # Default: STARTTLS (upgrade plain connection to TLS)
-                with smtplib.SMTP(self.smtp_host, self.smtp_port) as server:
+                with smtplib.SMTP(
+                    self.smtp_host, self.smtp_port, timeout=EMAIL_CONNECT,
+                ) as server:
+                    server.sock.settimeout(EMAIL_READ)
                     server.ehlo()
                     server.starttls()
                     server.ehlo()

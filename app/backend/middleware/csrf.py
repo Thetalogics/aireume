@@ -41,6 +41,7 @@ class CSRFMiddleware(BaseHTTPMiddleware):
         "/api/recruiter/internal/",
         "/api/interviews/internal/",
         "/health",
+        "/ready",
         "/api/health",
         "/api/health/deep",
         "/api/llm-status",
@@ -59,8 +60,6 @@ class CSRFMiddleware(BaseHTTPMiddleware):
             return True
         for exempt in self.EXEMPT_PATHS:
             if exempt.endswith("/") and path.startswith(exempt):
-                return True
-            if not exempt.endswith("/") and path.startswith(exempt + "/"):
                 return True
         for pattern in self.EXEMPT_PATTERNS:
             if pattern.match(path):

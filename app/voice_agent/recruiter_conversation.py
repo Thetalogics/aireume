@@ -41,6 +41,7 @@ class RecruiterContext:
     jd_title: str
     interview_strategy: dict  # Pre-generated strategy with questions
     interview_config: dict    # Duration, focus areas
+    result_generation: int = 1
     
     # Runtime state
     current_state: RecruiterState = RecruiterState.GREETING

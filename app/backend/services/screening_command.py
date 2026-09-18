@@ -153,6 +153,7 @@ def execute_screening(
     gap_analysis: Optional[dict] = None,
     action: Optional[str] = None,
     converted_pdf_content: Optional[bytes] = None,
+    commit: bool = True,
 ):
     import json
     import time
@@ -233,9 +234,18 @@ def execute_screening(
             narrative_status="pending",
             pipeline_result=pipeline_result,
             requisition_id=cmd.requisition_id,
+            commit=commit,
         )
         if cmd.requisition_id and cmd.user_id:
-            _link_to_requisition(db, cmd.requisition_id, cmd.tenant_id, candidate_id, db_result.id, cmd.user_id)
+            _link_to_requisition(
+                db,
+                cmd.requisition_id,
+                cmd.tenant_id,
+                candidate_id,
+                db_result.id,
+                cmd.user_id,
+                commit=commit,
+            )
         cmd.candidate_id = candidate_id
         SCREENING_TOTAL.labels(result="success").inc()
         return db_result, is_dup
@@ -246,7 +256,13 @@ def execute_screening(
         SCREENING_DURATION_SECONDS.observe(time.perf_counter() - started)
 
 
-def apply_screening_pipeline_result(db, db_result, pipeline_result: dict | None):
+def apply_screening_pipeline_result(
+    db,
+    db_result,
+    pipeline_result: dict | None,
+    *,
+    expected_generation: int,
+):
     """Update scores on an already-persisted ScreeningResult without re-resolving the candidate."""
     from app.backend.routes.analyze_helpers import (
         _populate_denormalized_columns,
@@ -257,6 +273,38 @@ def apply_screening_pipeline_result(db, db_result, pipeline_result: dict | None)
 
     if db_result is None:
         return None
+    from app.backend.models.db_models import ScreeningResult
+
+    current = (
+        db.query(ScreeningResult)
+        .filter(
+            ScreeningResult.id == db_result.id,
+            ScreeningResult.tenant_id == db_result.tenant_id,
+            ScreeningResult.analysis_generation == expected_generation,
+        )
+        .with_for_update()
+        .populate_existing()
+        .one_or_none()
+    )
+    if current is None:
+        current_generation = db.query(ScreeningResult.analysis_generation).filter(
+            ScreeningResult.id == db_result.id,
+            ScreeningResult.tenant_id == db_result.tenant_id,
+        ).scalar()
+        if current_generation is not None:
+            from app.backend.services.reliability.stale import discard_stale
+
+            discard_stale(
+                job_type="sync_analysis",
+                job_id=f"sync-{db_result.id}-{expected_generation}",
+                target_id=db_result.id,
+                expected_version=expected_generation,
+                current_version=current_generation,
+                tenant_id=db_result.tenant_id,
+            )
+        db.rollback()
+        return None
+    db_result = current
     previous_analysis_result = db_result.analysis_result
     previous_deterministic_score = db_result.deterministic_score
     payload = dict(pipeline_result or {})

@@ -392,6 +392,7 @@ async def dispatch_cloud_screening_call(payload: dict[str, Any]) -> dict[str, An
         "interview_config": payload.get("interview_config") or {},
         "interview_kit": payload.get("interview_kit") or {},
         "screening_result_id": payload.get("screening_result_id"),
+        "result_generation": payload["result_generation"],
         "tenant_config": payload.get("tenant_config") or {},
         "candidate_context": payload.get("candidate_context") or {},
         "aria_backend_url": os.getenv("ARIA_BACKEND_URL", "http://backend:8000"),

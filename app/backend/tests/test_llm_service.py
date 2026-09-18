@@ -235,7 +235,7 @@ class TestLLMService:
         service = LLMService()
         assert service.base_url == "http://localhost:11434"
         assert service.model == "qwen2.5:7b"
-        assert service.max_retries == 1
+        assert service.max_retries == 0
 
     @pytest.mark.asyncio
     async def test_call_ollama_success(self):

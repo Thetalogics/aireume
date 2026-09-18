@@ -620,6 +620,7 @@ async def analyze_endpoint(
                 candidate_id=existing.id,
             )
             db_result, _ = _persist_via_screening_command(pipeline_result={}, **persist_kw)
+            expected_generation = db_result.analysis_generation
 
             result = await run_hybrid_pipeline(
                 resume_text=existing.raw_resume_text,
@@ -630,10 +631,18 @@ async def analyze_endpoint(
                 jd_analysis=jd_analysis,
                 screening_result_id=db_result.id,
                 tenant_id=current_user.tenant_id,
+                expected_analysis_generation=expected_generation,
                 phase3_context=phase3_context,
                 db_session=db,
             )
-            db_result = apply_screening_pipeline_result(db, db_result, result)
+            db_result = apply_screening_pipeline_result(
+                db,
+                db_result,
+                result,
+                expected_generation=expected_generation,
+            )
+            if db_result is None:
+                raise HTTPException(status_code=409, detail="Analysis was superseded")
             
             result["result_id"]      = db_result.id
             result["analysis_id"]    = db_result.id   # Add this line
@@ -707,6 +716,7 @@ async def analyze_endpoint(
     )
     db_result, is_dup = _persist_via_screening_command(pipeline_result={}, **persist_kw)
     candidate_id = db_result.candidate_id
+    expected_generation = db_result.analysis_generation
 
     # Run pipeline with background LLM
     result = await run_hybrid_pipeline(
@@ -718,10 +728,18 @@ async def analyze_endpoint(
         jd_analysis=jd_analysis,
         screening_result_id=db_result.id,
         tenant_id=current_user.tenant_id,
+        expected_analysis_generation=expected_generation,
         phase3_context=phase3_context,
         db_session=db,
     )
-    db_result = apply_screening_pipeline_result(db, db_result, result)
+    db_result = apply_screening_pipeline_result(
+        db,
+        db_result,
+        result,
+        expected_generation=expected_generation,
+    )
+    if db_result is None:
+        raise HTTPException(status_code=409, detail="Analysis was superseded")
 
     # Persist skill overrides to template after successful analysis
     _persist_skill_overrides_to_template(
@@ -1002,6 +1020,7 @@ async def analyze_stream_endpoint(
     )
     candidate_id = db_result.candidate_id
     screening_result_id = db_result.id
+    expected_generation = db_result.analysis_generation
 
     # Cancellation token: set when client disconnects so pipeline can break early
     cancel_event = asyncio.Event()
@@ -1026,6 +1045,7 @@ async def analyze_stream_endpoint(
                 jd_analysis=jd_analysis,
                 screening_result_id=screening_result_id,
                 tenant_id=tenant_id,
+                expected_analysis_generation=expected_generation,
                 phase3_context=phase3_context,
                 db_session=db,
             ):
@@ -1046,7 +1066,11 @@ async def analyze_stream_endpoint(
                                 from app.backend.db.database import SessionLocal
                                 disc_db = SessionLocal()
                                 try:
-                                    sr = disc_db.query(ScreeningResult).filter(ScreeningResult.id == screening_result_id).first()
+                                    sr = disc_db.query(ScreeningResult).filter(
+                                        ScreeningResult.id == screening_result_id,
+                                        ScreeningResult.tenant_id == tenant_id,
+                                        ScreeningResult.analysis_generation == expected_generation,
+                                    ).with_for_update().first()
                                     if sr:
                                         sr.analysis_result = json.dumps(stage_result, default=_json_default)
                                         _populate_denormalized_columns(sr, stage_result)
@@ -1084,7 +1108,11 @@ async def analyze_stream_endpoint(
                             from app.backend.db.database import SessionLocal
                             early_db = SessionLocal()
                             try:
-                                sr = early_db.query(ScreeningResult).filter(ScreeningResult.id == screening_result_id).first()
+                                sr = early_db.query(ScreeningResult).filter(
+                                    ScreeningResult.id == screening_result_id,
+                                    ScreeningResult.tenant_id == tenant_id,
+                                    ScreeningResult.analysis_generation == expected_generation,
+                                ).with_for_update().first()
                                 if sr:
                                     sr.analysis_result = json.dumps(parsing_result, default=_json_default)
                                     _populate_denormalized_columns(sr, parsing_result)
@@ -1146,7 +1174,11 @@ async def analyze_stream_endpoint(
             from app.backend.db.database import SessionLocal
             save_db = SessionLocal()
             try:
-                sr = save_db.query(ScreeningResult).filter(ScreeningResult.id == screening_result_id).first()
+                sr = save_db.query(ScreeningResult).filter(
+                    ScreeningResult.id == screening_result_id,
+                    ScreeningResult.tenant_id == tenant_id,
+                    ScreeningResult.analysis_generation == expected_generation,
+                ).with_for_update().first()
                 if sr:
                     previous_analysis_result = sr.analysis_result
                     previous_deterministic_score = sr.deterministic_score
@@ -1189,7 +1221,27 @@ async def analyze_stream_endpoint(
                         save_db, template_id, tenant_id, parsed_skill_overrides
                     )
                 else:
-                    log.error("ScreeningResult id=%s not found for final save", screening_result_id)
+                    current_generation = save_db.query(
+                        ScreeningResult.analysis_generation
+                    ).filter(
+                        ScreeningResult.id == screening_result_id,
+                        ScreeningResult.tenant_id == tenant_id,
+                    ).scalar()
+                    if current_generation is not None:
+                        from app.backend.services.reliability.stale import discard_stale
+
+                        discard_stale(
+                            job_type="streaming_analysis",
+                            job_id=f"stream-{screening_result_id}-{expected_generation}",
+                            target_id=screening_result_id,
+                            expected_version=expected_generation,
+                            current_version=current_generation,
+                            tenant_id=tenant_id,
+                        )
+                        save_db.rollback()
+                        yield f"data: {json.dumps({'stage': 'stale', 'result': {'message': 'Superseded analysis discarded'}}, default=_json_default)}\n\n"
+                        return
+                    raise ValueError(f"ScreeningResult id={screening_result_id} not found")
             except (json.JSONDecodeError, TypeError, ValueError, KeyError, OSError, RuntimeError, SQLAlchemyError) as inner_db_exc:
                 save_db.rollback()
                 raise inner_db_exc
@@ -1515,7 +1567,9 @@ async def batch_analyze_chunked_endpoint(
             raw["result_id"] = db_result.id
 
             # Spawn background LLM narrative generation
-            _spawn_background_narrative(raw, db_result.id, current_user.tenant_id)
+            _spawn_background_narrative(
+                raw, db_result.id, current_user.tenant_id, db_result.analysis_generation,
+            )
 
             batch_results.append({"filename": filename, "result": raw})
         except (json.JSONDecodeError, TypeError, ValueError, KeyError, OSError, RuntimeError, SQLAlchemyError) as e:
@@ -1909,7 +1963,9 @@ async def batch_analyze_stream_endpoint(
                 screening_result_id = db_result.id
 
                 # Spawn background LLM narrative generation
-                _spawn_background_narrative(raw, screening_result_id, tenant_id)
+                _spawn_background_narrative(
+                    raw, screening_result_id, tenant_id, db_result.analysis_generation,
+                )
             except (json.JSONDecodeError, TypeError, ValueError, KeyError, OSError, RuntimeError, SQLAlchemyError) as e:
                 save_db.rollback()
                 log.error(
@@ -2130,7 +2186,9 @@ async def batch_analyze_endpoint(
         candidate_id = db_result.candidate_id
 
         # Spawn background LLM narrative generation
-        _spawn_background_narrative(raw, db_result.id, current_user.tenant_id)
+        _spawn_background_narrative(
+            raw, db_result.id, current_user.tenant_id, db_result.analysis_generation,
+        )
 
         batch_results.append({"filename": filename, "result": raw})
 

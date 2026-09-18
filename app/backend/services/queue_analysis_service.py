@@ -88,7 +88,7 @@ async def prepare_file_for_queue(
     }
 
 
-async def complete_queue_job(job_id, db: Session) -> bool:
+async def complete_queue_job(job_id, db: Session, *, expected_worker_id: str) -> bool:
     """
     Process a queued job end-to-end: score, persist ScreeningResult, spawn LLM.
     Returns True on success.
@@ -162,6 +162,54 @@ async def complete_queue_job(job_id, db: Session) -> bool:
             role_template_id=job_config.get("template_id"),
         )
 
+    # Revalidate ownership under a row lock at the authoritative write boundary.
+    db.commit()
+    job = (
+        db.query(AnalysisJob)
+        .filter(AnalysisJob.id == job_id)
+        .with_for_update()
+        .populate_existing()
+        .one()
+    )
+    lease = job.leased_until
+    if lease is not None and lease.tzinfo is None:
+        lease = lease.replace(tzinfo=timezone.utc)
+    existing_result = db.query(AnalysisResult).filter(AnalysisResult.job_id == job.id).first()
+    if job.status == "completed" and existing_result is not None:
+        db.rollback()
+        return True
+    if (
+        job.status != "processing"
+        or job.worker_id != expected_worker_id
+        or (lease is not None and lease < datetime.now(timezone.utc))
+    ):
+        db.rollback()
+        log.warning(
+            "lease_lost before domain write job_id=%s worker_id=%s current_owner=%s",
+            job_id,
+            expected_worker_id,
+            job.worker_id,
+        )
+        try:
+            from app.backend.services.metrics import LEASE_LOST_BEFORE_COMMIT_TOTAL
+
+            LEASE_LOST_BEFORE_COMMIT_TOTAL.inc()
+        except Exception:
+            pass
+        return False
+
+    if existing_result:
+        job.status = "completed"
+        job.completed_at = datetime.now(timezone.utc)
+        job.result_id = existing_result.id
+        job.progress_percent = 100
+        job.processing_stage = "complete"
+        from app.backend.routes.analyze_helpers import consume_job_analysis_quota
+
+        consume_job_analysis_quota(db, job)
+        db.commit()
+        return True
+
     db_result, _ = execute_screening(
         db,
         cmd,
@@ -173,25 +221,14 @@ async def complete_queue_job(job_id, db: Session) -> bool:
         filename=filename,
         file_content=content,
         gap_analysis=gap_analysis,
+        commit=False,
     )
     screening_result_id = db_result.id
-    _spawn_background_narrative(raw, screening_result_id, job.tenant_id)
 
     job_config["screening_result_id"] = screening_result_id
     job_config["filename"] = filename
     job.job_config = job_config
     job.candidate_id = db_result.candidate_id
-
-    existing_result = db.query(AnalysisResult).filter(AnalysisResult.job_id == job.id).first()
-    if existing_result:
-        job.status = "completed"
-        job.completed_at = datetime.now(timezone.utc)
-        job.result_id = existing_result.id
-        job.progress_percent = 100
-        job.processing_stage = "complete"
-        db.commit()
-        log.info("Queue job %s already had AnalysisResult → screening_result_id=%s", job_id, screening_result_id)
-        return True
 
     analysis_result = AnalysisResult(
         job_id=job.id,
@@ -215,7 +252,32 @@ async def complete_queue_job(job_id, db: Session) -> bool:
     job.result_id = analysis_result.id
     job.progress_percent = 100
     job.processing_stage = "complete"
+    from app.backend.routes.analyze_helpers import consume_job_analysis_quota
+
+    consume_job_analysis_quota(db, job)
     db.commit()
 
-    log.info("Queue job %s completed → screening_result_id=%s", job_id, screening_result_id)
+    _spawn_background_narrative(
+        raw,
+        screening_result_id,
+        job.tenant_id,
+        db_result.analysis_generation,
+    )
+    log.info(
+        "Queue job %s completed → screening_result_id=%s generation=%s retry_count=%s worker_id=%s",
+        job_id,
+        screening_result_id,
+        db_result.analysis_generation,
+        job.retry_count,
+        expected_worker_id,
+        extra={
+            "tenant_id": job.tenant_id,
+            "job_id": str(job.id),
+            "candidate_id": db_result.candidate_id,
+            "screening_result_id": screening_result_id,
+            "analysis_generation": db_result.analysis_generation,
+            "retry_count": job.retry_count,
+            "worker_id": expected_worker_id,
+        },
+    )
     return True

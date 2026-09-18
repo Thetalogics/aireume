@@ -110,8 +110,11 @@ def canonicalize_scoring_weights(weights: dict | None, *, strict: bool = True) -
     if abs(positive - 1.0) > 1e-9:
         for k in _POSITIVE_KEYS:
             mapped[k] = mapped[k] / positive
+    source_has_risk = False
+    if isinstance(weights, dict):
+        source_has_risk = any(key == "risk" or _ALIAS.get(key) == "risk" for key in weights)
     mapped["risk"] = normalize_risk_weight(
-        mapped.get("risk") if mapped.get("risk") else DEFAULT_WEIGHTS["risk"]
+        mapped["risk"] if source_has_risk else DEFAULT_WEIGHTS["risk"]
     )
     return mapped
 

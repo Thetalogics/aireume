@@ -471,12 +471,14 @@ class TestBackgroundNarrativeTask:
         
         with patch("app.backend.db.database.SessionLocal", mock_session_local), \
              patch("app.backend.services.hybrid_pipeline.explain_with_llm",
-                   new_callable=AsyncMock, return_value=mock_narrative):
+                   new_callable=AsyncMock, return_value=mock_narrative), \
+             patch("app.backend.services.background_enrichment.schedule_post_narrative_enrichment"):
             await _background_llm_narrative(
                 screening_result_id=result_id,
                 tenant_id=tenant_id,
                 llm_context={},
                 python_result={"skill_analysis": {"matched_skills": [], "missing_skills": []}},
+                expected_analysis_generation=result.analysis_generation,
             )
         
         # Query fresh from DB to check the narrative was written
@@ -519,7 +521,8 @@ class TestBackgroundNarrativeTask:
         
         with patch("app.backend.db.database.SessionLocal", mock_session_local), \
              patch("app.backend.services.hybrid_pipeline.explain_with_llm",
-                   new_callable=AsyncMock, side_effect=RuntimeError("LLM failed")):
+                   new_callable=AsyncMock, side_effect=RuntimeError("LLM failed")), \
+             patch("app.backend.services.background_enrichment.schedule_post_narrative_enrichment"):
             await _background_llm_narrative(
                 screening_result_id=result_id,
                 tenant_id=tenant_id,
@@ -536,6 +539,7 @@ class TestBackgroundNarrativeTask:
                     "final_recommendation": "Consider",
                     "score_rationales": {},
                 },
+                expected_analysis_generation=result.analysis_generation,
             )
         
         # Query fresh from DB to check the narrative was written

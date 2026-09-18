@@ -369,7 +369,12 @@ def build_conversation_context(db: Session, session_id: int) -> dict:
 
 # ─── Post-Call Pipeline ───────────────────────────────────────────────────────
 
-async def process_completed_call(db: Session, session_id: int):
+async def process_completed_call(
+    db: Session,
+    session_id: int,
+    *,
+    expected_generation: int,
+) -> bool:
     """
     Full post-call pipeline:
     1. Load transcript from DB
@@ -383,6 +388,8 @@ async def process_completed_call(db: Session, session_id: int):
         return
 
     voice_session = ctx["session"]
+    if voice_session.result_generation != expected_generation:
+        return False
     candidate = ctx["candidate"]
     config = ctx["tenant_config"]
 
@@ -408,7 +415,7 @@ async def process_completed_call(db: Session, session_id: int):
         voice_session.status = "completed"
         voice_session.ended_at = voice_session.ended_at or datetime.now(timezone.utc)
         db.commit()
-        return
+        return True
 
     # Generate assessment
     assessment = await generate_post_call_assessment(
@@ -422,6 +429,22 @@ async def process_completed_call(db: Session, session_id: int):
         kit_qa=kit_qa,
     )
 
+    # Revalidate the immutable callback generation after the provider call.
+    db.refresh(voice_session, with_for_update=True)
+    if voice_session.result_generation != expected_generation:
+        from app.backend.services.reliability.stale import discard_stale
+
+        discard_stale(
+            job_type="voice_assessment",
+            job_id=f"voice-assessment-{session_id}-{expected_generation}",
+            target_id=session_id,
+            expected_version=expected_generation,
+            current_version=voice_session.result_generation,
+            tenant_id=voice_session.tenant_id,
+        )
+        db.rollback()
+        return False
+
     # Store assessment
     voice_session.assessment_json = json.dumps(assessment, default=str)
     voice_session.status = "completed"
@@ -434,7 +457,6 @@ async def process_completed_call(db: Session, session_id: int):
 
     # Persist consolidated outcome when screening result is linked
     try:
-        from sqlalchemy import select
         from app.backend.models.db_models import ScreeningResult
         from app.backend.services.consolidated_recommendation import (
             compute_consolidated_for_result,
@@ -478,6 +500,7 @@ async def process_completed_call(db: Session, session_id: int):
         assessment.get("overall_recommendation"),
         assessment.get("overall_score", 0),
     )
+    return True
 
     # Send notification to recruiter
     _notify_call_completed(db, voice_session, candidate, config, assessment)

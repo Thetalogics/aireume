@@ -8,7 +8,7 @@ import logging
 import time
 import concurrent.futures
 from collections import defaultdict
-from datetime import datetime, date, timezone
+from datetime import datetime, date, timezone, timedelta
 from decimal import Decimal
 from typing import Any, Optional
 
@@ -372,6 +372,7 @@ def _upsert_screening_result(
     narrative_status: str | None = None,
     pipeline_result: dict | None = None,
     requisition_id: int | None = None,
+    commit: bool = True,
 ) -> ScreeningResult:
     """Insert or update a ScreeningResult, respecting the unique constraint."""
     q = db.query(ScreeningResult).filter(
@@ -406,6 +407,7 @@ def _upsert_screening_result(
             existing.analysis_result = persisted_analysis
             existing.is_active = True
             existing.version_number = (existing.version_number or 1) + 1
+            existing.analysis_generation = (existing.analysis_generation or 1) + 1
             existing.status_updated_at = datetime.now(timezone.utc)
             if requisition_id is not None:
                 existing.requisition_id = requisition_id
@@ -418,7 +420,8 @@ def _upsert_screening_result(
                 _write_ai_decision_log(
                     db, existing, final_pipeline, decision_type="REANALYSIS", required=True,
                 )
-            db.commit()
+            if commit:
+                db.commit()
             db.refresh(existing)
             return existing
         except Exception:
@@ -450,7 +453,8 @@ def _upsert_screening_result(
         _write_ai_decision_log(
             db, new_result, final_pipeline, decision_type="INITIAL_ANALYSIS", required=True,
         )
-    db.commit()
+    if commit:
+        db.commit()
     db.refresh(new_result)
     return new_result
 
@@ -763,6 +767,7 @@ def _link_to_requisition(
     candidate_id: int,
     screening_result_id: int,
     added_by: int,
+    commit: bool = True,
 ) -> None:
     try:
         req = db.query(Requisition).filter(
@@ -784,7 +789,8 @@ def _link_to_requisition(
                 screening_result_id=screening_result_id,
                 added_by=added_by,
             ))
-        db.commit()
+        if commit:
+            db.commit()
     except (ValueError, TypeError, KeyError, SQLAlchemyError) as e:
         log.warning(
             "Non-critical: Failed to link candidate to requisition %s: %s", requisition_id, e,
@@ -1750,8 +1756,8 @@ def _check_and_increment_usage(db: Session, tenant_id: int, user_id: int, quanti
     return True, ""
 
 
-def _release_analysis_quota(db: Session, tenant_id: int, quantity: int = 1) -> None:
-    db.execute(
+def _release_analysis_quota(db: Session, tenant_id: int, quantity: int = 1) -> bool:
+    result = db.execute(
         update(Tenant)
         .where(
             Tenant.id == tenant_id,
@@ -1760,19 +1766,61 @@ def _release_analysis_quota(db: Session, tenant_id: int, quantity: int = 1) -> N
         .values(analyses_count_this_month=Tenant.analyses_count_this_month - quantity)
         .execution_options(synchronize_session=False)
     )
+    return result.rowcount == 1
 
 
 def release_job_analysis_quota(db: Session, job) -> None:
     """Release a reserved analysis unit when a queued job is cancelled or permanently failed."""
     from sqlalchemy.orm.attributes import flag_modified
+    from app.backend.models.db_models import QuotaReservation
 
     cfg = dict(job.job_config or {})
     if not cfg.get("quota_reserved") or cfg.get("quota_released"):
         return
-    _release_analysis_quota(db, job.tenant_id, 1)
+    operation_id = cfg.get("quota_operation_id")
+    reservation = None
+    if operation_id:
+        reservation = (
+            db.query(QuotaReservation)
+            .filter(
+                QuotaReservation.tenant_id == job.tenant_id,
+                QuotaReservation.operation_id == operation_id,
+            )
+            .with_for_update()
+            .first()
+        )
+    if reservation is not None:
+        if reservation.status != "pending":
+            return
+        _release_analysis_quota(db, job.tenant_id, reservation.quantity)
+        reservation.status = "released"
+    else:
+        # Rolling-deployment compatibility for jobs created before reservations.
+        _release_analysis_quota(db, job.tenant_id, 1)
     cfg["quota_released"] = True
     job.job_config = cfg
     flag_modified(job, "job_config")
+
+
+def consume_job_analysis_quota(db: Session, job) -> None:
+    """Finalize the existing hold after its analysis result commits."""
+    from app.backend.models.db_models import QuotaReservation
+
+    operation_id = (job.job_config or {}).get("quota_operation_id")
+    if not operation_id:
+        return
+    reservation = (
+        db.query(QuotaReservation)
+        .filter(
+            QuotaReservation.tenant_id == job.tenant_id,
+            QuotaReservation.operation_id == operation_id,
+            QuotaReservation.status == "pending",
+        )
+        .with_for_update()
+        .first()
+    )
+    if reservation is not None:
+        reservation.status = "consumed"
 
 
 def require_explicit_use_existing_candidate(
@@ -1834,6 +1882,7 @@ def _spawn_background_narrative(
     result: dict,
     screening_result_id: int,
     tenant_id: int,
+    expected_generation: int,
 ) -> None:
     """Build llm_context from Python result and spawn background LLM narrative task."""
     llm_context = {
@@ -1858,6 +1907,7 @@ def _spawn_background_narrative(
             tenant_id=tenant_id,
             llm_context=llm_context,
             python_result=python_result,
+            expected_analysis_generation=expected_generation,
         )
     )
     register_background_task(task)

@@ -201,8 +201,12 @@ async def test_complete_queue_job_links_requisition_and_is_idempotent(db, seed_s
         },
     )
     job = db.query(AnalysisJob).filter(AnalysisJob.id == job_id).first()
+    job.status = "processing"
+    job.worker_id = mgr.worker_id
+    job.leased_until = datetime.now(timezone.utc) + timedelta(minutes=10)
+    db.commit()
 
-    ok = await complete_queue_job(job.id, db)
+    ok = await complete_queue_job(job.id, db, expected_worker_id=mgr.worker_id)
     assert ok is True
 
     result = db.query(ScreeningResult).filter(ScreeningResult.tenant_id == tenant.id).one()
@@ -214,7 +218,7 @@ async def test_complete_queue_job_links_requisition_and_is_idempotent(db, seed_s
     ).one()
     assert rc.screening_result_id == result.id
 
-    ok2 = await complete_queue_job(job.id, db)
+    ok2 = await complete_queue_job(job.id, db, expected_worker_id=mgr.worker_id)
     assert ok2 is True
     assert db.query(AnalysisResult).filter(AnalysisResult.job_id == job.id).count() == 1
 
@@ -270,7 +274,7 @@ async def test_two_jobs_overlap_with_concurrency_2(monkeypatch, db, seed_subscri
     release_first = asyncio.Event()
     release_rest = asyncio.Event()
 
-    async def slow_complete(job_id, session):
+    async def slow_complete(job_id, session, **_kwargs):
         nonlocal currently, peak
         currently += 1
         peak = max(peak, currently)
@@ -338,7 +342,7 @@ async def test_two_jobs_overlap_with_concurrency_2(monkeypatch, db, seed_subscri
 @pytest.mark.asyncio
 async def test_heartbeat_renews_lease_during_process(monkeypatch, db, seed_subscription_plans):
     monkeypatch.setenv("QUEUE_HEARTBEAT_INTERVAL", "0.05")
-    async def slow_complete(job_id, session):
+    async def slow_complete(job_id, session, **_kwargs):
         await asyncio.sleep(0.2)
         return True
 
@@ -367,7 +371,7 @@ async def test_heartbeat_renews_lease_during_process(monkeypatch, db, seed_subsc
 async def test_heartbeat_task_stops_after_process(monkeypatch, db, seed_subscription_plans):
     seen_during = []
 
-    async def instant_complete(job_id, session):
+    async def instant_complete(job_id, session, **_kwargs):
         seen_during.extend(list(mgr._heartbeat_tasks))
         assert any(not t.done() for t in mgr._heartbeat_tasks)
         return True
@@ -1175,7 +1179,12 @@ async def test_sync_analyze_http_and_queue_screening_command_parity(
             "filename": "b.pdf",
         },
     )
-    await complete_queue_job(job_id, db)
+    queued_job = db.query(AnalysisJob).filter(AnalysisJob.id == job_id).one()
+    queued_job.status = "processing"
+    queued_job.worker_id = mgr.worker_id
+    queued_job.leased_until = datetime.now(timezone.utc) + timedelta(minutes=10)
+    db.commit()
+    await complete_queue_job(job_id, db, expected_worker_id=mgr.worker_id)
     job = db.query(AnalysisJob).filter(AnalysisJob.id == job_id).one()
     queue_result = db.query(ScreeningResult).filter(ScreeningResult.candidate_id == job.candidate_id).one()
     assert queue_result.requisition_id == req.id

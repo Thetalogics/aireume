@@ -101,6 +101,7 @@ class ScreeningContext:
     consent_recorded: bool = False
     direction: str = "outbound"  # outbound / inbound
     callback_of_id: Optional[int] = None
+    result_generation: int = 1
 
 
 # ─── Speech Service Client ────────────────────────────────────────────────────
@@ -277,12 +278,15 @@ class BackendClient:
     def __init__(self, base_url: str = ARIA_BACKEND_URL):
         self.base_url = base_url
 
-    async def update_session(self, session_id: int, updates: dict):
+    async def update_session(
+        self, session_id: int, updates: dict, *, expected_generation: int,
+    ):
         """Update voice screening session in the database."""
+        payload = {"expected_generation": expected_generation, **updates}
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.patch(
                 f"{self.base_url}/api/voice/sessions/{session_id}",
-                json=updates,
+                json=payload,
                 headers=INTERNAL_HEADERS,
             )
             if resp.status_code != 200:
@@ -508,7 +512,11 @@ async def run_outbound_screening(ctx: ScreeningContext):
         )
 
         # Update session status to in_progress
-        await backend.update_session(ctx.session_id, {"status": "in_progress"})
+        await backend.update_session(
+            ctx.session_id,
+            {"status": "in_progress"},
+            expected_generation=ctx.result_generation,
+        )
 
         # Generate screening questions from JD skills
         if ctx.jd_must_have_skills:
@@ -537,7 +545,7 @@ async def run_outbound_screening(ctx: ScreeningContext):
         await backend.update_session(ctx.session_id, {
             "status": "failed",
             "error_log": str(e),
-        })
+        }, expected_generation=ctx.result_generation)
     finally:
         await speech.stop()
 
@@ -569,7 +577,11 @@ async def handle_inbound_callback(ctx: ScreeningContext):
             logger.info("Path A: Connecting to screening for callback_of=%d", ctx.callback_of_id)
             # Skip greeting/consent — use contextual greeting
             ctx.state = CallState.INTRODUCTION
-            await backend.update_session(ctx.session_id, {"status": "in_progress"})
+            await backend.update_session(
+                ctx.session_id,
+                {"status": "in_progress"},
+                expected_generation=ctx.result_generation,
+            )
         else:
             # Path B: No pending session — polite redirect
             logger.info("Path B: No pending session — polite redirect")
@@ -832,14 +844,19 @@ def _make_speech_segmenter(sample_rate: int) -> SpeechSegmenter:
     )
 
 
-async def _notify_backend_complete(session_id: str, result: dict):
+async def _notify_backend_complete(session_id: str, result: dict, expected_generation: int):
     """Notify backend that interview has completed (unified endpoint)."""
     backend_url = os.getenv("BACKEND_URL", ARIA_BACKEND_URL)
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(
                 f"{backend_url}/api/interviews/internal/complete",
-                json={"session_id": session_id, "result": result},
+                json={
+                    "session_id": session_id,
+                    "expected_generation": expected_generation,
+                    "event_id": f"voice-{session_id}-{expected_generation}",
+                    "result": result,
+                },
                 headers=INTERNAL_HEADERS,
             )
             resp.raise_for_status()
@@ -1037,7 +1054,11 @@ class VoiceAgentWorker:
                 logger.error("Failed to publish audio track: %s", pub_err, exc_info=True)
 
             # Update backend
-            await backend.update_session(session_ctx.session_id, {"status": "in_progress"})
+            await backend.update_session(
+                session_ctx.session_id,
+                {"status": "in_progress"},
+                expected_generation=session_ctx.result_generation,
+            )
 
             # Generate screening questions
             if session_ctx.jd_must_have_skills:
@@ -1079,14 +1100,14 @@ class VoiceAgentWorker:
                 "status": "completed",
                 "transcript_json": json.dumps(session_ctx.transcript),
                 "duration_seconds": int(time.time() - session_ctx.call_start_time),
-            })
+            }, expected_generation=session_ctx.result_generation)
 
         except Exception as e:
             logger.error("Agent session %d failed: %s", session_ctx.session_id, e, exc_info=True)
             await backend.update_session(session_ctx.session_id, {
                 "status": "failed",
                 "error_log": str(e),
-            })
+            }, expected_generation=session_ctx.result_generation)
         finally:
             await speech.stop()
             try:
@@ -1197,7 +1218,11 @@ class VoiceAgentWorker:
 
             # Update backend
             try:
-                await backend.update_session(int(interview_ctx.session_id), {"status": "in_progress"})
+                await backend.update_session(
+                    int(interview_ctx.session_id),
+                    {"status": "in_progress"},
+                    expected_generation=interview_ctx.result_generation,
+                )
             except Exception:
                 pass
 
@@ -1232,7 +1257,9 @@ class VoiceAgentWorker:
             )
 
             result = conversation.get_result()
-            await _notify_backend_complete(interview_ctx.session_id, result)
+            await _notify_backend_complete(
+                interview_ctx.session_id, result, interview_ctx.result_generation,
+            )
 
         except Exception as e:
             logger.error("Unified session %s failed: %s", interview_ctx.session_id, e, exc_info=True)
@@ -1240,7 +1267,7 @@ class VoiceAgentWorker:
                 await backend.update_session(int(interview_ctx.session_id), {
                     "status": "failed",
                     "error_log": str(e),
-                })
+                }, expected_generation=interview_ctx.result_generation)
             except Exception:
                 pass
         finally:
@@ -1346,7 +1373,11 @@ class VoiceAgentWorker:
                 logger.error("Failed to publish audio track: %s", pub_err, exc_info=True)
 
             # Update backend
-            await backend.update_session(int(session_ctx.session_id), {"status": "in_progress"})
+            await backend.update_session(
+                int(session_ctx.session_id),
+                {"status": "in_progress"},
+                expected_generation=session_ctx.result_generation,
+            )
 
             # Start the interview and deliver greeting
             greeting = await conversation.start()
@@ -1378,7 +1409,9 @@ class VoiceAgentWorker:
             )
 
             result = await conversation.end_call()
-            await _notify_backend_complete(session_ctx.session_id, result)
+            await _notify_backend_complete(
+                session_ctx.session_id, result, session_ctx.result_generation,
+            )
 
         except Exception as e:
             logger.error("Recruiter session %s failed: %s", session_ctx.session_id, e, exc_info=True)
@@ -1386,7 +1419,7 @@ class VoiceAgentWorker:
                 await backend.update_session(int(session_ctx.session_id), {
                     "status": "failed",
                     "error_log": str(e),
-                })
+                }, expected_generation=session_ctx.result_generation)
             except Exception:
                 pass
         finally:
@@ -1570,7 +1603,11 @@ class VoiceAgentWorker:
                 logger.error("Failed to publish audio track: %s", pub_err, exc_info=True)
 
             try:
-                await backend.update_session(int(orch_ctx.session_id), {"status": "in_progress"})
+                await backend.update_session(
+                    int(orch_ctx.session_id),
+                    {"status": "in_progress"},
+                    expected_generation=orch_ctx.result_generation,
+                )
             except Exception:
                 pass
 
@@ -1629,7 +1666,9 @@ class VoiceAgentWorker:
             result = orchestrator.get_result()
             if telemetry.turns:
                 logger.info("Final turn telemetry summary: %s", telemetry.summary())
-            await _notify_backend_complete(orch_ctx.session_id, result)
+            await _notify_backend_complete(
+                orch_ctx.session_id, result, orch_ctx.result_generation,
+            )
 
         except Exception as e:
             logger.error("Orchestrator session %s failed: %s", orch_ctx.session_id, e, exc_info=True)
@@ -1637,7 +1676,7 @@ class VoiceAgentWorker:
                 await backend.update_session(int(orch_ctx.session_id), {
                     "status": "failed",
                     "error_log": str(e),
-                })
+                }, expected_generation=orch_ctx.result_generation)
             except Exception:
                 pass
         finally:
@@ -1728,6 +1767,7 @@ class DispatchRequest(BaseModel):
     interview_config: Optional[dict] = None
     interview_kit: Optional[dict] = None
     screening_result_id: Optional[int] = None
+    result_generation: int
 
     @property
     def effective_depth(self) -> str:
@@ -1780,6 +1820,7 @@ async def dispatch_call(req: DispatchRequest):
         room_info = await sip_dispatcher.dispatch_call(
             session_id=req.session_id,
             phone_number=req.phone_number,
+            result_generation=req.result_generation,
             candidate_name=req.candidate_name,
         )
 
@@ -1866,7 +1907,7 @@ async def dispatch_call(req: DispatchRequest):
             await backend.update_session(req.session_id, {
                 "status": "failed",
                 "error_log": f"Dispatch failed: {str(e)}",
-            })
+            }, expected_generation=req.result_generation)
         except Exception:
             pass
 

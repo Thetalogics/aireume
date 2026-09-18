@@ -34,6 +34,10 @@ def _get_client():
     try:
         import boto3
         from botocore.config import Config
+        from app.backend.services.reliability.timeouts import (
+            OBJECT_STORAGE_CONNECT,
+            OBJECT_STORAGE_READ,
+        )
 
         endpoint = os.getenv("S3_ENDPOINT")
         access_key = os.getenv("S3_ACCESS_KEY", "")
@@ -47,7 +51,12 @@ def _get_client():
             aws_access_key_id=access_key,
             aws_secret_access_key=secret_key,
             region_name=region,
-            config=Config(s3={"addressing_style": "path" if use_path_style else "auto"}),
+            config=Config(
+                connect_timeout=OBJECT_STORAGE_CONNECT,
+                read_timeout=OBJECT_STORAGE_READ,
+                retries={"max_attempts": 1},
+                s3={"addressing_style": "path" if use_path_style else "auto"},
+            ),
         )
     except ImportError:
         logger.info("boto3 not installed, object storage unavailable")

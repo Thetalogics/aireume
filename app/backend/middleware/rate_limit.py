@@ -27,7 +27,9 @@ _concurrent_lock = threading.Lock()
 class RateLimitMiddleware(BaseHTTPMiddleware):
     WHITELIST_PREFIXES = [
         "/health",
+        "/ready",
         "/api/health",
+        "/api/health/deep",
         "/metrics",
         "/api/auth/login",
         "/api/auth/register",
@@ -53,7 +55,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if path == "/":
             return True
         for prefix in self.WHITELIST_PREFIXES:
-            if path.startswith(prefix):
+            if path == prefix or (prefix.endswith("/") and path.startswith(prefix)):
                 return True
         return False
 

@@ -685,6 +685,7 @@ def get_candidate_internal(
 
 class VoiceSessionUpdate(BaseModel):
     """Typed, allow-listed fields for internal voice session updates."""
+    expected_generation: int
     status: Optional[str] = None
     started_at: Optional[datetime] = None
     ended_at: Optional[datetime] = None
@@ -706,13 +707,24 @@ def update_voice_session(
 ):
     """Update a voice screening session — called by voice-agent (internal, secret-guarded)."""
     session = db.execute(
-        select(VoiceScreeningSession).where(VoiceScreeningSession.id == session_id)
+        select(VoiceScreeningSession)
+        .where(
+            VoiceScreeningSession.id == session_id,
+            VoiceScreeningSession.result_generation == body.expected_generation,
+        )
+        .with_for_update()
     ).scalar_one_or_none()
 
     if session is None:
-        raise HTTPException(status_code=404, detail="Voice session not found")
+        existing = db.get(VoiceScreeningSession, session_id)
+        if existing is None:
+            raise HTTPException(status_code=404, detail="Voice session not found")
+        raise HTTPException(status_code=409, detail="Voice session generation is stale")
 
-    for field_name, value in body.model_dump(exclude_unset=True).items():
+    for field_name, value in body.model_dump(
+        exclude_unset=True,
+        exclude={"expected_generation"},
+    ).items():
         setattr(session, field_name, value)
 
     db.commit()
@@ -760,6 +772,15 @@ def reschedule_voice_session(
     session.status = "scheduled"
     session.scheduled_at = body.scheduled_at
     session.phone_number = body.phone_number or session.phone_number
+    session.result_generation = (session.result_generation or 1) + 1
+    session.completion_event_id = None
+    session.assessment_json = None
+    session.transcript_json = None
+    session.duration_seconds = None
+    session.started_at = None
+    session.ended_at = None
+    session.call_sid = None
+    session.error_log = None
     if body.jd_id is not None:
         session.jd_id = body.jd_id
     db.commit()

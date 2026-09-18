@@ -130,20 +130,38 @@ async def analyze_transcript_endpoint(
         processing_type=PROCESSING_TRANSCRIPT_ANALYSIS,
     )
 
+    # Persist the immutable generation before external analysis starts.
+    record = TranscriptAnalysis(
+        tenant_id=current_user.tenant_id,
+        candidate_id=candidate_id,
+        role_template_id=resolved_tpl_id,
+        transcript_text=raw_text,
+        source_platform=source_platform or "manual",
+        analysis_result='{"status":"processing"}',
+        analysis_generation=1,
+    )
+    db.add(record)
+    db.commit()
+    db.refresh(record)
+    expected_generation = record.analysis_generation
+
     # ── Parse and analyse ─────────────────────────────────────────────────────
     clean_text = await asyncio.to_thread(parse_transcript, raw_text, filename)
     result     = await analyze_transcript(clean_text, jd_text, candidate_name)
 
-    # ── Persist ───────────────────────────────────────────────────────────────
-    record = TranscriptAnalysis(
-        tenant_id        = current_user.tenant_id,
-        candidate_id     = candidate_id,
-        role_template_id = resolved_tpl_id,
-        transcript_text  = clean_text,
-        source_platform  = source_platform or "manual",
-        analysis_result  = json.dumps(result, default=_json_default),
+    from app.backend.services.reliability.stale import apply_transcript_if_generation
+
+    outcome = apply_transcript_if_generation(
+        db,
+        transcript_analysis_id=record.id,
+        tenant_id=current_user.tenant_id,
+        expected_generation=expected_generation,
+        analysis_result=result,
+        transcript_text=clean_text,
     )
-    db.add(record)
+    if outcome.stale:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Transcript analysis was superseded")
     db.commit()
     db.refresh(record)
 

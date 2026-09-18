@@ -109,10 +109,20 @@ def register_background_task(task: asyncio.Task) -> None:
 
 async def shutdown_background_tasks(timeout: float = 5.0) -> None:
     """Cancel and await all background tasks. Call during app shutdown."""
-    for task in list(_background_tasks):
+    tasks = list(_background_tasks)
+    for task in tasks:
         task.cancel()
-    if _background_tasks:
-        await asyncio.gather(*list(_background_tasks), return_exceptions=True)
+    if tasks:
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*tasks, return_exceptions=True),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            log.warning(
+                "Timed out waiting for %s background tasks to cancel",
+                len(tasks),
+            )
 
 # --- Prompt injection sanitization ---
 _INJECTION_PATTERNS = [
@@ -2535,6 +2545,7 @@ async def _background_llm_narrative(
     tenant_id: int,
     llm_context: Dict[str, Any],
     python_result: Dict[str, Any],
+    expected_analysis_generation: int,
 ) -> None:
     """
     Background task that generates LLM narrative and writes to DB.
@@ -2545,22 +2556,27 @@ async def _background_llm_narrative(
     # Import here to avoid circular imports
     from app.backend.db.database import SessionLocal
     from app.backend.models.db_models import ScreeningResult, Candidate
+    from app.backend.services.reliability.stale import apply_narrative_if_generation
 
     # Helper to write status to DB
     async def _write_status(status: str, error: Optional[str] = None) -> bool:
-        """Write narrative_status and narrative_error to DB. Returns True on success."""
+        """Write narrative_status only when generation still matches."""
         try:
             db = SessionLocal()
             try:
-                result = db.query(ScreeningResult).filter(
+                updated = db.query(ScreeningResult).filter(
                     ScreeningResult.id == screening_result_id,
                     ScreeningResult.tenant_id == tenant_id,
-                ).first()
-                if result:
-                    result.narrative_status = status
-                    result.narrative_error = error
-                    db.commit()
-                    return True
+                    ScreeningResult.analysis_generation == expected_analysis_generation,
+                ).update(
+                    {"narrative_status": status, "narrative_error": error},
+                    synchronize_session=False,
+                )
+                if updated != 1:
+                    db.rollback()
+                    return False
+                db.commit()
+                return True
             finally:
                 db.close()
         except Exception as db_err:
@@ -2585,15 +2601,13 @@ async def _background_llm_narrative(
                     result = db.query(ScreeningResult).filter(
                         ScreeningResult.id == screening_result_id,
                         ScreeningResult.tenant_id == tenant_id,
+                        ScreeningResult.analysis_generation == expected_analysis_generation,
                     ).first()
                     if result:
-                        # Update narrative fields
-                        result.narrative_json = json.dumps(narrative, default=str)
-                        result.narrative_status = status
-                        result.narrative_error = error
-                        
                         # Merge narrative into analysis_result for complete report persistence
                         # This ensures the Candidates page shows the full report, not "PENDING"
+                        current_analysis: Dict[str, Any] = {}
+                        merged_analysis: Dict[str, Any] | None = None
                         try:
                             current_analysis = json.loads(result.analysis_result or "{}")
                             # If analysis_result is empty or missing critical fields,
@@ -2607,7 +2621,6 @@ async def _background_llm_narrative(
                                 base = {k: v for k, v in python_result.items() if not k.startswith("_")}
                                 current_analysis = base
                             merged_analysis = _merge_llm_into_result(current_analysis, narrative)
-                            result.analysis_result = json.dumps(merged_analysis, default=str)
                         except Exception as merge_err:
                             log.warning(
                                 "Failed to merge narrative into analysis_result for screening_result_id=%s: %s",
@@ -2615,8 +2628,20 @@ async def _background_llm_narrative(
                                 str(merge_err)[:200],
                             )
                             # Continue even if merge fails - narrative_json is still saved
-                        
-                        db.commit()
+
+                        outcome = apply_narrative_if_generation(
+                            db,
+                            screening_result_id=screening_result_id,
+                            tenant_id=tenant_id,
+                            expected_generation=expected_analysis_generation,
+                            narrative=narrative,
+                            status=status,
+                            error=error,
+                            merge_analysis=merged_analysis,
+                        )
+                        if outcome.stale:
+                            db.rollback()
+                            return True
 
                         # Backfill denormalized columns if still NULL (edge case
                         # where early save happened without pipeline_result)
@@ -2634,7 +2659,6 @@ async def _background_llm_narrative(
                                 if isinstance(elig, dict):
                                     result.eligibility_status = elig.get("eligible")
                                     result.eligibility_reason = elig.get("reason")
-                                db.commit()
                             except Exception as col_err:
                                 log.warning("Non-critical: Failed to backfill denormalized columns: %s", col_err)
 
@@ -2647,7 +2671,6 @@ async def _background_llm_narrative(
                                 ).first()
                                 if candidate:
                                     candidate.ai_professional_summary = summary
-                                    db.commit()
                             except Exception as cache_err:
                                 log.warning(
                                     "Failed to cache ai_professional_summary for candidate_id=%s: %s",
@@ -2655,6 +2678,7 @@ async def _background_llm_narrative(
                                     str(cache_err)[:200],
                                 )
 
+                        db.commit()
                         log.info(
                             "Wrote narrative_json (status=%s) to screening_result_id=%s",
                             status,
@@ -2662,12 +2686,20 @@ async def _background_llm_narrative(
                         )
                         return True
                     else:
-                        log.warning(
-                            "screening_result_id=%s not found for narrative write (tenant_id=%s)",
-                            screening_result_id,
-                            tenant_id,
+                        from app.backend.services.reliability.stale import discard_stale
+                        current = db.query(ScreeningResult.analysis_generation).filter(
+                            ScreeningResult.id == screening_result_id,
+                            ScreeningResult.tenant_id == tenant_id,
+                        ).scalar()
+                        discard_stale(
+                            job_type="llm_narrative",
+                            job_id=f"narrative-{screening_result_id}-{expected_analysis_generation}",
+                            target_id=screening_result_id,
+                            expected_version=int(expected_analysis_generation or 0),
+                            current_version=current,
+                            tenant_id=tenant_id,
                         )
-                        return False
+                        return True
                 finally:
                     db.close()
             except Exception as db_err:
@@ -2773,6 +2805,7 @@ async def _background_llm_narrative(
                 tenant_id,
                 llm_context,
                 python_result,
+                expected_generation=expected_analysis_generation,
                 narrative_status=narrative_status,
                 narrative_payload=llm_result,
             )
@@ -2853,6 +2886,7 @@ async def run_hybrid_pipeline(
     jd_analysis: Optional[Dict] = None,
     screening_result_id: Optional[int] = None,
     tenant_id: Optional[int] = None,
+    expected_analysis_generation: Optional[int] = None,
     phase3_context: Optional[Dict] = None,
     db_session=None,
     industry: Optional[str] = None,
@@ -2950,6 +2984,8 @@ async def run_hybrid_pipeline(
 
     # If screening_result_id provided, spawn background task and return immediately
     if screening_result_id is not None and tenant_id is not None:
+        if expected_analysis_generation is None:
+            raise ValueError("expected_analysis_generation is required for background narrative")
         fallback = _build_fallback_narrative(python_result, python_result["skill_analysis"])
         python_result["narrative_pending"] = True
         
@@ -2960,6 +2996,7 @@ async def run_hybrid_pipeline(
                 tenant_id=tenant_id,
                 llm_context=llm_context,
                 python_result=python_result,
+                expected_analysis_generation=expected_analysis_generation,
             )
         )
         register_background_task(task)
@@ -3020,6 +3057,7 @@ async def astream_hybrid_pipeline(
     jd_analysis: Optional[Dict] = None,
     screening_result_id: Optional[int] = None,
     tenant_id: Optional[int] = None,
+    expected_analysis_generation: Optional[int] = None,
     phase3_context: Optional[Dict] = None,
     db_session=None,
 ) -> AsyncGenerator[Dict[str, Any], None]:
@@ -3119,6 +3157,8 @@ async def astream_hybrid_pipeline(
 
     # If screening_result_id provided, spawn background task and return immediately
     if screening_result_id is not None and tenant_id is not None:
+        if expected_analysis_generation is None:
+            raise ValueError("expected_analysis_generation is required for background narrative")
         fallback = _build_fallback_narrative(python_result, python_result["skill_analysis"])
         python_result["narrative_pending"] = True
         final = _merge_immediate_pipeline_result(python_result, fallback)
@@ -3137,6 +3177,7 @@ async def astream_hybrid_pipeline(
                 tenant_id=tenant_id,
                 llm_context=llm_context,
                 python_result=python_result,
+                expected_analysis_generation=expected_analysis_generation,
             )
         )
         register_background_task(task)

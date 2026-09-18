@@ -14,6 +14,7 @@ from typing import Any
 import httpx
 
 from app.backend.services.circuit_breaker import get_circuit_breaker, CircuitBreakerOpenError
+from app.backend.services.reliability.timeouts import LIVEKIT_READ
 from app.voice_agent.livekit_dispatch import dispatch_cloud_screening_call
 from app.voice_agent.voice_flow_log import log_step
 
@@ -206,7 +207,10 @@ async def dispatch_screening_call_async(payload: dict[str, Any]) -> dict[str, An
             int(candidate_id),
             session_id=session_id,
         )
-    result = await dispatch_cloud_screening_call(payload)
+    result = await asyncio.wait_for(
+        dispatch_cloud_screening_call(payload),
+        timeout=LIVEKIT_READ,
+    )
     log_step(
         logger,
         session_id,

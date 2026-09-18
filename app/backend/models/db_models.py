@@ -216,6 +216,24 @@ class UsageLog(Base):
     user   = relationship("User", back_populates="usage_logs")
 
 
+class QuotaReservation(Base):
+    """Durable quota hold so abandoned work can be released."""
+    __tablename__ = "quota_reservations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    operation_id = Column(String(64), nullable=False)
+    tenant_id = Column(Integer, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    quantity = Column(Integer, nullable=False, default=1)
+    status = Column(String(20), nullable=False, default="pending", index=True)
+    job_id = Column(String(36), nullable=True)
+    expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "operation_id", name="uq_quota_reservation_tenant_operation"),
+    )
+
+
 # ─── Candidate & results ──────────────────────────────────────────────────────
 
 class Candidate(Base):
@@ -321,6 +339,7 @@ class ScreeningResult(Base):
     status             = Column(String(50), default="pending")  # pending/shortlisted/rejected/in-review/hired
     is_active          = Column(Boolean, default=True)          # active version for candidate analysis
     version_number     = Column(Integer, default=1)             # version tracking for re-analysis
+    analysis_generation = Column(Integer, nullable=False, default=1, server_default="1")
     role_category      = Column(String(50), nullable=True)      # technical, sales, hr, marketing, operations, leadership
     weight_reasoning   = Column(Text, nullable=True)            # JSON: reasoning for suggested weights
     suggested_weights_json = Column(Text, nullable=True)        # JSON: suggested scoring weights
@@ -644,6 +663,7 @@ class TranscriptAnalysis(Base):
     transcript_text  = Column(Text, nullable=False)
     source_platform  = Column(String(50), nullable=True)   # zoom / teams / manual
     analysis_result  = Column(Text, nullable=False)         # JSON
+    analysis_generation = Column(Integer, nullable=False, default=1, server_default="1")
     created_at       = Column(DateTime(timezone=True), server_default=func.now())
 
     candidate     = relationship("Candidate", back_populates="transcript_analyses")
@@ -1307,6 +1327,8 @@ class VoiceScreeningSession(Base):
     consent_recorded  = Column(Boolean, nullable=False, server_default="false", default=False)
     consent_status    = Column(String(20), nullable=True)  # confirmed/denied/skipped (null when not yet asked)
     call_sid          = Column(String(100), nullable=True)  # LiveKit/Twilio call identifier
+    result_generation = Column(Integer, nullable=False, default=1, server_default="1")
+    completion_event_id = Column(String(100), nullable=True)
     error_log         = Column(Text, nullable=True)
     created_at        = Column(DateTime(timezone=True), server_default=func.now())
     updated_at        = Column(DateTime(timezone=True), onupdate=func.now())
@@ -1846,6 +1868,8 @@ class AnalysisJob(Base):
     error_type = Column(String(100), nullable=True)
     error_stack_trace = Column(Text, nullable=True)
     error_context = Column(JSON, nullable=True)
+    last_error_category = Column(String(40), nullable=True)
+    last_error_at = Column(DateTime(timezone=True), nullable=True)
 
     result_id = Column(Uuid(as_uuid=True), ForeignKey('analysis_results.id', ondelete='SET NULL'), nullable=True)
     job_config = Column(JSON, nullable=True)

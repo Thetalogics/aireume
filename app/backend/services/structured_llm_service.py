@@ -77,7 +77,9 @@ async def _try_outlines_gemini(
 
     try:
         from google import genai
+        from google.genai import types as genai_types
         from outlines.models import from_gemini
+        from app.backend.services.reliability.timeouts import GEMINI_READ
     except ImportError:
         log.debug("%s Outlines Gemini dependencies unavailable", log_label)
         return None
@@ -95,7 +97,10 @@ async def _try_outlines_gemini(
     )
 
     def _generate() -> str:
-        client = genai.Client(api_key=api_key)
+        client = genai.Client(
+            api_key=api_key,
+            http_options=genai_types.HttpOptions(timeout=int(GEMINI_READ * 1000)),
+        )
         model = from_gemini(client, gemini_model)
         return model.generate(
             prompt,
@@ -105,7 +110,10 @@ async def _try_outlines_gemini(
         )
 
     try:
-        text = await asyncio.to_thread(_generate)
+        text = await asyncio.wait_for(
+            asyncio.to_thread(_generate),
+            timeout=GEMINI_READ,
+        )
         if text and len(str(text).strip()) >= 2:
             log.info("%s Outlines Gemini structured OK (model=%s)", log_label, gemini_model)
             return str(text)
@@ -132,6 +140,11 @@ async def _try_outlines_ollama(
     try:
         from ollama import AsyncClient
         from outlines.models import from_ollama
+        from app.backend.services.reliability.timeouts import (
+            OLLAMA_CONNECT,
+            OLLAMA_READ,
+            httpx_timeout,
+        )
     except ImportError:
         log.debug("%s Outlines Ollama dependencies unavailable", log_label)
         return None
@@ -140,7 +153,10 @@ async def _try_outlines_ollama(
     ollama_model = get_ollama_model()
 
     async def _generate() -> str:
-        client = AsyncClient(host=ollama_base)
+        client = AsyncClient(
+            host=ollama_base,
+            timeout=httpx_timeout(OLLAMA_CONNECT, OLLAMA_READ),
+        )
         model = from_ollama(client, ollama_model)
         return await model.generate(
             prompt,

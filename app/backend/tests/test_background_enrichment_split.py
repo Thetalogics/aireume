@@ -40,12 +40,17 @@ class TestNarrativeKitSplit:
             "app.backend.services.background_enrichment._update_screening_fields",
             lambda *args, **kwargs: True,
         )
+        monkeypatch.setattr(
+            "app.backend.services.hybrid_pipeline.register_background_task",
+            lambda _task: None,
+        )
 
         schedule_post_narrative_enrichment(
             screening_result_id=42,
             tenant_id=1,
             llm_context={"scores": {"final_recommendation": "Consider"}},
             python_result={"final_recommendation": "Consider", "skill_analysis": {}},
+            expected_generation=1,
             narrative_status="fallback",
             narrative_payload={"fit_summary": "template"},
         )

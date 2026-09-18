@@ -49,7 +49,12 @@ def _client(*, retry: bool = False):
         return None
     try:
         import redis
-        _redis = redis.Redis.from_url(url, decode_responses=True)
+        _redis = redis.Redis.from_url(
+            url,
+            decode_responses=True,
+            socket_connect_timeout=2,
+            socket_timeout=2,
+        )
         _redis.ping()
         return _redis
     except Exception as exc:

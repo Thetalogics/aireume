@@ -654,6 +654,8 @@ async def generate_interview_kit_with_llm(context: Dict[str, Any]) -> Dict[str, 
 def _update_screening_fields(
     screening_result_id: int,
     tenant_id: int,
+    *,
+    expected_generation: int,
     **fields: Any,
 ) -> bool:
     from app.backend.db.database import SessionLocal
@@ -662,14 +664,18 @@ def _update_screening_fields(
     try:
         db = SessionLocal()
         try:
-            result = db.query(ScreeningResult).filter(
-                ScreeningResult.id == screening_result_id,
-                ScreeningResult.tenant_id == tenant_id,
-            ).first()
-            if not result:
+            updated = (
+                db.query(ScreeningResult)
+                .filter(
+                    ScreeningResult.id == screening_result_id,
+                    ScreeningResult.tenant_id == tenant_id,
+                    ScreeningResult.analysis_generation == expected_generation,
+                )
+                .update(fields, synchronize_session=False)
+            )
+            if updated != 1:
+                db.rollback()
                 return False
-            for key, value in fields.items():
-                setattr(result, key, value)
             db.commit()
             return True
         finally:
@@ -690,6 +696,7 @@ def _merge_interview_kit(
     interview_questions: dict,
     kit_status: str,
     *,
+    expected_generation: int,
     kit_error: Optional[str] = None,
 ) -> bool:
     from app.backend.db.database import SessionLocal
@@ -702,7 +709,8 @@ def _merge_interview_kit(
             result = db.query(ScreeningResult).filter(
                 ScreeningResult.id == screening_result_id,
                 ScreeningResult.tenant_id == tenant_id,
-            ).first()
+                ScreeningResult.analysis_generation == expected_generation,
+            ).with_for_update().first()
             if not result:
                 return False
 
@@ -841,6 +849,8 @@ async def background_interview_kit(
     tenant_id: int,
     llm_context: Dict[str, Any],
     python_result: Dict[str, Any],
+    *,
+    expected_generation: int,
 ) -> None:
     """Background task: generate interview kit and merge into stored report."""
     from app.backend.db.database import SessionLocal
@@ -854,6 +864,7 @@ async def background_interview_kit(
     _update_screening_fields(
         screening_result_id,
         tenant_id,
+        expected_generation=expected_generation,
         interview_kit_status="processing",
         interview_kit_error=None,
     )
@@ -917,6 +928,7 @@ async def background_interview_kit(
         _update_screening_fields(
             screening_result_id,
             tenant_id,
+            expected_generation=expected_generation,
             candidate_intelligence_json=json.dumps(ci, default=str),
             candidate_intelligence_status="ready",
         )
@@ -928,6 +940,7 @@ async def background_interview_kit(
             tenant_id,
             interview_questions,
             kit_status,
+            expected_generation=expected_generation,
             kit_error=kit_error,
         )
 
@@ -935,6 +948,8 @@ async def background_interview_kit(
 async def background_voice_strategy(
     screening_result_id: int,
     tenant_id: int,
+    *,
+    expected_generation: int,
 ) -> None:
     """Pre-build voice interview strategy for candidates likely to be screened."""
     from app.backend.db.database import SessionLocal
@@ -949,6 +964,7 @@ async def background_voice_strategy(
         row = db.query(ScreeningResult).filter(
             ScreeningResult.id == screening_result_id,
             ScreeningResult.tenant_id == tenant_id,
+            ScreeningResult.analysis_generation == expected_generation,
         ).first()
         if not row or not row.candidate_id:
             log.info("Skipping voice strategy pre-build: missing candidate on screening_result_id=%s", screening_result_id)
@@ -981,6 +997,10 @@ async def background_voice_strategy(
                     agent.generate_strategy(context, DEFAULT_VOICE_STRATEGY_CONFIG),
                     timeout=VOICE_STRATEGY_TIMEOUT,
                 )
+            db.refresh(row, with_for_update=True)
+            if row.analysis_generation != expected_generation:
+                db.rollback()
+                return
             row.voice_strategy_json = json.dumps(strategy, default=str)
             row.voice_strategy_status = "ready"
             row.voice_strategy_config_hash = config_hash
@@ -994,6 +1014,10 @@ async def background_voice_strategy(
                 str(err)[:200],
             )
             fallback = agent._build_fallback_strategy(context, DEFAULT_VOICE_STRATEGY_CONFIG)
+            db.refresh(row, with_for_update=True)
+            if row.analysis_generation != expected_generation:
+                db.rollback()
+                return
             row.voice_strategy_json = json.dumps(fallback, default=str)
             row.voice_strategy_status = "fallback"
             row.voice_strategy_config_hash = config_hash
@@ -1008,6 +1032,7 @@ def schedule_post_narrative_enrichment(
     llm_context: Dict[str, Any],
     python_result: Dict[str, Any],
     *,
+    expected_generation: int,
     narrative_status: str,
     narrative_payload: Optional[Dict[str, Any]] = None,
 ) -> None:
@@ -1021,10 +1046,25 @@ def schedule_post_narrative_enrichment(
         or ""
     )
 
-    _update_screening_fields(screening_result_id, tenant_id, interview_kit_status="pending")
-    asyncio.create_task(
-        background_interview_kit(screening_result_id, tenant_id, llm_context, python_result)
+    if not _update_screening_fields(
+        screening_result_id,
+        tenant_id,
+        expected_generation=expected_generation,
+        interview_kit_status="pending",
+    ):
+        return
+    from app.backend.services.hybrid_pipeline import register_background_task
+
+    interview_kit_task = asyncio.create_task(
+        background_interview_kit(
+            screening_result_id,
+            tenant_id,
+            llm_context,
+            python_result,
+            expected_generation=expected_generation,
+        )
     )
+    register_background_task(interview_kit_task)
     log.info(
         "Scheduled independent interview kit LLM for screening_result_id=%s (narrative_status=%s)",
         screening_result_id,
@@ -1032,10 +1072,27 @@ def schedule_post_narrative_enrichment(
     )
 
     if recommendation in ("Shortlist", "Consider") and _prebuild_voice_strategy_enabled():
-        _update_screening_fields(screening_result_id, tenant_id, voice_strategy_status="pending")
-        asyncio.create_task(background_voice_strategy(screening_result_id, tenant_id))
+        _update_screening_fields(
+            screening_result_id,
+            tenant_id,
+            expected_generation=expected_generation,
+            voice_strategy_status="pending",
+        )
+        voice_strategy_task = asyncio.create_task(
+            background_voice_strategy(
+                screening_result_id,
+                tenant_id,
+                expected_generation=expected_generation,
+            )
+        )
+        register_background_task(voice_strategy_task)
     else:
-        _update_screening_fields(screening_result_id, tenant_id, voice_strategy_status="skipped")
+        _update_screening_fields(
+            screening_result_id,
+            tenant_id,
+            expected_generation=expected_generation,
+            voice_strategy_status="skipped",
+        )
 
 
 def load_cached_voice_strategy(
