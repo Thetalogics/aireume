@@ -32,6 +32,7 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r app/backend/requirements.txt
         pip install pytest pytest-asyncio pytest-cov respx
+        python -c "import importlib.util; print('langgraph:', importlib.util.find_spec('langgraph'))"
 
     - name: Run backend tests
       env:

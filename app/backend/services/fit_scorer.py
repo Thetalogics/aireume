@@ -296,35 +296,35 @@ def compute_fit_score(
         risk_penalty = compute_risk_penalty(risk_signals)
 
     # ── Fit score ──────────────────────────────────────────────────────────────
-    # Employment timeline is recruiter context, not a default score dimension.
-    timeline_w = 0.0 if not (scoring_weights and "timeline" in scoring_weights) else w.get("timeline", 0)
-    skills_w = w.get("skills", DEFAULT_WEIGHTS["skills"])
-    if timeline_w == 0 and not (scoring_weights and "timeline" in scoring_weights):
-        skills_w = skills_w + w.get("timeline", DEFAULT_WEIGHTS.get("timeline", 0))
-
+    # Timeline is a first-class positive dimension; it is never also folded
+    # into education or skills.
     merged = {
-        "skills": skills_w,
+        "skills": w.get("skills", DEFAULT_WEIGHTS["skills"]),
         "experience": w.get("experience", DEFAULT_WEIGHTS["experience"]),
         "architecture": w.get("architecture", DEFAULT_WEIGHTS["architecture"]),
         "education": w.get("education", DEFAULT_WEIGHTS["education"]),
+        "timeline": w.get("timeline", DEFAULT_WEIGHTS.get("timeline", 0.0)),
         "domain": w.get("domain", DEFAULT_WEIGHTS["domain"]),
         "risk": w.get("risk", DEFAULT_WEIGHTS["risk"]),
     }
-    if scoring_weights and "timeline" in scoring_weights:
-        merged["timeline"] = timeline_w
+    if scoring_weights and "timeline" not in scoring_weights and "career_trajectory" not in scoring_weights and "stability" not in scoring_weights:
+        # Custom mix that omitted timeline: do not inject a default timeline
+        # weight on top of an already-complete positive mix.
+        merged.pop("timeline", None)
     eff = effective_scoring_weights(merged, team_gap_active=team_gap_bonus > 0)
     risk_w = normalize_risk_weight(eff.get("risk"))
 
-    fit_score = round(
+    raw_weighted_total = (
         skill_score      * eff["skills"] +
         team_gap_bonus   * eff.get("team_gap", 0.0) +
         exp_score        * eff["experience"] +
         arch_score       * eff["architecture"] +
         edu_score        * eff["education"] +
-        timeline_score   * (eff.get("timeline", 0.0) if scoring_weights and "timeline" in scoring_weights else 0.0) +
+        timeline_score   * float(eff.get("timeline") or 0.0) +
         domain_score     * eff["domain"] -
         risk_penalty     * risk_w
     )
+    fit_score = round(raw_weighted_total)
     fit_score = max(0, min(100, fit_score))
 
     # ── Recommendation ────────────────────────────────────────────────────────
@@ -405,6 +405,7 @@ def compute_fit_score(
 
     return {
         "fit_score":            fit_score,
+        "raw_weighted_total":   raw_weighted_total,
         "final_recommendation": recommendation,
         "risk_level":           risk_level,
         "risk_signals":         risk_signals,

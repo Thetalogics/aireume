@@ -5,8 +5,24 @@ from typing import Any
 
 from app.backend.services.constants import DEFAULT_WEIGHTS
 
-CANONICAL_KEYS = ("skills", "experience", "architecture", "education", "domain", "risk")
-_POSITIVE_KEYS = ("skills", "experience", "architecture", "education", "domain")
+CANONICAL_KEYS = (
+    "skills",
+    "experience",
+    "architecture",
+    "education",
+    "timeline",
+    "domain",
+    "risk",
+)
+_POSITIVE_KEYS = (
+    "skills",
+    "experience",
+    "architecture",
+    "education",
+    "timeline",
+    "domain",
+)
+POSITIVE_KEYS = _POSITIVE_KEYS
 TEAM_GAP_SHARE = 0.05
 # Risk is a unit-interval penalty magnitude (0..1). 0.30 was not a product rule.
 MAX_RISK_WEIGHT = 1.0
@@ -29,40 +45,37 @@ def normalize_risk_weight(value: float | int | None) -> float:
     return min(max(magnitude, 0.0), MAX_RISK_WEIGHT)
 
 
+def positive_weight_sum(weights: dict) -> float:
+    return sum(float(weights.get(key) or 0.0) for key in _POSITIVE_KEYS)
+
+
 def effective_scoring_weights(weights: dict | None, *, team_gap_active: bool = False) -> dict[str, float]:
     """Canonical positive weights plus a separate positive risk magnitude.
 
     When team-gap contributes, every positive dimension is scaled by 0.95 and
     ``team_gap`` receives 0.05. Risk is not part of that 100% bucket.
     """
-    base = canonicalize_scoring_weights(weights, strict=False) if weights else {
-        k: float(DEFAULT_WEIGHTS[k]) for k in CANONICAL_KEYS
-    }
-    extra_positive = {k: float(weights.get(k) or 0.0) for k in ("timeline",) if weights and k in weights}
-    out = dict(base)
-    out.update(extra_positive)
-    out["risk"] = normalize_risk_weight(out.get("risk"))
+    out = canonicalize_scoring_weights(weights, strict=False)
     if not team_gap_active:
         out["team_gap"] = 0.0
         return out
     scale = 1.0 - TEAM_GAP_SHARE
     for key in _POSITIVE_KEYS:
         out[key] = float(out.get(key) or 0.0) * scale
-    if "timeline" in out:
-        out["timeline"] = float(out.get("timeline") or 0.0) * scale
     out["team_gap"] = TEAM_GAP_SHARE
     return out
+
+
 _ALIAS = {
     "core_competencies": "skills",
     "skill_match": "skills",
     "core_skill_match": "skills",
-    "stability": "education",  # legacy 4-weight: do not map to timeline/penalty
-    "career_trajectory": "education",
+    "stability": "timeline",
+    "career_trajectory": "timeline",
     "role_excellence": "architecture",
     "domain_fit": "domain",
-    "timeline": "education",
 }
-_KNOWN = set(CANONICAL_KEYS) | set(_ALIAS) | {"timeline", "secondary_skill_match", "relevant_experience"}
+_KNOWN = set(CANONICAL_KEYS) | set(_ALIAS) | {"secondary_skill_match", "relevant_experience"}
 
 
 class ScoringWeightError(ValueError):
@@ -72,13 +85,14 @@ class ScoringWeightError(ValueError):
 def canonicalize_scoring_weights(weights: dict | None, *, strict: bool = True) -> dict[str, float]:
     """Return canonical weights. Unknown keys fail closed when strict."""
     if not weights:
-        out = {k: float(DEFAULT_WEIGHTS[k]) for k in CANONICAL_KEYS}
-        return out
-    unknown = [k for k in weights if k not in _KNOWN]
+        source = {k: float(DEFAULT_WEIGHTS[k]) for k in CANONICAL_KEYS if k in DEFAULT_WEIGHTS}
+    else:
+        source = weights
+    unknown = [k for k in (weights or {}) if k not in _KNOWN]
     if unknown and strict:
         raise ScoringWeightError(f"Unknown scoring weight keys: {sorted(unknown)}")
     mapped: dict[str, float] = {k: 0.0 for k in CANONICAL_KEYS}
-    for key, raw in weights.items():
+    for key, raw in source.items():
         if key not in _KNOWN:
             continue
         dest = _ALIAS.get(key, key if key in CANONICAL_KEYS else None)
@@ -88,15 +102,17 @@ def canonicalize_scoring_weights(weights: dict | None, *, strict: bool = True) -
             mapped[dest] = mapped.get(dest, 0.0) + float(raw)
         except (TypeError, ValueError) as exc:
             raise ScoringWeightError(f"Weight {key} must be numeric") from exc
-    positive = sum(mapped[k] for k in _POSITIVE_KEYS)
+    positive = positive_weight_sum(mapped)
     if positive <= 0:
         raise ScoringWeightError("Scoring weights must include a positive qualification total")
-    if strict and abs(positive - 1.0) > 0.05:
+    if weights is not None and strict and abs(positive - 1.0) > 0.05:
         raise ScoringWeightError("Scoring weights must sum to 1.0 (±0.05) excluding risk")
     if abs(positive - 1.0) > 1e-9:
         for k in _POSITIVE_KEYS:
             mapped[k] = mapped[k] / positive
-    mapped["risk"] = normalize_risk_weight(mapped.get("risk") if mapped.get("risk") else DEFAULT_WEIGHTS["risk"])
+    mapped["risk"] = normalize_risk_weight(
+        mapped.get("risk") if mapped.get("risk") else DEFAULT_WEIGHTS["risk"]
+    )
     return mapped
 
 

@@ -1,5 +1,9 @@
 """Phase 0 schema: invoice counters, AI decision audit columns, provider invoice uniqueness.
 
+Provider invoice uniqueness is applied only after equivalent historical
+duplicates are reconciled. Conflicting financial identity (tenant/amount/
+currency) aborts the upgrade.
+
 Historical BillingEvent duplicates: unique (provider, event_id) already shipped in 051.
 This revision does not delete billing rows except duplicate (provider, event_id)
 pairs. Keeper precedence: success > processing > error/failed > ignored > other;
@@ -83,27 +87,19 @@ def upgrade():
                     {"y": y, "v": v},
                 )
 
+        # Historical webhook races can leave duplicate provider invoice rows.
+        # Reconcile equivalent copies before uniqueness; abort on conflicts.
+        _reconcile_duplicate_provider_invoices(bind)
         if not _has_index(insp, "invoices", "uq_invoice_provider_invoice_id"):
-            if is_pg:
-                op.execute(
-                    sa.text(
-                        """
-                        CREATE UNIQUE INDEX IF NOT EXISTS uq_invoice_provider_invoice_id
-                        ON invoices (payment_provider, provider_invoice_id)
-                        WHERE provider_invoice_id IS NOT NULL
-                        """
-                    )
+            op.execute(
+                sa.text(
+                    """
+                    CREATE UNIQUE INDEX IF NOT EXISTS uq_invoice_provider_invoice_id
+                    ON invoices (payment_provider, provider_invoice_id)
+                    WHERE provider_invoice_id IS NOT NULL
+                    """
                 )
-            else:
-                op.execute(
-                    sa.text(
-                        """
-                        CREATE UNIQUE INDEX IF NOT EXISTS uq_invoice_provider_invoice_id
-                        ON invoices (payment_provider, provider_invoice_id)
-                        WHERE provider_invoice_id IS NOT NULL
-                        """
-                    )
-                )
+            )
 
     if _has_table(insp, "ai_decision_logs"):
         cols = {
@@ -158,6 +154,115 @@ def upgrade():
                 """
             )
         )
+
+
+_STATUS_RANK = {
+    "paid": 0,
+    "pending": 1,
+    "draft": 2,
+    "refunded": 3,
+    "void": 4,
+}
+
+
+def _reconcile_duplicate_provider_invoices(bind):
+    """Keep one equivalent invoice per (provider, provider_invoice_id).
+
+    Equivalent: same tenant_id, amount, and currency. Paid rows win, then the
+    most complete row, then latest paid_at, then latest issued_at, then highest
+    id. Material disagreement aborts the upgrade.
+    This helper is self-contained so 077 stays runnable if application services
+    are later refactored.
+    """
+    groups = bind.execute(
+        text(
+            """
+            SELECT payment_provider, provider_invoice_id
+            FROM invoices
+            WHERE provider_invoice_id IS NOT NULL
+            GROUP BY payment_provider, provider_invoice_id
+            HAVING COUNT(*) > 1
+            """
+        )
+    ).fetchall()
+    for provider, provider_invoice_id in groups:
+        rows = bind.execute(
+            text(
+                """
+                SELECT id, tenant_id, amount, currency, status, paid_at, issued_at,
+                       period_start, period_end, description, line_items
+                FROM invoices
+                WHERE payment_provider = :provider
+                  AND provider_invoice_id = :pid
+                ORDER BY id
+                """
+            ),
+            {"provider": provider, "pid": provider_invoice_id},
+        ).mappings().all()
+        keeper_id = _choose_invoice_keeper_id(rows, provider, provider_invoice_id)
+        bind.execute(
+            text(
+                """
+                DELETE FROM invoices
+                WHERE payment_provider = :provider
+                  AND provider_invoice_id = :pid
+                  AND id <> :keeper
+                """
+            ),
+            {"provider": provider, "pid": provider_invoice_id, "keeper": keeper_id},
+        )
+
+
+def _choose_invoice_keeper_id(rows, provider, provider_invoice_id):
+    if not rows:
+        raise RuntimeError(
+            "Conflicting provider invoices cannot be auto-merged: "
+            f"provider={provider} provider_invoice_id={provider_invoice_id} empty group"
+        )
+    tenants = {row["tenant_id"] for row in rows}
+    amounts = {int(row["amount"]) for row in rows}
+    currencies = {(row.get("currency") or "usd").lower() for row in rows}
+    if len(tenants) != 1 or len(amounts) != 1 or len(currencies) != 1:
+        ids = [row["id"] for row in rows]
+        raise RuntimeError(
+            "Conflicting provider invoices cannot be auto-merged: "
+            f"provider={provider} provider_invoice_id={provider_invoice_id} "
+            f"ids={ids} tenants={list(tenants)} amounts={list(amounts)} "
+            f"currencies={list(currencies)}"
+        )
+
+    def sort_key(row):
+        status = (row.get("status") or "").lower()
+        rank = _STATUS_RANK.get(status, 9)
+        return (
+            rank,
+            -_completeness(row),
+            0 if row.get("paid_at") is not None else 1,
+            _neg_ts(row.get("paid_at")),
+            0 if row.get("issued_at") is not None else 1,
+            _neg_ts(row.get("issued_at")),
+            -int(row["id"]),
+        )
+
+    return int(sorted(rows, key=sort_key)[0]["id"])
+
+
+def _completeness(row):
+    score = 0
+    for field in ("paid_at", "issued_at", "period_start", "period_end", "description", "line_items"):
+        value = row.get(field)
+        if value is None or value == "" or value == []:
+            continue
+        score += 1
+    return score
+
+
+def _neg_ts(value):
+    if value is None:
+        return 0.0
+    if hasattr(value, "timestamp"):
+        return -float(value.timestamp())
+    return 0.0
 
 
 def downgrade():

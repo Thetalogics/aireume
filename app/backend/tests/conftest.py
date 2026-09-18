@@ -12,6 +12,8 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 from unittest.mock import patch, AsyncMock, MagicMock
 
+from app.backend.tests.optional_deps import patch_loaded_module_attr
+
 # Ensure project root is on the path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../..')))
 
@@ -349,21 +351,17 @@ def _hermetic_llm_providers(monkeypatch, request):
     dummy.ainvoke = AsyncMock(side_effect=RuntimeError("hermetic tests: LLM provider blocked"))
     dummy.invoke = MagicMock(side_effect=RuntimeError("hermetic tests: LLM provider blocked"))
 
-    monkeypatch.setattr(
-        "app.backend.services.wip.agent_pipeline.get_fast_llm",
-        lambda *a, **k: dummy,
-    )
-    monkeypatch.setattr(
-        "app.backend.services.wip.agent_pipeline.get_reasoning_llm",
-        lambda *a, **k: dummy,
-    )
+    _wip = "app.backend.services.wip.agent_pipeline"
+    patch_loaded_module_attr(monkeypatch, _wip, "get_fast_llm", lambda *a, **k: dummy)
+    patch_loaded_module_attr(monkeypatch, _wip, "get_reasoning_llm", lambda *a, **k: dummy)
+    patch_loaded_module_attr(monkeypatch, _wip, "_fast_llm", None, raising=False)
+    patch_loaded_module_attr(monkeypatch, _wip, "_reasoning_llm", None, raising=False)
+
     monkeypatch.setattr(
         "app.backend.services.hybrid_pipeline._get_llm",
         lambda *a, **k: dummy,
     )
     monkeypatch.setattr("app.backend.services.hybrid_pipeline._REASONING_LLM", None, raising=False)
-    monkeypatch.setattr("app.backend.services.wip.agent_pipeline._fast_llm", None, raising=False)
-    monkeypatch.setattr("app.backend.services.wip.agent_pipeline._reasoning_llm", None, raising=False)
 
     if filename in _HTTP_PASSTHROUGH_LLM_TEST_FILES:
         return

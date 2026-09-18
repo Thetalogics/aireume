@@ -10,6 +10,13 @@ from app.backend.models.db_models import AIDecisionLog
 
 log = logging.getLogger(__name__)
 
+
+def first_not_none(*values: Any) -> Any:
+    for value in values:
+        if value is not None:
+            return value
+    return None
+
 DECISION_INITIAL = "INITIAL_ANALYSIS"
 DECISION_REANALYSIS = "REANALYSIS"
 DECISION_RESCORE = "RESCORE"
@@ -85,16 +92,27 @@ def write_log_from_pipeline(
             raise ValueError("pipeline_result is required for an auditable screening decision")
         return None
     meta = pipeline_result.get("_meta", {}) if isinstance(pipeline_result, dict) else {}
+    if not isinstance(meta, dict):
+        meta = {}
     return write_ai_decision_log(
         db,
         tenant_id=result.tenant_id,
         screening_result_id=result.id,
         candidate_id=result.candidate_id,
         decision_type=decision_type,
-        deterministic_score=pipeline_result.get("deterministic_score") or meta.get("deterministic_score"),
-        final_score=pipeline_result.get("fit_score") or pipeline_result.get("overall_score"),
+        deterministic_score=first_not_none(
+            pipeline_result.get("deterministic_score"),
+            meta.get("deterministic_score"),
+        ),
+        final_score=first_not_none(
+            pipeline_result.get("fit_score"),
+            pipeline_result.get("overall_score"),
+        ),
         recommendation=pipeline_result.get("final_recommendation"),
-        scoring_weights=pipeline_result.get("scoring_weights") or meta.get("scoring_weights"),
+        scoring_weights=first_not_none(
+            pipeline_result.get("scoring_weights"),
+            meta.get("scoring_weights"),
+        ),
         algorithm_version=meta.get("algorithm_version") or ALGORITHM_VERSION,
         model_name=meta.get("model_name") or pipeline_result.get("model_used"),
         model_version=meta.get("model_version"),

@@ -2,6 +2,8 @@
 import io
 import threading
 
+import pytest
+
 from app.backend.services.fit_scorer import compute_fit_score
 from app.backend.services.scoring_weights import ScoringWeightError, canonicalize_scoring_weights
 from app.backend.services.shared_cache import cache_consume_if_tenant, cache_set
@@ -36,7 +38,9 @@ def test_canonical_weights_reject_unknown_and_bad_total():
         "skills": 0.4, "experience": 0.2, "architecture": 0.15,
         "education": 0.15, "domain": 0.1, "risk": 0.1,
     })
-    assert set(canon) == {"skills", "experience", "architecture", "education", "domain", "risk"}
+    assert set(canon) == {
+        "skills", "experience", "architecture", "education", "timeline", "domain", "risk",
+    }
     legacy = canonicalize_scoring_weights({
         "skills": 0.4, "experience": 0.3, "stability": 0.15, "education": 0.15,
     })
@@ -60,16 +64,16 @@ def test_gaps_and_short_tenure_do_not_change_fit_score():
         "matched_skills": ["python"], "missing_skills": [], "required_count": 1,
         "employment_gaps": [], "short_stints": [],
     }
-    a = compute_fit_score(base)
+    a = compute_fit_score(base, risk_penalty=0)
     b = compute_fit_score({
         **base,
-        "timeline_score": 10,
         "employment_gaps": [{"severity": "critical", "months": 18}],
         "short_stints": [{"months": 3}, {"months": 2}, {"months": 4}],
         "actual_years": 20,
         "required_years": 3,
-    })
+    }, risk_penalty=0)
     assert a["fit_score"] == b["fit_score"]
+    assert a["raw_weighted_total"] == pytest.approx(b["raw_weighted_total"])
 
 
 def test_historical_outcomes_do_not_adjust_when_disabled():
