@@ -641,7 +641,7 @@ class QueueManager:
             logger.info("Recovered %s stale jobs", recovered)
         from app.backend.services.reliability.quota_reservation import reconcile_expired_quota_reservations
         try:
-            reconcile_expired_quota_reservations(db)
+            reconcile_expired_quota_reservations(db, commit=True)
         except Exception:
             db.rollback()
             try:

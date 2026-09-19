@@ -45,6 +45,12 @@ from app.backend.models.schemas import (
     RescheduleVoiceCallRequest,
     BulkCancelRequest,
 )
+from app.backend.services.reliability.voice_attempt import (
+    VOICE_COMPLETION_REJECTED_STATUSES,
+    VOICE_TERMINAL_STATUSES,
+    can_transition_voice_status,
+    invalidate_voice_attempt,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -259,7 +265,11 @@ def schedule_voice_call(
 
     # Schedule the call via APScheduler
     from app.backend.services.voice_call_scheduler import schedule_voice_call
-    schedule_voice_call(session.id, body.scheduled_at)
+    schedule_voice_call(
+        session.id,
+        body.scheduled_at,
+        expected_generation=session.result_generation,
+    )
 
     return ScheduleVoiceCallResponse(
         session_id=session.id,
@@ -451,12 +461,12 @@ def bulk_cancel_sessions(
     cancelled = 0
     skipped = 0
     for session in sessions:
-        if session.status in ("completed", "cancelled", "ended"):
+        if session.status in VOICE_TERMINAL_STATUSES:
             skipped += 1
             continue
         from app.backend.services.voice_call_scheduler import cancel_pending_retries
         cancel_pending_retries(session.id)
-        session.status = "cancelled"
+        invalidate_voice_attempt(session, next_status="cancelled")
         cancelled += 1
 
     db.commit()
@@ -721,6 +731,14 @@ def update_voice_session(
             raise HTTPException(status_code=404, detail="Voice session not found")
         raise HTTPException(status_code=409, detail="Voice session generation is stale")
 
+    if session.status in VOICE_COMPLETION_REJECTED_STATUSES:
+        raise HTTPException(status_code=409, detail="Voice session is no longer mutable")
+    if body.status is not None and not can_transition_voice_status(session.status, body.status):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Invalid voice session transition: {session.status} -> {body.status}",
+        )
+
     for field_name, value in body.model_dump(
         exclude_unset=True,
         exclude={"expected_generation"},
@@ -769,24 +787,23 @@ def reschedule_voice_session(
     cancel_pending_retries(session_id)
 
     # Update session
-    session.status = "scheduled"
+    invalidate_voice_attempt(
+        session,
+        next_status="scheduled",
+        clear_attempt_outputs=True,
+    )
     session.scheduled_at = body.scheduled_at
     session.phone_number = body.phone_number or session.phone_number
-    session.result_generation = (session.result_generation or 1) + 1
-    session.completion_event_id = None
-    session.assessment_json = None
-    session.transcript_json = None
-    session.duration_seconds = None
-    session.started_at = None
-    session.ended_at = None
-    session.call_sid = None
-    session.error_log = None
     if body.jd_id is not None:
         session.jd_id = body.jd_id
     db.commit()
 
     # Schedule the new call
-    schedule_voice_call(session_id, body.scheduled_at)
+    schedule_voice_call(
+        session_id,
+        body.scheduled_at,
+        expected_generation=session.result_generation,
+    )
 
     return {
         "session_id": session.id,
@@ -813,7 +830,7 @@ def cancel_voice_session(
     if session is None:
         raise HTTPException(status_code=404, detail="Voice session not found")
 
-    if session.status in ("completed", "cancelled", "ended"):
+    if session.status in VOICE_TERMINAL_STATUSES:
         raise HTTPException(
             status_code=400,
             detail=f"Cannot cancel session in '{session.status}' status",
@@ -823,7 +840,7 @@ def cancel_voice_session(
     from app.backend.services.voice_call_scheduler import cancel_pending_retries
     cancel_pending_retries(session_id)
 
-    session.status = "cancelled"
+    invalidate_voice_attempt(session, next_status="cancelled")
     db.commit()
 
     return {"session_id": session.id, "status": "cancelled", "message": "Call cancelled"}

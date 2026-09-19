@@ -133,6 +133,12 @@ QUOTA_RECONCILE_FAILURE_TOTAL = Counter(
     "Quota reservation reconciliation failures",
 )
 
+QUOTA_RELEASE_FAILURE_TOTAL = Counter(
+    "aria_quota_release_failure_total",
+    "Quota reservation releases that could not safely decrement usage",
+    ["reason"],
+)
+
 LEASE_LOST_BEFORE_COMMIT_TOTAL = Counter(
     "aria_lease_lost_before_commit_total",
     "Workers prevented from committing after losing their lease",

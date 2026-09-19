@@ -14,6 +14,9 @@ from app.backend.models.db_models import (
     VoiceScreeningSession,
 )
 from app.backend.services.reliability.errors import ErrorCategory
+from app.backend.services.reliability.voice_attempt import (
+    VOICE_COMPLETION_REJECTED_STATUSES,
+)
 
 log = logging.getLogger(__name__)
 
@@ -176,6 +179,16 @@ def claim_voice_completion(
         .one()
     )
     if session.result_generation != expected_generation:
+        discard_stale(
+            job_type="voice_completion",
+            job_id=event_id,
+            target_id=session_id,
+            expected_version=expected_generation,
+            current_version=session.result_generation,
+            tenant_id=session.tenant_id,
+        )
+        return VoiceCompletionOutcome(session=session, stale=True)
+    if session.status in VOICE_COMPLETION_REJECTED_STATUSES:
         discard_stale(
             job_type="voice_completion",
             job_id=event_id,

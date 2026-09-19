@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import update
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.backend.models.db_models import (
     AnalysisJob,
@@ -82,7 +83,77 @@ def reserve_analysis_quota(
     return reservation
 
 
-def reconcile_expired_quota_reservations(db: Session, *, now: datetime | None = None) -> int:
+def _record_release_failure(
+    reservation: QuotaReservation,
+    *,
+    reason: str,
+) -> None:
+    try:
+        from app.backend.services.metrics import QUOTA_RELEASE_FAILURE_TOTAL
+
+        QUOTA_RELEASE_FAILURE_TOTAL.labels(reason=reason).inc()
+        if reason == "reconciliation":
+            from app.backend.services.metrics import QUOTA_RECONCILE_FAILURE_TOTAL
+
+            QUOTA_RECONCILE_FAILURE_TOTAL.inc()
+    except Exception:
+        pass
+    log.warning(
+        "quota_release_failed reservation_id=%s tenant_id=%s quantity=%s reason=%s",
+        reservation.id,
+        reservation.tenant_id,
+        reservation.quantity,
+        reason,
+    )
+
+
+def release_quota_reservation(
+    db: Session,
+    reservation: QuotaReservation,
+    *,
+    reason: str,
+    already_locked: bool = False,
+) -> bool:
+    """Release one pending hold atomically; caller owns commit or rollback."""
+    if not already_locked:
+        reservation = (
+            db.query(QuotaReservation)
+            .filter(QuotaReservation.id == reservation.id)
+            .with_for_update()
+            .one()
+        )
+    if reservation.status != "pending":
+        return False
+
+    result = db.execute(
+        update(Tenant)
+        .where(
+            Tenant.id == reservation.tenant_id,
+            Tenant.analyses_count_this_month >= reservation.quantity,
+        )
+        .values(
+            analyses_count_this_month=(
+                Tenant.analyses_count_this_month - reservation.quantity
+            )
+        )
+        .execution_options(synchronize_session=False)
+    )
+    if result.rowcount != 1:
+        _record_release_failure(reservation, reason=reason)
+        return False
+
+    reservation.status = "released"
+    db.flush()
+    return True
+
+
+def reconcile_expired_quota_reservations(
+    db: Session,
+    *,
+    now: datetime | None = None,
+    commit: bool = True,
+) -> int:
+    """Release abandoned holds; this function commits only when commit=True."""
     now = now or datetime.now(timezone.utc)
     pending = (
         db.query(QuotaReservation)
@@ -94,9 +165,9 @@ def reconcile_expired_quota_reservations(db: Session, *, now: datetime | None = 
         .all()
     )
     released = 0
-    from app.backend.routes.analyze_helpers import _release_analysis_quota
 
     for row in pending:
+        job = None
         if row.job_id:
             job = db.query(AnalysisJob).filter(AnalysisJob.id == row.job_id).first()
             if job is not None and job.status in ("queued", "processing", "retrying"):
@@ -106,25 +177,23 @@ def reconcile_expired_quota_reservations(db: Session, *, now: datetime | None = 
                 or db.query(AnalysisResult.id).filter(AnalysisResult.job_id == job.id).first()
             ):
                 continue
-        if not _release_analysis_quota(db, row.tenant_id, row.quantity):
-            try:
-                from app.backend.services.metrics import QUOTA_RECONCILE_FAILURE_TOTAL
-
-                QUOTA_RECONCILE_FAILURE_TOTAL.inc()
-            except Exception:
-                pass
-            log.warning(
-                "quota_reconciliation_underflow reservation_id=%s tenant_id=%s quantity=%s",
-                row.id,
-                row.tenant_id,
-                row.quantity,
-            )
+        if not release_quota_reservation(
+            db,
+            row,
+            reason="reconciliation",
+            already_locked=True,
+        ):
             continue
-        row.status = "released"
+        if job is not None:
+            cfg = dict(job.job_config or {})
+            cfg["quota_released"] = True
+            job.job_config = cfg
+            flag_modified(job, "job_config")
+            db.flush()
         released += 1
-    if pending:
+    if commit and pending:
         db.commit()
-    if released:
+    if commit and released:
         try:
             from app.backend.services.metrics import QUOTA_RECONCILE_RELEASE_TOTAL
 

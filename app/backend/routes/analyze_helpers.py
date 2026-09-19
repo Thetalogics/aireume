@@ -1769,14 +1769,17 @@ def _release_analysis_quota(db: Session, tenant_id: int, quantity: int = 1) -> b
     return result.rowcount == 1
 
 
-def release_job_analysis_quota(db: Session, job) -> None:
-    """Release a reserved analysis unit when a queued job is cancelled or permanently failed."""
+def release_job_analysis_quota(db: Session, job) -> bool:
+    """Release a job hold atomically; caller owns commit or rollback."""
     from sqlalchemy.orm.attributes import flag_modified
     from app.backend.models.db_models import QuotaReservation
+    from app.backend.services.reliability.quota_reservation import (
+        release_quota_reservation,
+    )
 
     cfg = dict(job.job_config or {})
     if not cfg.get("quota_reserved") or cfg.get("quota_released"):
-        return
+        return False
     operation_id = cfg.get("quota_operation_id")
     reservation = None
     if operation_id:
@@ -1791,15 +1794,23 @@ def release_job_analysis_quota(db: Session, job) -> None:
         )
     if reservation is not None:
         if reservation.status != "pending":
-            return
-        _release_analysis_quota(db, job.tenant_id, reservation.quantity)
-        reservation.status = "released"
+            return False
+        released = release_quota_reservation(
+            db,
+            reservation,
+            reason="terminal_job",
+            already_locked=True,
+        )
     else:
         # Rolling-deployment compatibility for jobs created before reservations.
-        _release_analysis_quota(db, job.tenant_id, 1)
+        released = _release_analysis_quota(db, job.tenant_id, 1)
+    if not released:
+        return False
     cfg["quota_released"] = True
     job.job_config = cfg
     flag_modified(job, "job_config")
+    db.flush()
+    return True
 
 
 def consume_job_analysis_quota(db: Session, job) -> None:

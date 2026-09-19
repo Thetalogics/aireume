@@ -18,11 +18,16 @@ from typing import Optional
 
 import httpx
 from apscheduler.schedulers.background import BackgroundScheduler
-from sqlalchemy import select, and_, or_
+from sqlalchemy import select, update
 
 from app.backend.db.database import SessionLocal
 from app.backend.models.db_models import (
     VoiceTenantConfig, VoiceScreeningSession, Candidate,
+)
+from app.backend.services.reliability.voice_attempt import (
+    VOICE_DISPATCHABLE_STATUSES,
+    VOICE_RETRYABLE_STATUSES,
+    invalidate_voice_attempt,
 )
 
 logger = logging.getLogger(__name__)
@@ -41,6 +46,61 @@ VOICE_AGENT_URL = os.environ.get("VOICE_AGENT_URL", "http://voice-agent:8002")
 # across all workers in a multi-process deployment (e.g., --workers 3).
 _scheduler_lock_session = None
 _scheduler_lock_acquired = False
+
+
+class VoiceScheduleRegistrationError(RuntimeError):
+    """The durable DB intent exists, but in-memory registration failed."""
+
+
+def _voice_job_id(session_id: int, generation: int) -> str:
+    return f"voice_call_{session_id}_{generation}"
+
+
+def _conditional_voice_update(
+    session_id: int,
+    expected_generation: int,
+    *,
+    expected_statuses: set[str] | frozenset[str],
+    values: dict,
+) -> bool:
+    """Apply a generation/status-bound update in a short owned transaction."""
+    db = SessionLocal()
+    try:
+        result = db.execute(
+            update(VoiceScreeningSession)
+            .where(
+                VoiceScreeningSession.id == session_id,
+                VoiceScreeningSession.result_generation == expected_generation,
+                VoiceScreeningSession.status.in_(expected_statuses),
+            )
+            .values(**values)
+            .execution_options(synchronize_session=False)
+        )
+        db.commit()
+        return result.rowcount == 1
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+def _dispatch_attempt_is_current(session_id: int, expected_generation: int) -> bool:
+    """Recheck authority immediately before the provider call."""
+    db = SessionLocal()
+    try:
+        return (
+            db.execute(
+                select(VoiceScreeningSession.id).where(
+                    VoiceScreeningSession.id == session_id,
+                    VoiceScreeningSession.result_generation == expected_generation,
+                    VoiceScreeningSession.status == "ringing",
+                )
+            ).scalar_one_or_none()
+            is not None
+        )
+    finally:
+        db.close()
 
 
 # ─── Business Hours Enforcement ───────────────────────────────────────────────
@@ -135,7 +195,7 @@ def adjust_to_business_hours(
 
 # ─── Call Execution ────────────────────────────────────────────────────────────
 
-def execute_scheduled_call(session_id: int):
+def execute_scheduled_call(session_id: int, expected_generation: int):
     """
     Execute a scheduled voice screening call.
 
@@ -149,25 +209,37 @@ def execute_scheduled_call(session_id: int):
         normalize_voice_dispatch_error,
     )
 
+    claimed = _conditional_voice_update(
+        session_id,
+        expected_generation,
+        expected_statuses=VOICE_DISPATCHABLE_STATUSES,
+        values={"status": "ringing", "started_at": datetime.now(timezone.utc)},
+    )
+    if not claimed:
+        logger.info(
+            "Stale or non-dispatchable voice job ignored: session=%d generation=%d",
+            session_id,
+            expected_generation,
+        )
+        return
+
     db = SessionLocal()
     try:
         session = db.execute(
-            select(VoiceScreeningSession).where(VoiceScreeningSession.id == session_id)
+            select(VoiceScreeningSession).where(
+                VoiceScreeningSession.id == session_id,
+                VoiceScreeningSession.result_generation == expected_generation,
+                VoiceScreeningSession.status == "ringing",
+            )
         ).scalar_one_or_none()
 
         if session is None:
-            logger.error("Scheduled call session %d not found", session_id)
+            logger.info(
+                "Voice job lost authority while loading context: session=%d generation=%d",
+                session_id,
+                expected_generation,
+            )
             return
-
-        # Skip if already completed/cancelled
-        if session.status in ("completed", "failed", "voicemail"):
-            logger.info("Session %d already in terminal state: %s", session_id, session.status)
-            return
-
-        # Update status to ringing
-        session.status = "ringing"
-        session.started_at = datetime.now(timezone.utc)
-        db.commit()
 
         logger.info(
             "Executing voice screening call: session=%d candidate=%d phone=%s",
@@ -235,9 +307,31 @@ def execute_scheduled_call(session_id: int):
             "interview_config": interview_config or {},
             "interview_kit": interview_kit_payload,
             "screening_result_id": interview_kit_payload.get("screening_result_id"),
-            "result_generation": session.result_generation,
+            "result_generation": expected_generation,
         }
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        logger.error("Failed to prepare scheduled call %d: %s", session_id, e, exc_info=True)
+        _conditional_voice_update(
+            session_id,
+            expected_generation,
+            expected_statuses={"ringing"},
+            values={"status": "failed", "error_log": str(e)},
+        )
+        return
+    finally:
+        db.close()
 
+    if not _dispatch_attempt_is_current(session_id, expected_generation):
+        logger.info(
+            "Voice job cancelled before provider dispatch: session=%d generation=%d",
+            session_id,
+            expected_generation,
+        )
+        return
+
+    try:
         if is_cloud_voice_enabled():
             result = dispatch_screening_call(dispatch_payload)
         else:
@@ -250,7 +344,7 @@ def execute_scheduled_call(session_id: int):
             result = resp.json()
 
         if result.get("success"):
-            session.status = "in_progress"
+            values = {"status": "in_progress", "error_log": None}
             logger.info(
                 "Call dispatched: session=%d room=%s dispatch_id=%s",
                 session_id,
@@ -258,53 +352,70 @@ def execute_scheduled_call(session_id: int):
                 result.get("dispatch_id"),
             )
         else:
-            session.status = "failed"
-            session.error_log = normalize_voice_dispatch_error(result.get("message"))
+            values = {
+                "status": "failed",
+                "error_log": normalize_voice_dispatch_error(result.get("message")),
+            }
             logger.error("Dispatch failed for session %d: %s", session_id, result.get("message"))
 
-        db.commit()
+        if not _conditional_voice_update(
+            session_id,
+            expected_generation,
+            expected_statuses={"ringing"},
+            values=values,
+        ):
+            logger.info(
+                "Discarded post-provider write for stale voice generation: "
+                "session=%d generation=%d",
+                session_id,
+                expected_generation,
+            )
 
     except httpx.ConnectError as e:
+        next_status = "failed" if is_cloud_voice_enabled() else "pending"
+        error = (
+            normalize_voice_dispatch_error(str(e))
+            if is_cloud_voice_enabled()
+            else f"Voice agent unreachable: {e}"
+        )
         if is_cloud_voice_enabled():
             logger.error("LiveKit Cloud dispatch failed for session %d: %s", session_id, e)
-            try:
-                session.status = "failed"
-                session.error_log = normalize_voice_dispatch_error(str(e))
-                db.commit()
-            except Exception:
-                pass
-            return
-        logger.warning(
-            "Voice agent unreachable at %s — session %d set to pending for retry: %s",
-            VOICE_AGENT_URL, session_id, e,
+        else:
+            logger.warning(
+                "Voice agent unreachable at %s — session %d set to pending for retry: %s",
+                VOICE_AGENT_URL, session_id, e,
+            )
+        _conditional_voice_update(
+            session_id,
+            expected_generation,
+            expected_statuses={"ringing"},
+            values={"status": next_status, "error_log": error},
         )
-        try:
-            session.status = "pending"
-            session.error_log = f"Voice agent unreachable: {e}"
-            db.commit()
-        except Exception:
-            pass
     except httpx.HTTPStatusError as e:
         logger.error(
             "Voice agent returned HTTP %d for session %d: %s",
             e.response.status_code, session_id, e,
         )
-        try:
-            session.status = "failed"
-            session.error_log = f"Voice agent HTTP {e.response.status_code}: {e.response.text[:200]}"
-            db.commit()
-        except Exception:
-            pass
+        _conditional_voice_update(
+            session_id,
+            expected_generation,
+            expected_statuses={"ringing"},
+            values={
+                "status": "failed",
+                "error_log": f"Voice agent HTTP {e.response.status_code}: {e.response.text[:200]}",
+            },
+        )
     except Exception as e:
         logger.error("Failed to execute scheduled call %d: %s", session_id, e, exc_info=True)
         try:
-            session.status = "failed"
-            session.error_log = str(e)
-            db.commit()
+            _conditional_voice_update(
+                session_id,
+                expected_generation,
+                expected_statuses={"ringing"},
+                values={"status": "failed", "error_log": str(e)},
+            )
         except Exception:
             pass
-    finally:
-        db.close()
 
 
 # ─── Retry Logic ──────────────────────────────────────────────────────────────
@@ -352,7 +463,7 @@ def process_voice_retries():
 
             if session.retry_count >= max_retries:
                 # All retries exhausted — escalate
-                session.status = "escalated"
+                invalidate_voice_attempt(session, next_status="escalated")
                 db.commit()
                 if config.escalation_contact_id:
                     logger.warning(
@@ -374,26 +485,33 @@ def process_voice_retries():
             # Check if enough time has elapsed since last attempt
             interval_hours = retry_intervals[min(session.retry_count, len(retry_intervals) - 1)]
             last_attempt = session.updated_at or session.created_at
+            if last_attempt and last_attempt.tzinfo is None:
+                last_attempt = last_attempt.replace(tzinfo=timezone.utc)
             if last_attempt and (now - last_attempt).total_seconds() < interval_hours * 3600:
                 continue  # Not yet time to retry
 
-            # Schedule retry
+            # A retry is a new attempt with a new immutable generation.
+            invalidate_voice_attempt(
+                session,
+                next_status="scheduled",
+                clear_attempt_outputs=True,
+            )
             session.retry_count += 1
-            session.status = "scheduled"
-            db.commit()
-
-            # Schedule the retry call via APScheduler
             retry_time = now + timedelta(minutes=5)  # Immediate re-schedule
             adjusted_time = adjust_to_business_hours(retry_time, config)
+            session.scheduled_at = adjusted_time
+            generation = session.result_generation
+            db.commit()
 
-            voice_scheduler.add_job(
-                execute_scheduled_call,
-                trigger="date",
-                run_date=adjusted_time,
-                args=[session.id],
-                id=f"voice_retry_{session.id}_{session.retry_count}",
-                replace_existing=True,
-            )
+            try:
+                _register_scheduled_job(session.id, generation, adjusted_time)
+            except VoiceScheduleRegistrationError:
+                logger.exception(
+                    "Retry registration deferred to reconciliation: "
+                    "session=%d generation=%d",
+                    session.id,
+                    generation,
+                )
 
             logger.info(
                 "Session %d: retry %d/%d scheduled for %s",
@@ -441,7 +559,40 @@ def cancel_pending_retries(session_id: int):
 
 # ─── Scheduling API ───────────────────────────────────────────────────────────
 
-def schedule_voice_call(session_id: int, scheduled_at: Optional[datetime] = None):
+def _register_scheduled_job(
+    session_id: int,
+    expected_generation: int,
+    call_time: datetime,
+) -> None:
+    try:
+        voice_scheduler.add_job(
+            execute_scheduled_call,
+            trigger="date",
+            run_date=call_time,
+            args=[session_id, expected_generation],
+            id=_voice_job_id(session_id, expected_generation),
+            replace_existing=True,
+            misfire_grace_time=300,
+        )
+    except Exception as exc:
+        logger.error(
+            "Voice scheduler registration failed: session=%d generation=%d",
+            session_id,
+            expected_generation,
+            exc_info=True,
+        )
+        raise VoiceScheduleRegistrationError(
+            f"Could not register voice session {session_id} generation "
+            f"{expected_generation}"
+        ) from exc
+
+
+def schedule_voice_call(
+    session_id: int,
+    scheduled_at: Optional[datetime] = None,
+    *,
+    expected_generation: int,
+) -> bool:
     """
     Schedule a voice screening call.
 
@@ -453,12 +604,17 @@ def schedule_voice_call(session_id: int, scheduled_at: Optional[datetime] = None
     db = SessionLocal()
     try:
         session = db.execute(
-            select(VoiceScreeningSession).where(VoiceScreeningSession.id == session_id)
+            select(VoiceScreeningSession).where(
+                VoiceScreeningSession.id == session_id,
+                VoiceScreeningSession.result_generation == expected_generation,
+            )
+            .with_for_update()
         ).scalar_one_or_none()
 
         if session is None:
-            logger.error("Cannot schedule — session %d not found", session_id)
-            return
+            raise VoiceScheduleRegistrationError(
+                f"Voice session {session_id} generation {expected_generation} is stale or missing"
+            )
 
         config = db.execute(
             select(VoiceTenantConfig).where(VoiceTenantConfig.tenant_id == session.tenant_id)
@@ -483,16 +639,8 @@ def schedule_voice_call(session_id: int, scheduled_at: Optional[datetime] = None
         session.status = "scheduled"
         db.commit()
 
-        # Schedule via APScheduler (misfire_grace_time=300s prevents silent drops)
-        voice_scheduler.add_job(
-            execute_scheduled_call,
-            trigger="date",
-            run_date=call_time,
-            args=[session_id],
-            id=f"voice_call_{session_id}",
-            replace_existing=True,
-            misfire_grace_time=300,
-        )
+        # DB commit above is durable truth; registration may be reconciled later.
+        _register_scheduled_job(session_id, expected_generation, call_time)
 
         logger.info(
             "Voice call scheduled: session=%d time=%s (utc=%s) phone=%s",
@@ -500,16 +648,23 @@ def schedule_voice_call(session_id: int, scheduled_at: Optional[datetime] = None
             call_time.astimezone(timezone.utc).isoformat(),
             session.phone_number,
         )
+        return True
 
+    except VoiceScheduleRegistrationError:
+        raise
     except Exception as e:
+        db.rollback()
         logger.error("Failed to schedule voice call %d: %s", session_id, e, exc_info=True)
+        raise VoiceScheduleRegistrationError(
+            f"Could not persist voice schedule for session {session_id}"
+        ) from e
     finally:
         db.close()
 
 
 # ─── Scheduler Lifecycle ──────────────────────────────────────────────────────
 
-def recover_pending_calls():
+def reconcile_scheduled_voice_calls():
     """
     Re-register any scheduled voice calls that were lost due to container restart.
 
@@ -530,6 +685,11 @@ def recover_pending_calls():
 
         recovered = 0
         expired = 0
+        existing_jobs = {
+            job.id: job
+            for job in voice_scheduler.get_jobs()
+            if job.id.startswith("voice_call_")
+        }
 
         for session in pending:
             scheduled_at = session.scheduled_at
@@ -537,32 +697,29 @@ def recover_pending_calls():
             if scheduled_at.tzinfo is None:
                 scheduled_at = scheduled_at.replace(tzinfo=timezone.utc)
 
-            job_id = f"voice_call_{session.id}"
+            generation = session.result_generation or 1
+            job_id = _voice_job_id(session.id, generation)
+            prefix = f"voice_call_{session.id}_"
+            for stale_id, stale_job in list(existing_jobs.items()):
+                if stale_id.startswith(prefix) and stale_id != job_id:
+                    stale_job.remove()
+                    existing_jobs.pop(stale_id, None)
+
+            if job_id in existing_jobs:
+                continue
 
             if scheduled_at > now:
                 # Future job — re-register with APScheduler
-                voice_scheduler.add_job(
-                    execute_scheduled_call,
-                    trigger="date",
-                    run_date=scheduled_at,
-                    args=[session.id],
-                    id=job_id,
-                    replace_existing=True,
-                    misfire_grace_time=300,
-                )
+                _register_scheduled_job(session.id, generation, scheduled_at)
                 recovered += 1
             else:
                 # Past-due job — fire immediately (within grace period)
                 grace = timedelta(minutes=10)
                 if (now - scheduled_at) <= grace:
-                    voice_scheduler.add_job(
-                        execute_scheduled_call,
-                        trigger="date",
-                        run_date=now + timedelta(seconds=10),
-                        args=[session.id],
-                        id=job_id,
-                        replace_existing=True,
-                        misfire_grace_time=300,
+                    _register_scheduled_job(
+                        session.id,
+                        generation,
+                        now + timedelta(seconds=10),
                     )
                     recovered += 1
                     logger.info(
@@ -587,9 +744,14 @@ def recover_pending_calls():
             logger.info("Voice call recovery: no pending calls found")
 
     except Exception as e:
-        logger.error("Failed to recover pending voice calls: %s", e, exc_info=True)
+        logger.error("Failed to reconcile scheduled voice calls: %s", e, exc_info=True)
     finally:
         db.close()
+
+
+def recover_pending_calls():
+    """Startup compatibility wrapper for durable scheduled-row reconciliation."""
+    return reconcile_scheduled_voice_calls()
 
 
 def start_voice_scheduler():
@@ -608,29 +770,54 @@ def start_voice_scheduler():
     # Try to acquire advisory lock (non-blocking)
     try:
         _scheduler_lock_session = SessionLocal()
-        result = _scheduler_lock_session.execute(
-            __import__("sqlalchemy").text("SELECT pg_try_advisory_lock(987654)")
-        ).scalar()
-        if result:
+        dialect_name = _scheduler_lock_session.get_bind().dialect.name
+        if dialect_name != "postgresql":
+            logger.warning(
+                "Voice scheduler distributed leadership unavailable for %s; "
+                "using explicit single-process fallback",
+                dialect_name,
+            )
             _scheduler_lock_acquired = True
-            logger.info("Advisory lock acquired — this worker is the scheduler leader")
-        else:
-            _scheduler_lock_acquired = False
             _scheduler_lock_session.close()
             _scheduler_lock_session = None
-            logger.info(
-                "Advisory lock held by another worker — skipping scheduler startup"
-            )
-            return
+        else:
+            result = _scheduler_lock_session.execute(
+                __import__("sqlalchemy").text("SELECT pg_try_advisory_lock(987654)")
+            ).scalar()
+            if result:
+                _scheduler_lock_acquired = True
+                logger.info("Advisory lock acquired — this worker is the scheduler leader")
+            else:
+                _scheduler_lock_acquired = False
+                _scheduler_lock_session.close()
+                _scheduler_lock_session = None
+                logger.info(
+                    "Advisory lock held by another worker — skipping scheduler startup"
+                )
+                return
     except Exception as e:
-        # SQLite or other DB without pg_try_advisory_lock — proceed without lock
-        logger.warning(
-            "Could not acquire advisory lock (%s) — proceeding without lock", e
-        )
-        _scheduler_lock_acquired = True  # Allow scheduler to start
+        dialect_name = None
+        if _scheduler_lock_session is not None:
+            try:
+                dialect_name = _scheduler_lock_session.get_bind().dialect.name
+            except Exception:
+                pass
         if _scheduler_lock_session:
             _scheduler_lock_session.close()
             _scheduler_lock_session = None
+        _scheduler_lock_acquired = False
+        if dialect_name == "postgresql":
+            logger.error(
+                "PostgreSQL advisory lock failed; voice scheduler will not start",
+                exc_info=True,
+            )
+            return
+        logger.warning(
+            "Could not inspect scheduler lock for non-PostgreSQL test DB (%s); "
+            "using explicit single-process fallback",
+            e,
+        )
+        _scheduler_lock_acquired = True
 
     # Process retries every 15 minutes
     voice_scheduler.add_job(
@@ -645,6 +832,14 @@ def start_voice_scheduler():
         trigger="interval",
         minutes=15,
         id="voice_retry_periodic",
+        replace_existing=True,
+        misfire_grace_time=300,
+    )
+    voice_scheduler.add_job(
+        reconcile_scheduled_voice_calls,
+        trigger="interval",
+        minutes=2,
+        id="voice_schedule_reconcile_periodic",
         replace_existing=True,
         misfire_grace_time=300,
     )

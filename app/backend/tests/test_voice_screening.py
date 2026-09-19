@@ -644,6 +644,32 @@ class TestUpdateVoiceSession:
         db.refresh(session)
         assert session.status == "scheduled"
 
+    def test_patch_rejects_cancelled_session_same_generation(self, auth_client, db):
+        tenant_id = _get_tenant_id(auth_client, db)
+        candidate = _create_candidate(db, tenant_id)
+        session = VoiceScreeningSession(
+            tenant_id=tenant_id,
+            candidate_id=candidate.id,
+            phone_number="+14155551236",
+            status="cancelled",
+            result_generation=2,
+        )
+        db.add(session)
+        db.commit()
+
+        resp = auth_client.patch(
+            f"/api/voice/sessions/{session.id}",
+            json={
+                "expected_generation": 2,
+                "status": "in_progress",
+            },
+            headers=_INTERNAL_HEADERS,
+        )
+
+        assert resp.status_code == 409
+        db.refresh(session)
+        assert session.status == "cancelled"
+
 
 # ─── Voice Screening Service Tests ────────────────────────────────────────────
 
@@ -842,6 +868,7 @@ class TestCancelVoiceSession:
         session.assessment_json = '{"old":true}'
         session.transcript_json = '{"old":true}'
         session.duration_seconds = 12
+        session.completion_event_id = "old-event"
         db.commit()
 
         resp = auth_client.post(f"/api/voice/sessions/{session.id}/cancel")
@@ -849,6 +876,12 @@ class TestCancelVoiceSession:
         data = resp.json()
         assert data["status"] == "cancelled"
         assert data["session_id"] == session.id
+        db.refresh(session)
+        assert session.result_generation == 2
+        assert session.completion_event_id is None
+        assert session.assessment_json == '{"old":true}'
+        assert session.transcript_json == '{"old":true}'
+        assert session.duration_seconds == 12
 
     def test_cancel_completed_session_fails(self, auth_client, db):
         """Cannot cancel a completed session."""
@@ -938,4 +971,334 @@ class TestRescheduleVoiceSession:
             "phone_number": "+14155551234",
         })
         assert resp.status_code == 404
+
+
+class TestPhase11VoiceScheduling:
+
+    def test_bulk_cancel_and_consent_denial_invalidate_generation(
+        self, auth_client, client, db
+    ):
+        tenant_id = _get_tenant_id(auth_client, db)
+        candidate = _create_candidate(db, tenant_id)
+        bulk_session = _create_voice_session(
+            db, tenant_id, candidate.id, status="scheduled"
+        )
+        consent_session = _create_voice_session(
+            db, tenant_id, candidate.id, status="in_progress"
+        )
+
+        bulk = auth_client.post(
+            "/api/voice/sessions/bulk-cancel",
+            json={"session_ids": [bulk_session.id]},
+        )
+        consent = client.post(
+            f"/api/interviews/sessions/{consent_session.id}/consent",
+            json={"consent": "denied"},
+        )
+
+        assert bulk.status_code == 200
+        assert consent.status_code == 200
+        db.expire_all()
+        assert db.get(VoiceScreeningSession, bulk_session.id).result_generation == 2
+        denied = db.get(VoiceScreeningSession, consent_session.id)
+        assert denied.status == "cancelled"
+        assert denied.result_generation == 2
+
+    def test_manual_quick_retry_creates_new_generation(self, auth_client, db):
+        tenant_id = _get_tenant_id(auth_client, db)
+        candidate = _create_candidate(db, tenant_id)
+        session = _create_voice_session(db, tenant_id, candidate.id, status="failed")
+        session.interview_depth = "quick"
+        session.completion_event_id = "failed-attempt"
+        db.commit()
+
+        response = auth_client.post(f"/api/interviews/sessions/{session.id}/retry")
+
+        assert response.status_code == 201
+        db.expire_all()
+        retried = db.get(VoiceScreeningSession, session.id)
+        assert retried.status == "scheduled"
+        assert retried.result_generation == 2
+        assert retried.retry_count == 1
+        assert retried.completion_event_id is None
+
+    def test_automatic_retry_creates_generation_bound_job(
+        self, auth_client, db, monkeypatch
+    ):
+        from sqlalchemy.orm import sessionmaker
+        from app.backend.services import voice_call_scheduler as scheduler
+
+        tenant_id = _get_tenant_id(auth_client, db)
+        candidate = _create_candidate(db, tenant_id)
+        session = _create_voice_session(db, tenant_id, candidate.id, status="failed")
+        session.result_generation = 5
+        config = VoiceTenantConfig(
+            tenant_id=tenant_id,
+            max_retries=3,
+            retry_intervals=[0],
+            timezone="UTC",
+        )
+        db.add(config)
+        db.commit()
+
+        jobs = []
+        session_factory = sessionmaker(bind=db.get_bind(), expire_on_commit=False)
+        monkeypatch.setattr(scheduler, "SessionLocal", session_factory)
+        monkeypatch.setattr(
+            scheduler.voice_scheduler,
+            "add_job",
+            lambda _func, **kwargs: jobs.append(kwargs),
+        )
+
+        scheduler.process_voice_retries()
+
+        db.expire_all()
+        retried = db.get(VoiceScreeningSession, session.id)
+        assert retried.result_generation == 6
+        assert retried.retry_count == 1
+        assert retried.status == "scheduled"
+        assert jobs[0]["id"] == f"voice_call_{session.id}_6"
+        assert jobs[0]["args"] == [session.id, 6]
+
+    def test_old_scheduler_callback_after_cancel_does_not_dispatch(
+        self, auth_client, db, monkeypatch
+    ):
+        from sqlalchemy.orm import sessionmaker
+        from app.backend.services import livekit_cloud_dispatch
+        from app.backend.services import voice_call_scheduler as scheduler
+
+        tenant_id = _get_tenant_id(auth_client, db)
+        candidate = _create_candidate(db, tenant_id)
+        session = _create_voice_session(db, tenant_id, candidate.id, status="scheduled")
+        session_factory = sessionmaker(bind=db.get_bind(), expire_on_commit=False)
+        monkeypatch.setattr(scheduler, "SessionLocal", session_factory)
+
+        dispatched = []
+        monkeypatch.setattr(livekit_cloud_dispatch, "is_cloud_voice_enabled", lambda: True)
+        monkeypatch.setattr(
+            livekit_cloud_dispatch,
+            "dispatch_screening_call",
+            lambda payload: dispatched.append(payload) or {"success": True},
+        )
+
+        response = auth_client.post(f"/api/voice/sessions/{session.id}/cancel")
+        assert response.status_code == 200
+        scheduler.execute_scheduled_call(session.id, 1)
+
+        db.expire_all()
+        cancelled = db.get(VoiceScreeningSession, session.id)
+        assert dispatched == []
+        assert cancelled.status == "cancelled"
+        assert cancelled.result_generation == 2
+
+    def test_cancel_after_ringing_claim_skips_provider(self, auth_client, db, monkeypatch):
+        from sqlalchemy.orm import sessionmaker
+        from app.backend.services import livekit_cloud_dispatch
+        from app.backend.services import voice_call_scheduler as scheduler
+        from app.backend.services.reliability.voice_attempt import invalidate_voice_attempt
+
+        tenant_id = _get_tenant_id(auth_client, db)
+        candidate = _create_candidate(db, tenant_id)
+        session = _create_voice_session(db, tenant_id, candidate.id, status="scheduled")
+        session_factory = sessionmaker(bind=db.get_bind(), expire_on_commit=False)
+        monkeypatch.setattr(scheduler, "SessionLocal", session_factory)
+        dispatched = []
+        monkeypatch.setattr(livekit_cloud_dispatch, "is_cloud_voice_enabled", lambda: True)
+        monkeypatch.setattr(
+            livekit_cloud_dispatch,
+            "dispatch_screening_call",
+            lambda payload: dispatched.append(payload) or {"success": True},
+        )
+
+        def cancel_before_provider(session_id, expected_generation):
+            cancel_db = session_factory()
+            try:
+                current = cancel_db.get(VoiceScreeningSession, session_id)
+                invalidate_voice_attempt(current, next_status="cancelled")
+                cancel_db.commit()
+            finally:
+                cancel_db.close()
+            return False
+
+        monkeypatch.setattr(
+            scheduler, "_dispatch_attempt_is_current", cancel_before_provider
+        )
+        scheduler.execute_scheduled_call(session.id, 1)
+
+        db.expire_all()
+        current = db.get(VoiceScreeningSession, session.id)
+        assert dispatched == []
+        assert current.status == "cancelled"
+        assert current.result_generation == 2
+
+    def test_post_provider_stale_write_cannot_mutate_new_generation(
+        self, auth_client, db, monkeypatch
+    ):
+        from sqlalchemy.orm import sessionmaker
+        from app.backend.services import livekit_cloud_dispatch
+        from app.backend.services import voice_call_scheduler as scheduler
+        from app.backend.services.reliability.voice_attempt import invalidate_voice_attempt
+
+        tenant_id = _get_tenant_id(auth_client, db)
+        candidate = _create_candidate(db, tenant_id)
+        session = _create_voice_session(db, tenant_id, candidate.id, status="scheduled")
+        session_factory = sessionmaker(bind=db.get_bind(), expire_on_commit=False)
+        monkeypatch.setattr(scheduler, "SessionLocal", session_factory)
+        monkeypatch.setattr(livekit_cloud_dispatch, "is_cloud_voice_enabled", lambda: True)
+
+        def dispatch_then_cancel(_payload):
+            cancel_db = session_factory()
+            try:
+                current = cancel_db.get(VoiceScreeningSession, session.id)
+                invalidate_voice_attempt(current, next_status="cancelled")
+                cancel_db.commit()
+            finally:
+                cancel_db.close()
+            return {"success": True, "room_name": "old-room", "dispatch_id": "old"}
+
+        monkeypatch.setattr(
+            livekit_cloud_dispatch, "dispatch_screening_call", dispatch_then_cancel
+        )
+        scheduler.execute_scheduled_call(session.id, 1)
+
+        db.expire_all()
+        current = db.get(VoiceScreeningSession, session.id)
+        assert current.status == "cancelled"
+        assert current.result_generation == 2
+
+    def test_registration_failure_retains_durable_intent_and_recovers(
+        self, auth_client, db, monkeypatch
+    ):
+        from sqlalchemy.orm import sessionmaker
+        from app.backend.services import voice_call_scheduler as scheduler
+
+        tenant_id = _get_tenant_id(auth_client, db)
+        candidate = _create_candidate(db, tenant_id)
+        session = _create_voice_session(db, tenant_id, candidate.id, status="pending")
+        session_factory = sessionmaker(bind=db.get_bind(), expire_on_commit=False)
+        monkeypatch.setattr(scheduler, "SessionLocal", session_factory)
+
+        monkeypatch.setattr(
+            scheduler.voice_scheduler,
+            "add_job",
+            MagicMock(side_effect=RuntimeError("registration failed")),
+        )
+        with pytest.raises(scheduler.VoiceScheduleRegistrationError):
+            scheduler.schedule_voice_call(
+                session.id,
+                datetime.now(timezone.utc) + timedelta(minutes=5),
+                expected_generation=1,
+            )
+
+        db.expire_all()
+        durable = db.get(VoiceScreeningSession, session.id)
+        assert durable.status == "scheduled"
+        assert durable.result_generation == 1
+
+        jobs = {}
+        registrations = []
+
+        def add_job(_func, **kwargs):
+            jobs[kwargs["id"]] = kwargs
+            registrations.append(kwargs["id"])
+
+        class RegisteredJob:
+            def __init__(self, job_id):
+                self.id = job_id
+
+            def remove(self):
+                jobs.pop(self.id, None)
+
+        monkeypatch.setattr(scheduler.voice_scheduler, "add_job", add_job)
+        monkeypatch.setattr(
+            scheduler.voice_scheduler,
+            "get_jobs",
+            lambda: [RegisteredJob(job_id) for job_id in jobs],
+        )
+        scheduler.reconcile_scheduled_voice_calls()
+        scheduler.reconcile_scheduled_voice_calls()
+
+        assert list(jobs) == [f"voice_call_{session.id}_1"]
+        assert registrations == [f"voice_call_{session.id}_1"]
+        assert jobs[f"voice_call_{session.id}_1"]["args"] == [session.id, 1]
+
+    def test_reconciliation_replaces_stale_generation_job(
+        self, auth_client, db, monkeypatch
+    ):
+        from sqlalchemy.orm import sessionmaker
+        from app.backend.services import voice_call_scheduler as scheduler
+
+        tenant_id = _get_tenant_id(auth_client, db)
+        candidate = _create_candidate(db, tenant_id)
+        session = _create_voice_session(db, tenant_id, candidate.id, status="scheduled")
+        session.result_generation = 7
+        session.scheduled_at = datetime.now(timezone.utc) + timedelta(minutes=5)
+        db.commit()
+        session_factory = sessionmaker(bind=db.get_bind(), expire_on_commit=False)
+        monkeypatch.setattr(scheduler, "SessionLocal", session_factory)
+
+        jobs = {f"voice_call_{session.id}_6": None}
+        removed = []
+
+        class RegisteredJob:
+            def __init__(self, job_id):
+                self.id = job_id
+
+            def remove(self):
+                removed.append(self.id)
+                jobs.pop(self.id, None)
+
+        def add_job(_func, **kwargs):
+            jobs[kwargs["id"]] = kwargs
+
+        monkeypatch.setattr(
+            scheduler.voice_scheduler,
+            "get_jobs",
+            lambda: [RegisteredJob(job_id) for job_id in list(jobs)],
+        )
+        monkeypatch.setattr(scheduler.voice_scheduler, "add_job", add_job)
+
+        scheduler.reconcile_scheduled_voice_calls()
+
+        assert removed == [f"voice_call_{session.id}_6"]
+        assert list(jobs) == [f"voice_call_{session.id}_7"]
+        assert jobs[f"voice_call_{session.id}_7"]["args"] == [session.id, 7]
+
+    def test_postgres_advisory_lock_error_fails_closed(self, monkeypatch):
+        from app.backend.services import voice_call_scheduler as scheduler
+
+        lock_session = MagicMock()
+        lock_session.get_bind.return_value.dialect.name = "postgresql"
+        lock_session.execute.side_effect = RuntimeError("database unavailable")
+        fake_scheduler = MagicMock()
+        fake_scheduler.running = False
+        monkeypatch.setattr(scheduler, "SessionLocal", lambda: lock_session)
+        monkeypatch.setattr(scheduler, "voice_scheduler", fake_scheduler)
+        scheduler._scheduler_lock_acquired = False
+        scheduler._scheduler_lock_session = None
+
+        scheduler.start_voice_scheduler()
+
+        fake_scheduler.start.assert_not_called()
+        assert scheduler._scheduler_lock_acquired is False
+
+    def test_sqlite_scheduler_fallback_is_explicit(self, monkeypatch):
+        from app.backend.services import voice_call_scheduler as scheduler
+
+        lock_session = MagicMock()
+        lock_session.get_bind.return_value.dialect.name = "sqlite"
+        lock_session.execute.return_value.scalars.return_value.all.return_value = []
+        fake_scheduler = MagicMock()
+        fake_scheduler.running = False
+        monkeypatch.setattr(scheduler, "SessionLocal", lambda: lock_session)
+        monkeypatch.setattr(scheduler, "voice_scheduler", fake_scheduler)
+        scheduler._scheduler_lock_acquired = False
+        scheduler._scheduler_lock_session = None
+
+        scheduler.start_voice_scheduler()
+
+        fake_scheduler.start.assert_called_once()
+        assert scheduler._scheduler_lock_acquired is True
+        scheduler._scheduler_lock_acquired = False
+        scheduler._scheduler_lock_session = None
 

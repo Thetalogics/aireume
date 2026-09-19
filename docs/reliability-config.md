@@ -57,3 +57,23 @@ is the durable operation identity. A retry reuses the existing job and hold.
 Successful completion marks the hold `consumed`; terminal pre-billable failure
 marks it `released`; retrying keeps it `pending`. Released operations are never
 reactivated.
+
+Reservation primitives are caller-transaction-owned. A release locks the
+reservation before conditionally decrementing tenant usage; only a successful
+decrement may transition the reservation to `released` or set a job's
+`quota_released` marker.
+
+## Voice attempt and scheduler lifecycle
+
+`result_generation` is the immutable voice-attempt token. Reschedule, retry,
+cancel, consent denial, and terminal escalation increment it exactly once.
+`scheduled` is dispatchable; `failed`, `no_answer`, and `pending` are
+retry-eligible outcomes; `completed`, `cancelled`, `ended`, `escalated`, and
+`voicemail` are terminal.
+
+APScheduler jobs use `voice_call_{session_id}_{generation}` and carry both
+values as callback arguments. Dispatch checks generation/status before
+claiming `scheduled -> ringing`, immediately before the provider request, and
+before applying the provider result. PostgreSQL remains the durable scheduling
+source; the elected scheduler leader reconciles missing in-memory jobs every
+two minutes and at startup.

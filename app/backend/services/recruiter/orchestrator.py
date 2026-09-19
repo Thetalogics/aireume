@@ -31,6 +31,10 @@ from app.backend.services.recruiter.evaluation_agents import (
 from app.backend.services.recruiter.fitment_adjuster import FitmentAdjuster
 from app.backend.services.recruiter.recommendation_agent import RecommendationAgent
 from app.backend.services.recruiter.copilot_agent import CopilotAgent
+from app.backend.services.reliability.voice_attempt import (
+    VOICE_TERMINAL_STATUSES,
+    invalidate_voice_attempt,
+)
 
 logger = logging.getLogger("aria.recruiter")
 
@@ -186,7 +190,11 @@ class RecruiterOrchestrator:
         # Schedule the call
         from app.backend.services.voice_call_scheduler import schedule_voice_call
 
-        schedule_voice_call(voice_session.id, scheduled_at)
+        schedule_voice_call(
+            voice_session.id,
+            scheduled_at,
+            expected_generation=voice_session.result_generation,
+        )
 
         # Create the recruiter interview session
         interview_session = RecruiterInterviewSession(
@@ -561,8 +569,8 @@ class RecruiterOrchestrator:
                     VoiceScreeningSession.tenant_id == session.tenant_id,
                 )
             ).scalar_one_or_none()
-            if voice_session and voice_session.status not in ("completed", "failed"):
-                voice_session.status = "cancelled"
+            if voice_session and voice_session.status not in VOICE_TERMINAL_STATUSES:
+                invalidate_voice_attempt(voice_session, next_status="cancelled")
                 voice_session.ended_at = datetime.now(timezone.utc)
 
         self.db.commit()

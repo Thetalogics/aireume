@@ -62,6 +62,10 @@ from app.backend.models.schemas import (
     VoiceTenantConfigUpdate,
 )
 from app.backend.services.recruiter.orchestrator import RecruiterOrchestrator
+from app.backend.services.reliability.voice_attempt import (
+    VOICE_TERMINAL_STATUSES,
+    invalidate_voice_attempt,
+)
 
 logger = logging.getLogger("aria.interviews")
 
@@ -240,7 +244,11 @@ async def _create_quick_session(
     db.refresh(session)
 
     from app.backend.services.voice_call_scheduler import schedule_voice_call
-    schedule_voice_call(session.id, scheduled_at)
+    schedule_voice_call(
+        session.id,
+        scheduled_at,
+        expected_generation=session.result_generation,
+    )
 
     return {
         "session_id": session.id,
@@ -654,7 +662,7 @@ async def cancel_interview_session(
     if session is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
 
-    if session.status in ("completed", "cancelled", "ended"):
+    if session.status in VOICE_TERMINAL_STATUSES:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Cannot cancel session in '{session.status}' status",
@@ -663,7 +671,7 @@ async def cancel_interview_session(
     from app.backend.services.voice_call_scheduler import cancel_pending_retries
     cancel_pending_retries(session_id)
 
-    session.status = "cancelled"
+    invalidate_voice_attempt(session, next_status="cancelled")
     session.ended_at = datetime.now(timezone.utc)
 
     # Cancel associated recruiter session if present
@@ -713,6 +721,9 @@ async def record_candidate_consent(
 
     voice_session.consent_recorded = True
     voice_session.consent_status = consent
+    if consent == "denied" and voice_session.status not in VOICE_TERMINAL_STATUSES:
+        invalidate_voice_attempt(voice_session, next_status="cancelled")
+        voice_session.ended_at = datetime.now(timezone.utc)
 
     recruiter_session = db.execute(
         select(RecruiterInterviewSession).where(
@@ -847,10 +858,18 @@ async def retry_interview_session(
 
     if session.interview_depth == "quick":
         from app.backend.services.voice_call_scheduler import schedule_voice_call
-        session.status = "scheduled"
+        invalidate_voice_attempt(
+            session,
+            next_status="scheduled",
+            clear_attempt_outputs=True,
+        )
         session.retry_count += 1
         db.commit()
-        schedule_voice_call(session.id, None)
+        schedule_voice_call(
+            session.id,
+            None,
+            expected_generation=session.result_generation,
+        )
         return {
             "session_id": session.id,
             "status": session.status,
@@ -1310,12 +1329,15 @@ def _handle_quick_screen_escalation(session: VoiceScreeningSession, db: Session)
         scheduled_at=scheduled_time,
     )
     db.add(new_session)
-    db.flush()
+    db.commit()
+    db.refresh(new_session)
 
     from app.backend.services.voice_call_scheduler import schedule_voice_call
-    schedule_voice_call(new_session.id, scheduled_time)
-
-    db.commit()
+    schedule_voice_call(
+        new_session.id,
+        scheduled_time,
+        expected_generation=new_session.result_generation,
+    )
     logger.info(
         "Auto-escalation: created session %s scheduled at %s",
         new_session.id, scheduled_time,
