@@ -394,6 +394,13 @@ class TestGeminiAnalysisHelpers:
         assert large > small
         assert compute_max_output_tokens("hi", json_mode=True) >= 4096
 
+    def test_gemini_3_json_requests_thinking_level(self):
+        from app.backend.services.llm_service import _gemini_thinking_config
+
+        assert _gemini_thinking_config("gemini-3.5-flash", True) == {"thinkingLevel": "minimal"}
+        assert _gemini_thinking_config("gemini-3.1-pro", True) == {"thinkingLevel": "low"}
+        assert _gemini_thinking_config("gemini-2.5-flash", True) == {"thinkingBudget": 0}
+
     @pytest.mark.asyncio
     async def test_gemini_raises_truncated_on_max_tokens_json(self, monkeypatch):
         from app.backend.services import llm_service

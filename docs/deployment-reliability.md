@@ -17,8 +17,9 @@ downgrade 082→081 / upgrade 081→082 cycle.
 
 ## Migration owner
 
-Only the one-shot `migrate` service runs Alembic (`RUN_DB_MIGRATIONS=1` → `python -m app.backend.services.migration_owner`).
-Backend and worker set `RUN_DB_MIGRATIONS=0` and wait for `service_completed_successfully`.
+`RUN_DB_MIGRATIONS=1` runs `python -m app.backend.services.migration_owner` before the process serves.
+Production backend and worker stay at `0` and wait for the one-shot `migrate` service (`service_completed_successfully`) because `docker compose up` recreates it.
+The Portainer stack `aria-staging-main` has no migrate service. Its backend sets `RUN_DB_MIGRATIONS=1`, so the image entrypoint runs `upgrade head` before uvicorn binds. Watchtower only recreates `staging-backend`, `staging-frontend`, and `staging-nginx`.
 Command is `upgrade head` (singular). A PostgreSQL advisory lock prevents concurrent manual upgrades.
 
 ## Connection budget (PostgreSQL `max_connections=200`)

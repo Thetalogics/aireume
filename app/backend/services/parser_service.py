@@ -1980,21 +1980,30 @@ async def _llm_extract_structured(raw_text: str, data: Dict[str, Any]) -> Dict[s
     )
 
     try:
+        import asyncio
+
         from app.backend.services.app_llm_client import generate_app_json
 
-        parsed = await generate_app_json(
-            user_prompt,
-            system=system_prompt,
-            max_output_tokens=1500,
-            temperature=0.1,
-            timeout=50.0,
-            log_label="structured_extract",
+        # Optional gap-fill. Two Gemini read timeouts (60s) blow Cloudflare's 100s and return 524.
+        parsed = await asyncio.wait_for(
+            generate_app_json(
+                user_prompt,
+                system=system_prompt,
+                max_output_tokens=1500,
+                temperature=0.1,
+                timeout=10.0,
+                log_label="structured_extract",
+            ),
+            timeout=10.0,
         )
         if not parsed or not isinstance(parsed, dict):
             return {}
 
         return {k: v for k, v in parsed.items() if k in missing_fields and isinstance(v, list)}
 
+    except asyncio.TimeoutError:
+        logger.warning("[LLM Structured] timed out after 10s; continuing with parser output")
+        return {}
     except Exception as e:
         logger.warning("[LLM Structured] Failed: %s: %s", type(e).__name__, str(e)[:200])
         return {}

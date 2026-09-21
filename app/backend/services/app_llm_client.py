@@ -138,7 +138,7 @@ async def _try_gemini(
             len(exc.result.text),
         )
     except Exception as exc:
-        logger.warning("%s Gemini call failed: %s", log_label, exc)
+        logger.warning("%s Gemini call failed: %s: %s", log_label, type(exc).__name__, exc)
     return None
 
 

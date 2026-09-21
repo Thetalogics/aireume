@@ -101,7 +101,8 @@ services:
       - LLM_NARRATIVE_TIMEOUT=${LLM_NARRATIVE_TIMEOUT:-300}
       - OLLAMA_STARTUP_REQUIRED=${OLLAMA_STARTUP_REQUIRED:-1}
       - VOICE_AGENT_URL=http://voice-agent:8002
-      - RUN_DB_MIGRATIONS=0
+      # Watchtower restarts this container and never re-runs the exited migrate job.
+      - RUN_DB_MIGRATIONS=1
     depends_on:
       postgres:
         condition: service_healthy

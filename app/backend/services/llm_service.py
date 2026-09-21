@@ -180,15 +180,23 @@ def compute_max_output_tokens(
     return max(floor, min(ceiling, scaled))
 
 
-def _gemini_thinking_config(model: str, json_mode: bool) -> dict[str, int] | None:
-    """Reduce thinking-token use for structured JSON (thinking counts toward maxOutputTokens)."""
+def _gemini_thinking_config(model: str, json_mode: bool) -> dict[str, int | str] | None:
+    """Ask Gemini to answer without a long hidden think.
+
+    generateContent sends one body when generation finishes. Gemini 3 defaults to
+    thinkingLevel medium and does not honor thinkingBudget, so the client sits on
+    an open socket until GEMINI_READ with no bytes. Gemini 2.5 still uses thinkingBudget.
+    """
+    lowered = model.lower()
+    if "gemini-3" in lowered:
+        # ponytail: minimal (low on Pro, which rejects minimal). Raise if JSON quality drops.
+        if "pro" in lowered and "flash" not in lowered:
+            return {"thinkingLevel": "low"}
+        return {"thinkingLevel": "minimal"}
     if not json_mode:
         return None
-    lowered = model.lower()
     if "pro" in lowered:
         return {"thinkingBudget": int(os.getenv("GEMINI_PRO_THINKING_BUDGET", "128"))}
-    if "flash" in lowered or "flash-lite" in lowered:
-        return {"thinkingBudget": 0}
     return {"thinkingBudget": 0}
 
 

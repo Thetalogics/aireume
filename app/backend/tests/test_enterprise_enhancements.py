@@ -176,6 +176,17 @@ class TestBiasAuditService:
 
 # ─── PII Redaction (International Patterns) ───────────────────────────────────
 
+def test_pii_does_not_download_large_spacy_model(monkeypatch):
+    """Presidio's default engine fetches en_core_web_lg on first analyze request."""
+    from app.backend.services.pii_redaction_service import PIIRedactionService
+
+    monkeypatch.setattr("spacy.util.is_package", lambda _name: False)
+    service = PIIRedactionService()
+    assert service.use_presidio is False
+    result = service.redact_pii("Reach me at candidate@example.com")
+    assert "candidate@example.com" not in result.redacted_text
+
+
 class TestInternationalPII:
     def test_uk_nino_redaction(self):
         from app.backend.services.pii_redaction_service import PIIRedactionService

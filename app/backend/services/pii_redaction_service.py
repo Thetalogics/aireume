@@ -37,18 +37,25 @@ class PIIRedactionService:
         self.anonymizer = None
         
         try:
+            import spacy
             from presidio_analyzer import AnalyzerEngine
+            from presidio_analyzer.nlp_engine import NlpEngineProvider
             from presidio_anonymizer import AnonymizerEngine
-            
-            self.analyzer = AnalyzerEngine()
+
+            # Default AnalyzerEngine pulls en_core_web_lg (400MB) at request time.
+            # The image only ships en_core_web_sm.
+            if not spacy.util.is_package("en_core_web_sm"):
+                raise RuntimeError("en_core_web_sm is not installed")
+            nlp_engine = NlpEngineProvider(nlp_configuration={
+                "nlp_engine_name": "spacy",
+                "models": [{"lang_code": "en", "model_name": "en_core_web_sm"}],
+            }).create_engine()
+            self.analyzer = AnalyzerEngine(nlp_engine=nlp_engine, supported_languages=["en"])
             self.anonymizer = AnonymizerEngine()
             self.use_presidio = True
-            logger.info("Presidio PII redaction initialized successfully")
-        except ImportError:
-            logger.warning(
-                "Presidio not available. Using regex fallback for PII redaction. "
-                "Install with: pip install presidio-analyzer presidio-anonymizer"
-            )
+            logger.info("Presidio PII redaction initialized with en_core_web_sm")
+        except Exception as exc:
+            logger.warning("Presidio unavailable (%s). Using regex PII redaction.", exc)
     
     def redact_pii(self, text: str) -> RedactionResult:
         """

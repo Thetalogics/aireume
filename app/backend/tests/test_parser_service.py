@@ -1,8 +1,11 @@
+import asyncio
+
 import pytest
 from unittest.mock import patch, MagicMock
 from app.backend.services.parser_service import (
     ResumeParser, parse_resume, enrich_parsed_resume,
-    _extract_name_ner, _get_spacy_model, _name_from_filename
+    _extract_name_ner, _get_spacy_model, _name_from_filename,
+    _llm_extract_structured,
 )
 
 
@@ -326,3 +329,24 @@ class TestFilenameNameExtraction:
         with patch('app.backend.services.parser_service._extract_name_ner', return_value="Alice Johnson"):
             enrich_parsed_resume(data, filename="Wrong Name.pdf")
             assert data["contact_info"]["name"] == "Alice Johnson"
+
+
+@pytest.mark.asyncio
+async def test_structured_extract_gives_up_within_10s():
+    """Gap-fill must not hold the analyze request through two Gemini read timeouts."""
+
+    async def hang(*_args, **_kwargs):
+        await asyncio.sleep(30)
+        return {"work_experience": [{"title": "Eng", "company": "Acme"}]}
+
+    data = {
+        "work_experience": [],
+        "education": [],
+    }
+    raw = "Bachelor of Science at Acme Technologies and Beta Solutions Ltd"
+    started = asyncio.get_running_loop().time()
+    with patch("app.backend.services.app_llm_client.generate_app_json", new=hang):
+        result = await _llm_extract_structured(raw, data)
+    elapsed = asyncio.get_running_loop().time() - started
+    assert result == {}
+    assert elapsed < 12

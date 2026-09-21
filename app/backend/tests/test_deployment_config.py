@@ -12,6 +12,23 @@ def test_entrypoint_does_not_auto_migrate():
     assert "python -m app.backend.services.migration_owner" in ENTRY
 
 
+def _service_block(text: str, name: str, until: str) -> str:
+    return text.split(f"\n  {name}:\n", 1)[1].split(f"\n  {until}:\n", 1)[0]
+
+
+def test_staging_backend_migrates_on_watchtower_restart():
+    """Portainer aria-staging-main has no migrate service; the backend entrypoint upgrades first."""
+    text = (ROOT / "docker-compose.main.staging.yml").read_text(encoding="utf-8")
+    backend = _service_block(text, "backend", "frontend")
+    assert "RUN_DB_MIGRATIONS=1" in backend
+    assert "\n  migrate:\n" not in text
+    assert "staging-backend" in text.split("watchtower:", 1)[1]
+
+    legacy = (ROOT / "docker-compose.staging.yml").read_text(encoding="utf-8")
+    legacy_backend = _service_block(legacy, "backend", "frontend")
+    assert "RUN_DB_MIGRATIONS=1" in legacy_backend
+
+
 def test_prod_compose_has_single_migration_owner():
     assert "migrate:" in PROD
     assert "service_completed_successfully" in PROD
