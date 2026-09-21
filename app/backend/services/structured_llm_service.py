@@ -41,6 +41,24 @@ def _outlines_available() -> bool:
     return importlib.util.find_spec("outlines") is not None
 
 
+def schema_for_developer_api(output_type: type[BaseModel]) -> dict[str, Any]:
+    """Pydantic schemas set additionalProperties; the Developer API rejects that key."""
+    schema = output_type.model_json_schema()
+
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            node.pop("additionalProperties", None)
+            node.pop("additional_properties", None)
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(schema)
+    return schema
+
+
 def parse_outlines_json_text(raw: str, output_type: type[T]) -> dict[str, Any] | None:
     if not raw or len(str(raw).strip()) < 2:
         return None
@@ -64,6 +82,7 @@ async def _try_outlines_gemini(
     log_label: str,
 ) -> str | None:
     from app.backend.services.llm_service import (
+        _gemini_thinking_config,
         compute_max_output_tokens,
         resolve_gemini_model_for_label,
         use_gemini_for_analysis,
@@ -78,7 +97,6 @@ async def _try_outlines_gemini(
     try:
         from google import genai
         from google.genai import types as genai_types
-        from outlines.models import from_gemini
         from app.backend.services.reliability.timeouts import GEMINI_READ
     except ImportError:
         log.debug("%s Outlines Gemini dependencies unavailable", log_label)
@@ -101,13 +119,24 @@ async def _try_outlines_gemini(
             api_key=api_key,
             http_options=genai_types.HttpOptions(timeout=int(GEMINI_READ * 1000)),
         )
-        model = from_gemini(client, gemini_model)
-        return model.generate(
-            prompt,
-            output_type,
-            max_output_tokens=effective_max,
-            temperature=temperature,
+        config: dict[str, Any] = {
+            "temperature": temperature,
+            "max_output_tokens": effective_max,
+            "response_mime_type": "application/json",
+            "response_schema": schema_for_developer_api(output_type),
+        }
+        thinking = _gemini_thinking_config(gemini_model, True)
+        if thinking:
+            if "thinkingLevel" in thinking:
+                config["thinking_config"] = {"thinking_level": thinking["thinkingLevel"]}
+            else:
+                config["thinking_config"] = {"thinking_budget": thinking["thinkingBudget"]}
+        response = client.models.generate_content(
+            model=gemini_model,
+            contents=prompt,
+            config=config,
         )
+        return response.text or ""
 
     try:
         text = await asyncio.wait_for(

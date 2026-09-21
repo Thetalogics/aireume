@@ -9,6 +9,7 @@ from app.backend.services.structured_llm_service import (
     invoke_outlines_json_resilient,
     is_structured_llm_enabled,
     parse_outlines_json_text,
+    schema_for_developer_api,
 )
 
 
@@ -35,6 +36,25 @@ def test_parse_outlines_json_text_validates_schema():
 
 def test_parse_outlines_json_text_rejects_invalid():
     assert parse_outlines_json_text('{"wrong": true}', InterviewKitLLMResponse) is None
+
+
+def test_developer_api_schema_omits_additional_properties():
+    raw = json.dumps(NarrativeLLMResponse.model_json_schema())
+    assert "additionalProperties" in raw
+    schema = schema_for_developer_api(NarrativeLLMResponse)
+
+    def walk(node):
+        if isinstance(node, dict):
+            assert "additionalProperties" not in node
+            assert "additional_properties" not in node
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(schema)
+    assert schema["type"] == "object"
 
 
 @pytest.mark.asyncio

@@ -375,6 +375,15 @@ class TestGeminiAnalysisHelpers:
         with pytest.raises(RuntimeError, match="GEMINI_MODEL"):
             get_gemini_model()
 
+    def test_get_gemini_model_maps_display_name_to_api_id(self, monkeypatch):
+        from app.backend.services.llm_service import get_gemini_model, resolve_gemini_model_for_label
+
+        monkeypatch.setenv("GEMINI_MODEL", "Gemini 3.8 Flash")
+        assert get_gemini_model() == "gemini-3.8-flash"
+
+        monkeypatch.setenv("GEMINI_NARRATIVE_MODEL", "models/Gemini 3.8 Flash")
+        assert resolve_gemini_model_for_label("narrative_outlines_tier1") == "gemini-3.8-flash"
+
     def test_get_gemini_kit_model_falls_back_to_gemini_model(self, monkeypatch):
         from app.backend.services.llm_service import get_gemini_kit_model
 

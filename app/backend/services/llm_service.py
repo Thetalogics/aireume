@@ -93,18 +93,31 @@ def require_env(name: str, *, purpose: str = "") -> str:
     return val
 
 
+def normalize_gemini_model_id(raw: str) -> str:
+    """Turn a console display name into a generateContent model id.
+
+    Portainer and AI Studio show "Gemini 3.8 Flash". The API id is
+    gemini-3.8-flash; the display name is rejected as an unexpected format.
+    """
+    value = raw.strip()
+    if "/" in value:
+        value = value.rsplit("/", 1)[-1]
+    value = value.lower().replace("_", "-").replace(" ", "-")
+    return re.sub(r"-{2,}", "-", value).strip("-")
+
+
 def get_gemini_model() -> str:
-    return require_env("GEMINI_MODEL", purpose="Google Gemini LLM")
+    return normalize_gemini_model_id(require_env("GEMINI_MODEL", purpose="Google Gemini LLM"))
 
 
 def get_gemini_kit_model() -> str:
     kit = os.getenv("GEMINI_KIT_MODEL", "").strip()
-    return kit or get_gemini_model()
+    return normalize_gemini_model_id(kit) if kit else get_gemini_model()
 
 
 def get_gemini_voice_model() -> str:
     voice = os.getenv("GEMINI_MODEL_VOICE", "").strip()
-    return voice or get_gemini_model()
+    return normalize_gemini_model_id(voice) if voice else get_gemini_model()
 
 
 def get_openrouter_model() -> str:
@@ -150,7 +163,7 @@ def resolve_gemini_model_for_label(log_label: str) -> str:
         return get_gemini_kit_model()
     narrative = os.getenv("GEMINI_NARRATIVE_MODEL", "").strip()
     if narrative and "narrative" in label:
-        return narrative
+        return normalize_gemini_model_id(narrative)
     return get_gemini_model()
 
 
