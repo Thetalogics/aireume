@@ -21,7 +21,7 @@ import logging
 import httpx
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import select, func, or_
@@ -208,6 +208,7 @@ def get_voice_status():
 @router.post("/schedule", response_model=ScheduleVoiceCallResponse)
 def schedule_voice_call(
     body: ScheduleVoiceCallRequest,
+    request: Request,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -249,26 +250,42 @@ def schedule_voice_call(
         db.add(config)
         db.commit()
 
-    # Create session
-    session = VoiceScreeningSession(
-        tenant_id=user.tenant_id,
-        candidate_id=body.candidate_id,
-        jd_id=body.jd_id,
-        phone_number=body.phone_number,
-        direction="outbound",
-        status="scheduled",
-        scheduled_at=body.scheduled_at,
-    )
-    db.add(session)
-    db.commit()
-    db.refresh(session)
+    from app.backend.services.voice_call_scheduler import schedule_voice_call as register_voice_job
+    from app.backend.services.voice_schedule_idempotency import operation_key, schedule_once
 
-    # Schedule the call via APScheduler
-    from app.backend.services.voice_call_scheduler import schedule_voice_call
-    schedule_voice_call(
-        session.id,
-        body.scheduled_at,
-        expected_generation=session.result_generation,
+    def _create():
+        row = VoiceScreeningSession(
+            tenant_id=user.tenant_id,
+            candidate_id=body.candidate_id,
+            jd_id=body.jd_id,
+            phone_number=body.phone_number,
+            direction="outbound",
+            status="scheduled",
+            scheduled_at=body.scheduled_at,
+        )
+        db.add(row)
+        return row
+
+    def _register(row: VoiceScreeningSession):
+        register_voice_job(
+            row.id,
+            body.scheduled_at,
+            expected_generation=row.result_generation,
+        )
+
+    session, _replayed = schedule_once(
+        db,
+        tenant_id=user.tenant_id,
+        endpoint="POST:/api/voice/schedule",
+        key=operation_key(request, getattr(body, "operation_id", None)),
+        payload={
+            "candidate_id": body.candidate_id,
+            "jd_id": body.jd_id,
+            "phone_number": body.phone_number,
+            "scheduled_at": str(body.scheduled_at),
+        },
+        create_session=_create,
+        register_scheduler=_register,
     )
 
     return ScheduleVoiceCallResponse(

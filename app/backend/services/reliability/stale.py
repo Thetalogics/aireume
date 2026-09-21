@@ -83,6 +83,7 @@ def apply_narrative_if_generation(
     status: str,
     error: str | None = None,
     merge_analysis: dict | None = None,
+    screening_decision_id: int | None = None,
 ) -> WriteOutcome:
     values = {
         "narrative_json": json.dumps(narrative, default=str),
@@ -91,13 +92,16 @@ def apply_narrative_if_generation(
     }
     if merge_analysis is not None:
         values["analysis_result"] = json.dumps(merge_analysis, default=str)
+    filters = [
+        ScreeningResult.id == screening_result_id,
+        ScreeningResult.tenant_id == tenant_id,
+        ScreeningResult.analysis_generation == expected_generation,
+    ]
+    if screening_decision_id is not None:
+        filters.append(ScreeningResult.current_decision_id == screening_decision_id)
     result = db.execute(
         update(ScreeningResult)
-        .where(
-            ScreeningResult.id == screening_result_id,
-            ScreeningResult.tenant_id == tenant_id,
-            ScreeningResult.analysis_generation == expected_generation,
-        )
+        .where(*filters)
         .values(**values)
         .execution_options(synchronize_session=False)
     )

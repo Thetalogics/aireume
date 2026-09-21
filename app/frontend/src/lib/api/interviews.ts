@@ -1,4 +1,5 @@
 import api from './client'
+import { createOperationId } from '../../utils/createOperationId'
 
 // ─── Interview Evaluation & Scorecard ─────────────────────────────────────────
 
@@ -606,12 +607,15 @@ export async function suggestInterviewOpening(data = {}) {
   return res.data
 }
 
-export async function scheduleVoiceCall(candidateId, phoneNumber, jdId = null, scheduledAt = null) {
+export async function scheduleVoiceCall(candidateId, phoneNumber, jdId = null, scheduledAt = null, options = {}) {
+  const idempotencyKey = options.idempotencyKey || createOperationId('voice')
   const res = await api.post('/voice/schedule', {
     candidate_id: candidateId,
     phone_number: phoneNumber,
     jd_id: jdId,
     scheduled_at: scheduledAt,
+  }, {
+    headers: { 'X-Idempotency-Key': idempotencyKey },
   })
   return res.data
 }
@@ -741,8 +745,11 @@ export async function exportRecruiterSessions(params = {}) {
 // These functions call the unified /api/interviews/* backend routes.
 // They replace the legacy voice.py and recruiter.py endpoints.
 
-export async function createInterviewSession(payload) {
-  const { data } = await api.post('/interviews/sessions', payload)
+export async function createInterviewSession(payload, options = {}) {
+  const idempotencyKey = options.idempotencyKey || createOperationId('interview')
+  const { data } = await api.post('/interviews/sessions', payload, {
+    headers: { 'X-Idempotency-Key': idempotencyKey },
+  })
   return data
 }
 

@@ -70,6 +70,7 @@ jobs:
       RELIABILITY_POSTGRES_URL: postgresql+psycopg2://aria:aria@localhost:5432/aria_rel
       PHASE0_POSTGRES_URL: postgresql+psycopg2://aria:aria@localhost:5432/aria_rel
       RELIABILITY_REQUIRED: "1"
+      GOVERNANCE_POSTGRES_REQUIRED: "1"
       PYTHONPATH: ${{ github.workspace }}
     steps:
     - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -87,11 +88,23 @@ jobs:
         pip install -r app/backend/requirements.txt
         pip install pytest pytest-asyncio pytest-cov respx pytest-timeout
     - name: Migrate
-      run: alembic -c alembic.ini upgrade heads
+      run: alembic -c alembic.ini upgrade head
     - name: Reliability PostgreSQL tests (fail if skipped)
       run: |
         set -euo pipefail
-        python -m pytest app/backend/tests/test_reliability_postgres.py app/backend/tests/test_phase0_postgres.py -v --timeout=60 --tb=short
+        python -m pytest \
+          app/backend/tests/test_reliability_postgres.py \
+          app/backend/tests/test_phase0_postgres.py \
+          app/backend/tests/test_governance_postgres.py \
+          app/backend/tests/test_phase0_076_to_head.py \
+          app/backend/tests/test_request_idempotency.py \
+          app/backend/tests/test_voice_schedule_idempotency.py \
+          app/backend/tests/test_migration_owner_lock.py \
+          app/backend/tests/test_backup_restore.py \
+          app/backend/tests/test_deployment_config.py \
+          app/backend/tests/test_worker_health.py \
+          app/backend/tests/test_alembic_drift.py \
+          -v --timeout=120 --tb=short
         python -c "import os; assert os.environ.get('RELIABILITY_POSTGRES_URL')"
 
   reliability-redis:
@@ -129,7 +142,12 @@ jobs:
     - name: Redis reliability tests
       run: |
         python -c "import os; assert os.environ.get('REDIS_URL') and os.environ.get('RELIABILITY_REDIS_REQUIRED') == '1'"
-        python -m pytest app/backend/tests/test_reliability_redis.py -v --timeout=30
+        python -m pytest \
+          app/backend/tests/test_reliability_redis.py \
+          app/backend/tests/test_llm_concurrency_redis.py \
+          app/backend/tests/test_auth_rate_limit_redis.py \
+          app/backend/tests/test_rate_limit_headers_redis.py \
+          -v --timeout=30
 
   test-frontend:
     if: github.event_name != 'schedule'
@@ -251,9 +269,10 @@ jobs:
 
     - name: Run migrations up, then down, then up again
       run: |
-        alembic -c alembic.ini upgrade heads
+        alembic -c alembic.ini upgrade head
         alembic -c alembic.ini downgrade -1
-        alembic -c alembic.ini upgrade heads
+        alembic -c alembic.ini upgrade head
+        python -m pytest app/backend/tests/test_alembic_drift.py -v --tb=short
 
   secret-scan:
     runs-on: ubuntu-latest
@@ -308,11 +327,8 @@ jobs:
     - name: Python dependency vulnerability audit (pip-audit)
       run: |
         python -m pip install --upgrade pip pip-audit
-        # Unfixed transitives of python-jose 3.4.0: ecdsa (no patched release)
-        # and pyasn1 (jose requires pyasn1<0.5.0; DoS fixes are in 0.6.4).
-        # pytest 8.3.4 is kept for pytest-asyncio 0.24; PYSEC-2026-1845 is 9.0.3.
-        # diskcache 5.6.3 (outlines transitive): PYSEC-2026-2447 — local pickle RCE
-        # requires write access to cache dir; no PyPI fix release yet.
+        python scripts/check_pip_audit_exceptions.py
+        # Exceptions are reviewed in security/pip-audit-exceptions.json.
         pip-audit -r app/backend/requirements.txt \
           --ignore-vuln PYSEC-2026-1325 \
           --ignore-vuln PYSEC-2026-1845 \
@@ -321,6 +337,31 @@ jobs:
           --ignore-vuln PYSEC-2026-3455 \
           --ignore-vuln PYSEC-2026-3456 \
           --ignore-vuln PYSEC-2026-3457
+
+  compose-validate:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+    - name: Validate compose files
+      run: |
+        set -euo pipefail
+        export RELEASE_SHA=deadbeef
+        export POSTGRES_PASSWORD=x
+        export REDIS_PASSWORD=x
+        export JWT_SECRET_KEY=x
+        export INTERNAL_SERVICE_SECRET=x
+        export OLLAMA_API_KEY=x
+        export S3_ENDPOINT=https://example.invalid
+        export LIVEKIT_API_KEY=x
+        export LIVEKIT_API_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+        docker compose -f docker-compose.prod.yml config >/tmp/prod.yml
+        ! grep -E 'revanth2245/resume-[^:]+:latest' /tmp/prod.yml
+        grep -q 'REDIS_REQUIRED=1' docker-compose.prod.yml
+        grep -q 'migrate:' docker-compose.prod.yml
+        docker compose -f docker-compose.staging.yml config >/dev/null || true
+        docker compose -f docker-compose.main.staging.yml config >/dev/null || true
+        docker compose -f docker-compose.voice.staging.yml config >/dev/null || true
 
   filesystem-scan:
     runs-on: ubuntu-latest

@@ -42,13 +42,13 @@ jobs:
           fi
 
           if [ "$ENV" = "production" ]; then
-            echo "image_tag=latest" >> "$GITHUB_OUTPUT"
+            echo "image_tag=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
           else
             echo "image_tag=staging" >> "$GITHUB_OUTPUT"
           fi
 
           echo "environment=$ENV" >> "$GITHUB_OUTPUT"
-          echo "Branch: ${{ github.ref_name }} → Environment: $ENV → Tag: $([ "$ENV" = "production" ] && echo "latest" || echo "staging")"
+          echo "Branch: ${{ github.ref_name }} → Environment: $ENV → Tag: ${GITHUB_SHA}"
 
   # ─── Build and push images ─────────────────────────────────────────────
   build-and-push:
@@ -169,9 +169,10 @@ jobs:
           echo ""
           echo "Staging: Watchtower auto-pulls updated images within ~60 seconds (tag: staging)."
           echo "Production: Watchtower is MONITOR-ONLY by default (approval gate)."
-          echo "  Promote a production release manually on the VPS:"
+          echo "  Promote a production release manually on the VPS using the immutable SHA:"
+          echo "    export RELEASE_SHA=${{ github.sha }}"
           echo "    docker compose -f docker-compose.prod.yml pull"
           echo "    docker compose -f docker-compose.prod.yml up -d"
-          echo "Immutable git SHA tags were also pushed: ${{ github.sha }}"
+          echo "  Rollback: RELEASE_SHA=<previous known-good SHA> docker compose -f docker-compose.prod.yml up -d"
+          echo "Never deploy application :latest. Do not rebuild production after approval."
           echo "Backend image digest: ${{ needs.build-and-push.outputs.backend_digest }}"
-          echo "Promote this digest only; do not rebuild production from source after approval."

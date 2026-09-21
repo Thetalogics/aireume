@@ -211,6 +211,34 @@ GDPR_DELETION_RETRY_TOTAL = Counter(
 )
 
 # Custom metrics for batch operations
+DECISION_CREATED_TOTAL = Counter(
+    "aria_decision_created_total",
+    "Canonical screening decisions created",
+    ["decision_type"],
+)
+
+DECISION_REPRODUCTION_MISMATCH_TOTAL = Counter(
+    "aria_decision_reproduction_mismatch_total",
+    "Decision reproduction mismatches",
+    ["algorithm_version"],
+)
+
+HUMAN_OVERRIDE_TOTAL = Counter(
+    "aria_human_override_total",
+    "Human screening-decision overrides",
+    ["reason_code"],
+)
+
+DECISION_WITHOUT_PROVENANCE_TOTAL = Counter(
+    "aria_decision_without_provenance_total",
+    "Decisions stored without complete provenance",
+)
+
+NARRATIVE_GENERATION_FAILURE_TOTAL = Counter(
+    "aria_narrative_generation_failure_total",
+    "Decision-bound narrative generation failures",
+)
+
 BATCH_SIZE = Histogram(
     "aria_batch_size",
     "Number of resumes in batch requests",

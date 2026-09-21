@@ -15,13 +15,23 @@ from sqlalchemy.orm import Session
 from app.backend.db.database import get_db
 from app.backend.middleware.auth import get_current_user, require_admin
 from app.backend.middleware.rbac import require_recruiter_or_admin
-from app.backend.models.db_models import ScreeningResult, TrainingExample, User
+from app.backend.models.db_models import ScreeningResult, TrainingExample, TrainingRun, User
 from app.backend.models.schemas import LabelRequest, TrainingStatusResponse
 
 logger = logging.getLogger(__name__)
 
 router  = APIRouter(prefix="/api/training", tags=["training"])
-_status: dict = {}  # tenant_id → {trained, last_trained, model_name}
+
+
+def _upsert_run(db: Session, tenant_id: int, **fields) -> TrainingRun:
+    row = db.query(TrainingRun).filter_by(tenant_id=tenant_id).one_or_none()
+    if row is None:
+        row = TrainingRun(tenant_id=tenant_id)
+        db.add(row)
+    for key, value in fields.items():
+        setattr(row, key, value)
+    db.commit()
+    return row
 
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
@@ -62,6 +72,7 @@ def label_example(
     example = TrainingExample(
         tenant_id=current_user.tenant_id,
         screening_result_id=body.screening_result_id,
+        screening_decision_id=result.current_decision_id,
         outcome=body.outcome,
         feedback=body.feedback,
     )
@@ -114,6 +125,15 @@ def start_training(
 
     tenant_id  = current_user.tenant_id
     model_name = f"aria-{tenant_id}"
+    _upsert_run(
+        db,
+        tenant_id,
+        state="running",
+        model_name=model_name,
+        error=None,
+        started_at=datetime.now(timezone.utc),
+        completed_at=None,
+    )
 
     background_tasks.add_task(_train_model, tenant_id, model_name, training_data)
     return {"message": "Training started in background", "model_name": model_name}
@@ -121,7 +141,13 @@ def start_training(
 
 async def _train_model(tenant_id: int, model_name: str, training_data: list):
     """Build a custom Ollama model from training examples."""
-    _status[tenant_id] = {"trained": False, "model_name": model_name, "last_trained": None}
+    from app.backend.db.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        _upsert_run(db, tenant_id, state="running", model_name=model_name)
+    finally:
+        db.close()
 
     examples_text = "\n".join([
         f"Score {d['fit_score']}/100 → {d['outcome'].upper()}"
@@ -145,21 +171,28 @@ async def _train_model(tenant_id: int, model_name: str, training_data: list):
                 f"{OLLAMA_BASE_URL}/api/create",
                 json={"name": model_name, "modelfile": modelfile}
             )
-        _status[tenant_id] = {
-            "trained":      True,
-            "model_name":   model_name,
-            "last_trained": datetime.now(timezone.utc),
-        }
+        db = SessionLocal()
+        try:
+            _upsert_run(
+                db,
+                tenant_id,
+                state="completed",
+                model_name=model_name,
+                completed_at=datetime.now(timezone.utc),
+                error=None,
+            )
+        finally:
+            db.close()
     except (httpx.HTTPError, OSError, ValueError, RuntimeError) as e:
         logger.exception(
             "Model training failed for tenant %s: %s", tenant_id, e,
             extra={"error_code": "LLM_ERROR"},
         )
-        _status[tenant_id] = {
-            "trained": False,
-            "model_name": model_name,
-            "error": str(e),
-        }
+        db = SessionLocal()
+        try:
+            _upsert_run(db, tenant_id, state="failed", model_name=model_name, error=str(e))
+        finally:
+            db.close()
 
 
 @router.get("/status", response_model=TrainingStatusResponse)
@@ -171,10 +204,10 @@ def training_status(
         TrainingExample.tenant_id == current_user.tenant_id
     ).count()
 
-    status = _status.get(current_user.tenant_id, {})
+    run = db.query(TrainingRun).filter_by(tenant_id=current_user.tenant_id).one_or_none()
     return TrainingStatusResponse(
         labeled_count=count,
-        trained=status.get("trained", False),
-        model_name=status.get("model_name"),
-        last_trained=status.get("last_trained"),
+        trained=bool(run and run.state == "completed"),
+        model_name=run.model_name if run else None,
+        last_trained=run.completed_at if run else None,
     )

@@ -383,6 +383,9 @@ def require_internal_service(request: Request) -> None:
     voice-agent container). Validates the X-Internal-Secret header against
     INTERNAL_SERVICE_SECRET using a constant-time comparison.
     """
-    provided = request.headers.get("X-Internal-Secret", "")
+    provided = request.headers.get("X-Internal-Service-Secret") or request.headers.get("X-Internal-Secret", "")
+    if request.headers.get("X-Internal-Secret") and not request.headers.get("X-Internal-Service-Secret"):
+        import logging as _log
+        _log.getLogger(__name__).warning("deprecated_internal_header X-Internal-Secret")
     if not INTERNAL_SERVICE_SECRET or not provided or not _secrets.compare_digest(provided, INTERNAL_SERVICE_SECRET):
         raise HTTPException(status_code=403, detail="Invalid or missing internal service credentials")

@@ -22,7 +22,7 @@ pytestmark = [
 
 ROOT = Path(__file__).resolve().parents[3]
 START = "076_candidate_merge"
-HEAD = "078_phase0_1_audit_corrections"
+HEAD = "082_reliability_closure"
 
 
 def _engine():
@@ -121,18 +121,40 @@ def _count(conn, provider, pid) -> int:
 
 @pytest.fixture(scope="module")
 def pg():
-    engine = _engine()
-    with engine.connect() as conn:
-        conn.execute(text("SELECT 1"))
-        conn.commit()
-    _alembic("upgrade", START)
-    yield engine
-    engine.dispose()
+    from sqlalchemy.engine import make_url
+
+    url = os.environ["PHASE0_POSTGRES_URL"]
+    previous_phase0 = os.environ.get("PHASE0_POSTGRES_URL")
+    previous_db = os.environ.get("DATABASE_URL")
+    parsed = make_url(url)
+    dbname = f"aria_p076_{uuid.uuid4().hex[:8]}"
+    admin = create_engine(parsed.set(database="postgres"))
+    with admin.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+        conn.execute(text(f"CREATE DATABASE {dbname}"))
+    isolated = parsed.set(database=dbname).render_as_string(hide_password=False)
+    os.environ["PHASE0_POSTGRES_URL"] = isolated
+    os.environ["DATABASE_URL"] = isolated
+    engine = create_engine(isolated)
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+            conn.commit()
+        _alembic("upgrade", START)
+        yield engine
+    finally:
+        engine.dispose()
+        with admin.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+            conn.execute(text(f"DROP DATABASE IF EXISTS {dbname} WITH (FORCE)"))
+        admin.dispose()
+        if previous_phase0 is not None:
+            os.environ["PHASE0_POSTGRES_URL"] = previous_phase0
+        if previous_db is not None:
+            os.environ["DATABASE_URL"] = previous_db
 
 
 def _reset_076(pg):
     current = _alembic("current", check=False).stdout
-    if HEAD in current or "077_phase0_core_audit" in current:
+    if HEAD in current or "082_" in current or "081_" in current or "077_phase0_core_audit" in current:
         _alembic("downgrade", START)
     else:
         _alembic("upgrade", START)

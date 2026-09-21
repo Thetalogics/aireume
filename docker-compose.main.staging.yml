@@ -31,6 +31,24 @@ services:
           cpus: '1'
           memory: 2G
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${STAGING_POSTGRES_USER:-aria_staging} -d ${STAGING_POSTGRES_DB:-aria_staging_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  migrate:
+    image: revanth2245/resume-backend:staging
+    container_name: staging-migrate
+    command: python -m app.backend.services.migration_owner
+    restart: "no"
+    environment:
+      - DATABASE_URL=postgresql://${STAGING_POSTGRES_USER:-aria_staging}:${STAGING_POSTGRES_PASSWORD}@postgres:5432/${STAGING_POSTGRES_DB:-aria_staging_db}
+      - RUN_DB_MIGRATIONS=1
+      - ENVIRONMENT=staging
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   backend:
     image: revanth2245/resume-backend:staging
@@ -94,8 +112,18 @@ services:
       - SIP_AUTH_PASSWORD=${SIP_AUTH_PASSWORD:?SIP_AUTH_PASSWORD must be set}
       - SIP_FROM_HOST=${SIP_FROM_HOST:-aria-staging.pstn.twilio.com}
       - SIP_TRANSPORT=${SIP_TRANSPORT:-SIP_TRANSPORT_TCP}
+      - RUN_DB_MIGRATIONS=0
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/ready"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
     deploy:
       resources:
         limits:

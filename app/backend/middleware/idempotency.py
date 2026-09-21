@@ -1,9 +1,9 @@
-"""Honor X-Idempotency-Key on mutating requests."""
+"""Honor X-Idempotency-Key on mutating requests using PostgreSQL leases."""
 from __future__ import annotations
 
 import hashlib
 import json
-import os
+import logging
 from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qsl, urlencode
 
@@ -11,6 +11,19 @@ from jose import jwt
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
+
+from app.backend.services.request_idempotency import (
+    IdempotencyConflictError,
+    IdempotencyInProgressError,
+    IdempotencyKeyInvalidError,
+    IdempotencyUnavailableError,
+    acquire_idempotency,
+    complete_idempotency,
+    fail_idempotency,
+)
+from app.backend.services.upload_limits import is_multipart_upload_path
+
+log = logging.getLogger(__name__)
 
 _MUTATING = {"POST", "PUT", "PATCH", "DELETE"}
 _TTL_HOURS = 24
@@ -50,7 +63,6 @@ def request_fingerprint(method: str, path: str, query: str, content_type: str, b
 
 
 def _tenant_from_request(request: Request) -> str:
-    """Bind idempotency to the authenticated tenant, never to spoofable headers."""
     token = None
     auth_header = request.headers.get("Authorization", "")
     if auth_header.startswith("Bearer "):
@@ -74,12 +86,10 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         if request.method not in _MUTATING:
             return await call_next(request)
-        if "stream" in request.url.path:
+        if "stream" in request.url.path or is_multipart_upload_path(request.url.path):
             return await call_next(request)
         key = request.headers.get("X-Idempotency-Key", "").strip()
         if not key:
-            return await call_next(request)
-        if os.getenv("TESTING", "").lower() in ("1", "true") and not key:
             return await call_next(request)
 
         tenant_id = _tenant_from_request(request)
@@ -97,91 +107,125 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
             request.headers.get("content-type") or "",
             body,
         )
-        stored = _lookup(key, tenant_id, endpoint, fp)
-        if stored == "conflict":
+        from app.backend.db.database import SessionLocal
+
+        db = SessionLocal()
+        try:
+            try:
+                lease = acquire_idempotency(
+                    db,
+                    tenant_id=int(tenant_id) if str(tenant_id).isdigit() else 0,
+                    endpoint=endpoint,
+                    key=key,
+                    fingerprint=fp,
+                )
+                db.commit()
+            except IdempotencyKeyInvalidError as exc:
+                db.rollback()
+                return JSONResponse({"detail": str(exc)}, status_code=400)
+            except IdempotencyConflictError:
+                db.rollback()
+                return JSONResponse(
+                    {"detail": "Idempotency key reused with different request"},
+                    status_code=409,
+                )
+            except IdempotencyInProgressError:
+                db.rollback()
+                return JSONResponse({"detail": "Request already in progress"}, status_code=409)
+            except Exception as exc:
+                db.rollback()
+                log.error("idempotency acquire failed: %s", type(exc).__name__)
+                return JSONResponse({"detail": "Idempotency store unavailable"}, status_code=503)
+        finally:
+            db.close()
+
+        if lease.replay:
             return JSONResponse(
-                {"detail": "Idempotency key reused with different request"},
-                status_code=409,
-            )
-        if stored is not None:
-            status, resp_body = stored
-            return JSONResponse(
-                content=resp_body,
-                status_code=status,
+                content=lease.response_body or {},
+                status_code=lease.response_status or 200,
                 headers={"X-Idempotent-Replay": "true"},
             )
 
         response = await call_next(request)
-        if 200 <= response.status_code < 300:
-            body_bytes = getattr(response, "body", b"")
-            if not body_bytes and hasattr(response, "body_iterator"):
-                chunks = []
-                async for chunk in response.body_iterator:
-                    chunks.append(chunk)
-                body_bytes = b"".join(chunks)
-                response = Response(
-                    content=body_bytes,
-                    status_code=response.status_code,
-                    headers=dict(response.headers),
-                    media_type=response.media_type,
-                )
-            try:
-                payload = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
-            except Exception:
-                payload = {"raw": hashlib.sha256(body_bytes).hexdigest()}
-            _store(key, tenant_id, endpoint, fp, response.status_code, payload)
+        body_bytes = getattr(response, "body", b"")
+        if not body_bytes and hasattr(response, "body_iterator"):
+            chunks = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk)
+            body_bytes = b"".join(chunks)
+            response = Response(
+                content=body_bytes,
+                status_code=response.status_code,
+                headers=dict(response.headers),
+                media_type=response.media_type,
+            )
+        try:
+            payload = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
+        except Exception:
+            payload = {"raw": hashlib.sha256(body_bytes).hexdigest()}
+        store = SessionLocal()
+        try:
+            if 200 <= response.status_code < 300:
+                complete_idempotency(store, lease, status=response.status_code, body=payload)
+            else:
+                fail_idempotency(store, lease, body=payload)
+            store.commit()
+        except Exception:
+            store.rollback()
+            return JSONResponse({"detail": "Idempotency store unavailable"}, status_code=503)
+        finally:
+            store.close()
         return response
 
 
 def _lookup(key: str, tenant_id: str, endpoint: str, fingerprint: str):
-    try:
-        from app.backend.db.database import SessionLocal
-        from app.backend.models.db_models import IdempotencyKey
+    from app.backend.db.database import SessionLocal
 
-        db = SessionLocal()
-        try:
-            row = (
-                db.query(IdempotencyKey)
-                .filter(
-                    IdempotencyKey.key == key[:128],
-                    IdempotencyKey.endpoint == endpoint[:200],
-                    IdempotencyKey.tenant_id == (int(tenant_id) if str(tenant_id).isdigit() else 0),
-                )
-                .first()
-            )
-            if not row:
-                return None
-            if row.expires_at and row.expires_at.replace(tzinfo=timezone.utc) < datetime.now(timezone.utc):
-                return None
-            if row.request_fingerprint != fingerprint:
-                return "conflict"
-            return row.response_status, row.response_body or {}
-        finally:
-            db.close()
-    except Exception:
+    db = SessionLocal()
+    try:
+        lease = acquire_idempotency(
+            db,
+            tenant_id=int(tenant_id) if str(tenant_id).isdigit() else 0,
+            endpoint=endpoint,
+            key=key,
+            fingerprint=fingerprint,
+        )
+        db.commit()
+        if lease.replay:
+            return lease.response_status, lease.response_body or {}
+        fail_idempotency(db, lease)
+        db.commit()
         return None
+    except IdempotencyConflictError:
+        return "conflict"
+    except Exception:
+        raise IdempotencyUnavailableError("lookup failed")
+    finally:
+        db.close()
 
 
 def _store(key: str, tenant_id: str, endpoint: str, fingerprint: str, status: int, body) -> None:
-    try:
-        from app.backend.db.database import SessionLocal
-        from app.backend.models.db_models import IdempotencyKey
+    from app.backend.db.database import SessionLocal
+    from app.backend.models.db_models import IdempotencyKey
 
-        db = SessionLocal()
-        try:
-            db.merge(
-                IdempotencyKey(
-                    key=key[:128],
-                    tenant_id=int(tenant_id) if str(tenant_id).isdigit() else 0,
-                    endpoint=endpoint[:200],
-                    request_fingerprint=fingerprint,
-                    response_status=status,
-                    response_body=body if isinstance(body, (dict, list)) else {"ok": True},
-                    expires_at=datetime.now(timezone.utc) + timedelta(hours=_TTL_HOURS),
-                )
+    db = SessionLocal()
+    try:
+        row = (
+            db.query(IdempotencyKey)
+            .filter_by(
+                key=key,
+                tenant_id=int(tenant_id) if str(tenant_id).isdigit() else 0,
+                endpoint=endpoint[:200],
             )
-            db.commit()
-        finally:
-            db.close()
-    except Exception:
-        pass
+            .one_or_none()
+        )
+        if row is None:
+            raise IdempotencyUnavailableError("missing idempotency row")
+        row.state = "completed"
+        row.request_fingerprint = fingerprint
+        row.response_status = status
+        row.response_body = body if isinstance(body, (dict, list)) else {"ok": True}
+        row.expires_at = datetime.now(timezone.utc) + timedelta(hours=_TTL_HOURS)
+        db.commit()
+    finally:
+        db.close()

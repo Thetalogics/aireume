@@ -2467,6 +2467,17 @@ def _merge_llm_into_result(
         final_concerns = []
         final_weaknesses = []
 
+    for key in (
+        "fit_score",
+        "deterministic_score",
+        "component_fit_score",
+        "final_recommendation",
+        "eligibility",
+        "eligibility_status",
+        "status",
+    ):
+        llm_result.pop(key, None)
+
     merged.update({
         "ai_enhanced":            llm_result.get("ai_enhanced", False),  # True for LLM, False for fallback
         "candidate_profile_summary": llm_result.get("candidate_profile_summary"),
@@ -2546,6 +2557,7 @@ async def _background_llm_narrative(
     llm_context: Dict[str, Any],
     python_result: Dict[str, Any],
     expected_analysis_generation: int,
+    screening_decision_id: int | None = None,
 ) -> None:
     """
     Background task that generates LLM narrative and writes to DB.
@@ -2638,7 +2650,18 @@ async def _background_llm_narrative(
                             status=status,
                             error=error,
                             merge_analysis=merged_analysis,
+                            screening_decision_id=screening_decision_id,
                         )
+                        if screening_decision_id and not outcome.stale:
+                            from app.backend.services.decision_service import store_decision_narrative
+
+                            store_decision_narrative(
+                                db,
+                                decision_id=screening_decision_id,
+                                structured_output=narrative,
+                                provider_context={"requested": "app-llm", "actual": narrative.get("model_used")},
+                                prompt_context={"template_id": "candidate_narrative", "version": "v3"},
+                            )
                         if outcome.stale:
                             db.rollback()
                             return True

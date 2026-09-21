@@ -1129,7 +1129,10 @@ export default function ReportPage() {
             {result.final_recommendation && (
               <div className="mt-3 flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-brand-50 ring-1 ring-brand-200 text-brand-700 text-xs font-bold">
                 <CheckCircle className="w-3.5 h-3.5" />
-                {safeStr(result.final_recommendation)}
+                {safeStr(result.effective_recommendation || result.final_recommendation)}
+                {(result.override_indicator || (result.ai_recommendation && result.ai_recommendation !== result.effective_recommendation)) ? (
+                  <span className="ml-1 font-semibold">AI: {safeStr(result.ai_recommendation || result.final_recommendation)}</span>
+                ) : null}
               </div>
             )}
           </div>

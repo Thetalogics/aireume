@@ -20,12 +20,21 @@ log = logging.getLogger("aria.worker")
 
 async def main() -> None:
     log.info("Starting dedicated ARIA worker process")
+    os.environ.setdefault("ARIA_PROCESS_ROLE", "worker")
     await start_queue_worker()
     start_scheduler()
     start_voice_scheduler()
     try:
         while True:
-            await asyncio.sleep(3600)
+            from app.backend.db.database import SessionLocal
+            from app.backend.services.worker_heartbeat import touch_worker_heartbeat
+
+            db = SessionLocal()
+            try:
+                touch_worker_heartbeat(db, detail="loop")
+            finally:
+                db.close()
+            await asyncio.sleep(15)
     finally:
         await stop_queue_worker()
         stop_scheduler()

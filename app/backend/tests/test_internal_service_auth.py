@@ -60,3 +60,4 @@ class TestInternalServiceAuth:
 
         # Correct secret → no exception
         require_internal_service(_make_request({"X-Internal-Secret": INTERNAL_SECRET}))
+        require_internal_service(_make_request({"X-Internal-Service-Secret": INTERNAL_SECRET}))

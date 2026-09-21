@@ -473,15 +473,14 @@ def _write_ai_decision_log(
     Required writes share the caller's transaction: failure rolls back the
     screening mutation. Set required=False only for best-effort side channels.
     """
-    from app.backend.services.ai_decision_log_service import write_log_from_pipeline
+    from app.backend.services.decision_service import persist_from_pipeline
 
-    write_log_from_pipeline(
+    persist_from_pipeline(
         db,
         result,
         pipeline_result,
         decision_type=decision_type,
         actor_id=actor_id,
-        required=required,
     )
 
 
@@ -1894,6 +1893,7 @@ def _spawn_background_narrative(
     screening_result_id: int,
     tenant_id: int,
     expected_generation: int,
+    screening_decision_id: int | None = None,
 ) -> None:
     """Build llm_context from Python result and spawn background LLM narrative task."""
     llm_context = {
@@ -1919,6 +1919,7 @@ def _spawn_background_narrative(
             llm_context=llm_context,
             python_result=python_result,
             expected_analysis_generation=expected_generation,
+            screening_decision_id=screening_decision_id,
         )
     )
     register_background_task(task)

@@ -262,6 +262,7 @@ async def complete_queue_job(job_id, db: Session, *, expected_worker_id: str) ->
         screening_result_id,
         job.tenant_id,
         db_result.analysis_generation,
+        screening_decision_id=db_result.current_decision_id,
     )
     log.info(
         "Queue job %s completed → screening_result_id=%s generation=%s retry_count=%s worker_id=%s",

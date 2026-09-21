@@ -143,6 +143,7 @@ def _load_interview_session_for_user(db: Session, current_user: User, session_id
 @router.post("/sessions", status_code=status.HTTP_201_CREATED)
 async def create_interview_session(
     body: InterviewCreateRequest,
+    request: Request,
     current_user: User = Depends(require_recruiter_or_admin),
     db: Session = Depends(get_db),
 ):
@@ -194,7 +195,7 @@ async def create_interview_session(
     })
 
     if depth == "quick":
-        return await _create_quick_session(db, current_user, candidate, body, scheduled_at)
+        return await _create_quick_session(db, current_user, candidate, body, scheduled_at, request)
 
     # standard/deep require the recruiter feature
     if not RECRUITER_ENABLED:
@@ -212,6 +213,7 @@ async def _create_quick_session(
     candidate: Candidate,
     body: InterviewCreateRequest,
     scheduled_at: Optional[datetime],
+    request: Request,
 ):
     """Create a quick voice screening session and schedule the call."""
     from app.backend.services.livekit_cloud_dispatch import get_voice_unavailability_reason
@@ -229,25 +231,44 @@ async def _create_quick_session(
         db.add(config)
         db.commit()
 
-    session = VoiceScreeningSession(
-        tenant_id=current_user.tenant_id,
-        candidate_id=body.candidate_id,
-        jd_id=body.jd_id,
-        phone_number=body.phone_number,
-        direction="outbound",
-        status="scheduled",
-        interview_depth="quick",
-        scheduled_at=scheduled_at,
-    )
-    db.add(session)
-    db.commit()
-    db.refresh(session)
+    from app.backend.services.voice_call_scheduler import schedule_voice_call as register_voice_job
+    from app.backend.services.voice_schedule_idempotency import operation_key, schedule_once
 
-    from app.backend.services.voice_call_scheduler import schedule_voice_call
-    schedule_voice_call(
-        session.id,
-        scheduled_at,
-        expected_generation=session.result_generation,
+    def _create():
+        row = VoiceScreeningSession(
+            tenant_id=current_user.tenant_id,
+            candidate_id=body.candidate_id,
+            jd_id=body.jd_id,
+            phone_number=body.phone_number,
+            direction="outbound",
+            status="scheduled",
+            interview_depth="quick",
+            scheduled_at=scheduled_at,
+        )
+        db.add(row)
+        return row
+
+    def _register(row: VoiceScreeningSession):
+        register_voice_job(
+            row.id,
+            scheduled_at,
+            expected_generation=row.result_generation,
+        )
+
+    session, _replayed = schedule_once(
+        db,
+        tenant_id=current_user.tenant_id,
+        endpoint="POST:/api/interviews",
+        key=operation_key(request, getattr(body, "operation_id", None)),
+        payload={
+            "candidate_id": body.candidate_id,
+            "jd_id": body.jd_id,
+            "phone_number": body.phone_number,
+            "scheduled_at": str(scheduled_at),
+            "depth": "quick",
+        },
+        create_session=_create,
+        register_scheduler=_register,
     )
 
     return {
@@ -1443,8 +1464,26 @@ def _apply_auto_status_update(db: Session, recruiter_session_id: str) -> None:
         )
     ).scalar_one_or_none()
     if screening_result and screening_result.status != new_status:
+        previous_status = screening_result.status
         screening_result.status = new_status
         screening_result.status_updated_at = datetime.now(timezone.utc)
+        from app.backend.services.audit_service import log_field_change
+
+        if session.created_by:
+            log_field_change(
+                db,
+                tenant_id=session.tenant_id,
+                entity_type="screening_result",
+                entity_id=screening_result.id,
+                field_name="status",
+                old_value=previous_status,
+                new_value=new_status,
+                user_id=session.created_by,
+                reason=(
+                    f"auto-status-v1 scorecard={scorecard.id} "
+                    f"decision={screening_result.current_decision_id}"
+                ),
+            )
         db.commit()
         logger.info(
             "Auto-updated candidate status to '%s' from recommendation '%s' for session %s",

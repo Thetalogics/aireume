@@ -1569,6 +1569,7 @@ async def batch_analyze_chunked_endpoint(
             # Spawn background LLM narrative generation
             _spawn_background_narrative(
                 raw, db_result.id, current_user.tenant_id, db_result.analysis_generation,
+                screening_decision_id=db_result.current_decision_id,
             )
 
             batch_results.append({"filename": filename, "result": raw})
@@ -1965,6 +1966,7 @@ async def batch_analyze_stream_endpoint(
                 # Spawn background LLM narrative generation
                 _spawn_background_narrative(
                     raw, screening_result_id, tenant_id, db_result.analysis_generation,
+                    screening_decision_id=db_result.current_decision_id,
                 )
             except (json.JSONDecodeError, TypeError, ValueError, KeyError, OSError, RuntimeError, SQLAlchemyError) as e:
                 save_db.rollback()
@@ -2188,6 +2190,7 @@ async def batch_analyze_endpoint(
         # Spawn background LLM narrative generation
         _spawn_background_narrative(
             raw, db_result.id, current_user.tenant_id, db_result.analysis_generation,
+            screening_decision_id=db_result.current_decision_id,
         )
 
         batch_results.append({"filename": filename, "result": raw})

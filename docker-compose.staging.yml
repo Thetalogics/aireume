@@ -5,8 +5,7 @@
 # Image tag: staging  (built from `main` branch by CD workflow)
 # Portainer: deploy this as a separate stack named "aria-staging"
 #
-# NOTE: All healthchecks removed to allow stack deployment.
-# Debug issues via `docker logs <container>` after deployment.
+# Staging is a release gate: Postgres/Redis/backend readiness are checked.
 # ────────────────────────────────────────────────────────────────────────────
 name: aria-staging
 
@@ -33,6 +32,24 @@ services:
           cpus: '1'
           memory: 2G
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${STAGING_POSTGRES_USER:-aria_staging} -d ${STAGING_POSTGRES_DB:-aria_staging_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  migrate:
+    image: revanth2245/resume-backend:staging
+    container_name: staging-migrate
+    command: python -m app.backend.services.migration_owner
+    restart: "no"
+    environment:
+      - DATABASE_URL=postgresql://${STAGING_POSTGRES_USER:-aria_staging}:${STAGING_POSTGRES_PASSWORD}@postgres:5432/${STAGING_POSTGRES_DB:-aria_staging_db}
+      - RUN_DB_MIGRATIONS=1
+      - ENVIRONMENT=staging
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   ollama:
     image: ollama/ollama:latest
@@ -84,15 +101,26 @@ services:
       - LLM_NARRATIVE_TIMEOUT=${LLM_NARRATIVE_TIMEOUT:-300}
       - OLLAMA_STARTUP_REQUIRED=${OLLAMA_STARTUP_REQUIRED:-1}
       - VOICE_AGENT_URL=http://voice-agent:8002
+      - RUN_DB_MIGRATIONS=0
     depends_on:
-      - postgres
-      - ollama
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      ollama:
+        condition: service_started
     deploy:
       resources:
         limits:
           cpus: '2'
           memory: 3G
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/ready"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
 
   frontend:
     image: revanth2245/resume-frontend:staging
@@ -178,6 +206,11 @@ services:
     image: redis:7-alpine
     container_name: staging-livekit-redis
     command: redis-server --maxmemory 64mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
     deploy:
       resources:
         limits:

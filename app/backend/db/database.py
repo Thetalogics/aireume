@@ -12,12 +12,27 @@ DATABASE_URL, _is_postgres = normalize_database_url(os.getenv("DATABASE_URL", ".
 # Defaults are conservative per-worker; tune DATABASE_POOL_SIZE via env.
 _pool_kwargs = {}
 if _is_postgres:
+    # Per-process defaults stay small so 6 Uvicorn workers + worker stay
+    # well under PostgreSQL max_connections=200. See docs/deployment-reliability.md.
+    _role = os.getenv("ARIA_PROCESS_ROLE", "api")
+    _default_pool = os.getenv("WORKER_DATABASE_POOL_SIZE" if _role == "worker" else "DATABASE_POOL_SIZE", "3")
+    _default_overflow = os.getenv(
+        "WORKER_DATABASE_MAX_OVERFLOW" if _role == "worker" else "DATABASE_MAX_OVERFLOW",
+        "2",
+    )
     _pool_kwargs = {
-        "pool_size": int(os.getenv("DATABASE_POOL_SIZE", "5")),
-        "max_overflow": int(os.getenv("DATABASE_MAX_OVERFLOW", "10")),
+        "pool_size": int(_default_pool),
+        "max_overflow": int(_default_overflow),
         "pool_recycle": int(os.getenv("DATABASE_POOL_RECYCLE", "3600")),
         "pool_timeout": int(os.getenv("DATABASE_POOL_TIMEOUT", "30")),
     }
+    import logging as _logging
+    _logging.getLogger("aria.db").info(
+        "database_pool role=%s size=%s overflow=%s",
+        _role,
+        _pool_kwargs["pool_size"],
+        _pool_kwargs["max_overflow"],
+    )
 
 connect_args = {"check_same_thread": False} if not _is_postgres else {}
 

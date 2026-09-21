@@ -1,0 +1,54 @@
+{
+  "review_policy": "CI fails if review_by is in the past. Do not lower pip-audit severity.",
+  "exceptions": [
+    {
+      "id": "PYSEC-2026-1325",
+      "package": "ecdsa (python-jose 3.4.0 transitive)",
+      "reason": "No patched ecdsa release compatible with python-jose 3.4.0.",
+      "compensating_control": "network egress allowlist + dependency review",
+      "review_by": "2026-12-31"
+    },
+    {
+      "id": "PYSEC-2026-1845",
+      "package": "pytest 8.3.4",
+      "reason": "Kept for pytest-asyncio 0.24 compatibility; fix is in pytest 9.0.3.",
+      "compensating_control": "not reachable from public request handlers",
+      "review_by": "2026-12-31"
+    },
+    {
+      "id": "PYSEC-2026-2263",
+      "package": "transitive",
+      "reason": "No compatible patched release.",
+      "compensating_control": "internal-only usage",
+      "review_by": "2026-12-31"
+    },
+    {
+      "id": "PYSEC-2026-2447",
+      "package": "diskcache 5.6.3 (outlines transitive)",
+      "reason": "Local pickle RCE requires write access to cache dir; no PyPI fix yet.",
+      "compensating_control": "cache directory not writable by untrusted users",
+      "review_by": "2026-12-31"
+    },
+    {
+      "id": "PYSEC-2026-3455",
+      "package": "transitive",
+      "reason": "No compatible patched release.",
+      "compensating_control": "internal-only usage",
+      "review_by": "2026-12-31"
+    },
+    {
+      "id": "PYSEC-2026-3456",
+      "package": "transitive",
+      "reason": "No compatible patched release.",
+      "compensating_control": "internal-only usage",
+      "review_by": "2026-12-31"
+    },
+    {
+      "id": "PYSEC-2026-3457",
+      "package": "transitive",
+      "reason": "No compatible patched release.",
+      "compensating_control": "internal-only usage",
+      "review_by": "2026-12-31"
+    }
+  ]
+}

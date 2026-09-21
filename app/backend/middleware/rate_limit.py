@@ -50,6 +50,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         self.buckets = {}  # {tenant_id: {"tokens": float, "last_refill": float}}
         self.lock = threading.Lock()
         self.config_cache = {}  # {tenant_id: {"rpm": int, "cached_at": float}}
+        self._llm_tokens = {}
+        self._last_consume = {}
 
     def _is_whitelisted(self, path: str) -> bool:
         if path == "/":
@@ -144,6 +146,12 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             if client is not None:
                 window = int(time.time() // 60)
                 count = cache_incr(f"rpm:{tenant_id}:{window}", ttl_seconds=120)
+                remaining = max(0, int(rpm) - int(count))
+                self._last_consume[tenant_id] = {
+                    "remaining": remaining,
+                    "limit": rpm,
+                    "reset_at": int((window + 1) * 60),
+                }
                 if count > rpm:
                     return False, 60.0
                 return True, 0.0
@@ -167,11 +175,22 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
             if bucket["tokens"] >= cost:
                 bucket["tokens"] -= cost
+                remaining = max(0, int(bucket["tokens"]))
+                self._last_consume[tenant_id] = {
+                    "remaining": remaining,
+                    "limit": rpm,
+                    "reset_at": int(now) + 60,
+                }
                 return True, 0.0
 
             # Calculate seconds until enough tokens are available
             deficit = cost - bucket["tokens"]
             retry_after = deficit / refill_rate if refill_rate > 0 else 60.0
+            self._last_consume[tenant_id] = {
+                "remaining": 0,
+                "limit": rpm,
+                "reset_at": int(now + retry_after),
+            }
             return False, retry_after
 
     def _is_narrative_poll_path(self, path: str, method: str) -> bool:
@@ -204,18 +223,24 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         return False
 
     def _check_llm_concurrency(self, tenant_id: int, config: dict) -> bool:
-        """Check if tenant has exceeded LLM concurrent limit."""
+        """Acquire a distributed LLM permit. Returns False when at the limit."""
+        from app.backend.services.llm_concurrency import LlmConcurrencyUnavailable, acquire_llm_permit
+
         max_concurrent = config.get("llm_concurrent_max", 2)
-        with _concurrent_lock:
-            if _concurrent_llm[tenant_id] >= max_concurrent:
-                return False
-            _concurrent_llm[tenant_id] += 1
-            return True
+        try:
+            token = acquire_llm_permit(tenant_id, max_concurrent)
+        except LlmConcurrencyUnavailable:
+            return False
+        if token is None:
+            return False
+        self._llm_tokens[tenant_id] = token
+        return True
 
     def _release_llm_concurrency(self, tenant_id: int):
-        """Release one LLM concurrent slot."""
-        with _concurrent_lock:
-            _concurrent_llm[tenant_id] = max(0, _concurrent_llm[tenant_id] - 1)
+        from app.backend.services.llm_concurrency import release_llm_permit
+
+        token = self._llm_tokens.pop(tenant_id, None)
+        release_llm_permit(tenant_id, token)
 
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
@@ -274,9 +299,15 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         try:
             response = await call_next(request)
+            consumed = self._last_consume.get(tenant_id) or {}
+            remaining = consumed.get(
+                "remaining",
+                max(0, int(self.buckets.get(tenant_id, {}).get("tokens", 0))),
+            )
+            reset_at = consumed.get("reset_at", int(time.time()) + 60)
             response.headers["X-RateLimit-Limit"] = str(rpm)
-            response.headers["X-RateLimit-Remaining"] = str(max(0, int(self.buckets.get(tenant_id, {}).get("tokens", 0))))
-            response.headers["X-RateLimit-Reset"] = str(int(time.time()) + 60)
+            response.headers["X-RateLimit-Remaining"] = str(remaining)
+            response.headers["X-RateLimit-Reset"] = str(reset_at)
             return response
         finally:
             if acquired_llm:

@@ -41,6 +41,7 @@ def write_ai_decision_log(
     prompt_template_version: Optional[str] = None,
     prompt_hash: Optional[str] = None,
     actor_id: Optional[int] = None,
+    screening_decision_id: Optional[int] = None,
     required: bool = True,
 ) -> AIDecisionLog:
     """Persist one immutable decision row. Does not commit.
@@ -66,6 +67,7 @@ def write_ai_decision_log(
         algorithm_version=algorithm_version,
         actor_id=actor_id,
         recommendation=str(recommendation) if recommendation is not None else None,
+        screening_decision_id=screening_decision_id,
     )
     try:
         db.add(row)

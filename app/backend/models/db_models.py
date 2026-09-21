@@ -368,6 +368,120 @@ class ScreeningResult(Base):
     evaluations = relationship("InterviewEvaluation", back_populates="result", cascade="all, delete-orphan")
     overall_assessment = relationship("OverallAssessment", back_populates="result", cascade="all, delete-orphan", uselist=True)
     training_examples = relationship("TrainingExample", back_populates="result")
+    current_decision_id = Column(Integer, nullable=True, index=True)
+    current_decision = relationship(
+        "ScreeningDecision",
+        foreign_keys=lambda: [ScreeningResult.current_decision_id],
+        primaryjoin="ScreeningResult.current_decision_id==ScreeningDecision.id",
+        post_update=True,
+    )
+    decisions = relationship(
+        "ScreeningDecision",
+        back_populates="screening_result",
+        foreign_keys="ScreeningDecision.screening_result_id",
+        passive_deletes=True,
+    )
+
+
+class ScreeningDecision(Base):
+    """Immutable historical hiring decision while retained.
+
+    Ordinary application flows never update a row. GDPR/candidate deletion may
+    CASCADE-delete ledger rows with the parent ScreeningResult. That is an
+    explicit retention/privacy action, not ordinary reanalysis cleanup.
+    """
+    __tablename__ = "screening_decisions"
+
+    id = Column(Integer, primary_key=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    candidate_id = Column(Integer, ForeignKey("candidates.id", ondelete="SET NULL"), nullable=True, index=True)
+    screening_result_id = Column(Integer, ForeignKey("screening_results.id", ondelete="CASCADE"), nullable=False, index=True)
+    role_template_id = Column(Integer, ForeignKey("role_templates.id", ondelete="SET NULL"), nullable=True)
+    requisition_id = Column(Integer, ForeignKey("requisitions.id", ondelete="SET NULL"), nullable=True)
+    decision_version = Column(Integer, nullable=False)
+    analysis_generation = Column(Integer, nullable=True)
+    decision_type = Column(String(32), nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
+    algorithm_version = Column(String(32), nullable=True)
+    deterministic_score = Column(Integer, nullable=True)
+    component_fit_score = Column(Integer, nullable=True)
+    final_fit_score = Column(Integer, nullable=True)
+    eligibility_status = Column(Boolean, nullable=True)
+    eligibility_reason = Column(String(200), nullable=True)
+    ai_recommendation = Column(String(50), nullable=True)
+    human_override_recommendation = Column(String(50), nullable=True)
+    effective_recommendation = Column(String(50), nullable=True)
+    risk_score = Column(Integer, nullable=True)
+    actor_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    source_operation_id = Column(String(128), nullable=False)
+    supersedes_decision_id = Column(Integer, ForeignKey("screening_decisions.id", ondelete="SET NULL"), nullable=True)
+    provenance_complete = Column(Boolean, nullable=False, default=True, server_default="true")
+    schema_version = Column(String(32), nullable=False, default="decision_payload_v1")
+    policy_version = Column(String(64), nullable=True)
+    original_candidate_id = Column(Integer, nullable=True)
+    component_scores = Column(JSON, nullable=True)
+    risk_signals = Column(JSON, nullable=True)
+    scoring_weights = Column(JSON, nullable=True)
+    effective_weights = Column(JSON, nullable=True)
+    input_snapshot = Column(JSON, nullable=True)
+    model_context = Column(JSON, nullable=True)
+    prompt_context = Column(JSON, nullable=True)
+    policy_context = Column(JSON, nullable=True)
+    eligibility_gate_trace = Column(JSON, nullable=True)
+    formula_trace = Column(JSON, nullable=True)
+    explanation_payload = Column(JSON, nullable=True)
+    override_reason = Column(JSON, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("screening_result_id", "decision_version", name="uq_screening_decision_result_version"),
+        UniqueConstraint("tenant_id", "source_operation_id", "decision_type", name="uq_screening_decision_tenant_operation_type"),
+        Index("ix_screening_decisions_result_created", "screening_result_id", "created_at"),
+        Index("ix_screening_decisions_tenant_created", "tenant_id", "created_at"),
+        Index("ix_screening_decisions_source_operation", "tenant_id", "source_operation_id"),
+    )
+
+    screening_result = relationship(
+        "ScreeningResult",
+        back_populates="decisions",
+        foreign_keys=[screening_result_id],
+        passive_deletes=True,
+    )
+    narratives = relationship(
+        "DecisionNarrative",
+        back_populates="decision",
+        passive_deletes=True,
+    )
+
+
+class DecisionNarrative(Base):
+    __tablename__ = "decision_narratives"
+
+    id = Column(Integer, primary_key=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    screening_decision_id = Column(Integer, ForeignKey("screening_decisions.id", ondelete="CASCADE"), nullable=False, index=True)
+    narrative_type = Column(String(64), nullable=False, default="candidate_narrative")
+    source_operation_id = Column(String(128), nullable=False)
+    status = Column(String(20), nullable=False, default="pending")
+    structured_output = Column(JSON, nullable=True)
+    provider_context = Column(JSON, nullable=True)
+    prompt_context = Column(JSON, nullable=True)
+    error = Column(Text, nullable=True)
+    generated_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint(
+            "screening_decision_id",
+            "narrative_type",
+            "source_operation_id",
+            name="uq_decision_narrative_operation",
+        ),
+    )
+
+    decision = relationship(
+        "ScreeningDecision",
+        back_populates="narratives",
+        passive_deletes=True,
+    )
 
 
 # ─── Role templates ───────────────────────────────────────────────────────────
@@ -678,11 +792,17 @@ class TrainingExample(Base):
     id                  = Column(Integer, primary_key=True, index=True)
     tenant_id           = Column(Integer, ForeignKey("tenants.id"), nullable=False)
     screening_result_id = Column(Integer, ForeignKey("screening_results.id"), nullable=False)
+    screening_decision_id = Column(Integer, nullable=True, index=True)
     outcome             = Column(String(50), nullable=False)   # hired / rejected
     feedback            = Column(Text, nullable=True)
     created_at          = Column(DateTime(timezone=True), server_default=func.now())
 
     result = relationship("ScreeningResult", back_populates="training_examples")
+    screening_decision = relationship(
+        "ScreeningDecision",
+        foreign_keys=lambda: [TrainingExample.screening_decision_id],
+        primaryjoin="TrainingExample.screening_decision_id==ScreeningDecision.id",
+    )
 
 
 # ─── Hybrid pipeline caches & skills registry ─────────────────────────────────
@@ -1766,9 +1886,15 @@ class AIDecisionLog(Base):
     algorithm_version      = Column(String(32), nullable=True)
     actor_id               = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     recommendation         = Column(String(50), nullable=True)
+    screening_decision_id  = Column(Integer, nullable=True, index=True)
 
     __table_args__ = (
         Index("ix_ai_decision_tenant_created", "tenant_id", "created_at"),
+    )
+    screening_decision = relationship(
+        "ScreeningDecision",
+        foreign_keys=lambda: [AIDecisionLog.screening_decision_id],
+        primaryjoin="AIDecisionLog.screening_decision_id==ScreeningDecision.id",
     )
 
 
@@ -1782,6 +1908,9 @@ class IdempotencyKey(Base):
     request_fingerprint = Column(String(64), nullable=False)
     response_status = Column(Integer, nullable=True)
     response_body   = Column(JSON, nullable=True)
+    state           = Column(String(20), nullable=False, default="completed")
+    owner_token     = Column(String(64), nullable=True)
+    lease_expires_at = Column(DateTime(timezone=True), nullable=True)
     created_at      = Column(DateTime(timezone=True), server_default=func.now())
     expires_at      = Column(DateTime(timezone=True), nullable=False, index=True)
 
@@ -1789,6 +1918,27 @@ class IdempotencyKey(Base):
         UniqueConstraint("key", "tenant_id", "endpoint", name="uq_idempotency_key_tenant_endpoint"),
         Index("ix_idempotency_tenant", "tenant_id"),
     )
+
+
+class TrainingRun(Base):
+    __tablename__ = "training_runs"
+
+    id = Column(Integer, primary_key=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, unique=True)
+    state = Column(String(32), nullable=False, default="idle")
+    model_name = Column(String(200), nullable=True)
+    error = Column(Text, nullable=True)
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class WorkerHeartbeat(Base):
+    __tablename__ = "worker_heartbeats"
+
+    role = Column(String(64), primary_key=True)
+    updated_at = Column(DateTime(timezone=True), nullable=False)
+    detail = Column(String(200), nullable=True)
 
 
 class BreachLog(Base):

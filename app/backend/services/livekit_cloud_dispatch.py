@@ -37,7 +37,10 @@ def _internal_service_secret() -> str:
 
 
 INTERNAL_SERVICE_SECRET = _internal_service_secret()
-INTERNAL_HEADERS = {"X-Internal-Secret": INTERNAL_SERVICE_SECRET}
+INTERNAL_HEADERS = {
+    "X-Internal-Service-Secret": INTERNAL_SERVICE_SECRET,
+    "X-Internal-Secret": INTERNAL_SERVICE_SECRET,
+}
 
 
 def is_cloud_voice_enabled() -> bool:

@@ -579,6 +579,8 @@ def get_screening_result(
         **outcome_fields_from_result(result),
         "ai_enhanced":          result.narrative_status == "ready" and result.narrative_json is not None,
         "narrative_pending":    result.narrative_status in ("pending", "processing"),
+        "current_decision_id":  result.current_decision_id,
+        "decision_id":          result.current_decision_id,
     }
     response_data.update(merged_data)
 

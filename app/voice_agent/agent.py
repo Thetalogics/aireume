@@ -43,7 +43,10 @@ OLLAMA_API_KEY = os.getenv("OLLAMA_API_KEY", "")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL_VOICE", os.getenv("OLLAMA_MODEL", "qwen2.5:3b"))
 ARIA_BACKEND_URL = os.getenv("ARIA_BACKEND_URL", "http://backend:8000")
 INTERNAL_SERVICE_SECRET = os.getenv("INTERNAL_SERVICE_SECRET", "dev-internal-service-secret")
-INTERNAL_HEADERS = {"X-Internal-Secret": INTERNAL_SERVICE_SECRET}
+INTERNAL_HEADERS = {
+    "X-Internal-Service-Secret": INTERNAL_SERVICE_SECRET,
+    "X-Internal-Secret": INTERNAL_SERVICE_SECRET,
+}
 LIVEKIT_URL = os.getenv("LIVEKIT_URL", "ws://livekit:7880")
 LIVEKIT_API_KEY = os.getenv("LIVEKIT_API_KEY", "")
 LIVEKIT_API_SECRET = os.getenv("LIVEKIT_API_SECRET", "")

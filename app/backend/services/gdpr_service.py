@@ -64,7 +64,7 @@ def hard_delete_candidate(db: Session, candidate_id: int, tenant_id: int, reason
     """
     from app.backend.models.db_models import (
         Candidate, ScreeningResult, VoiceScreeningSession,
-        FieldAuditLog, AuditLog,
+        FieldAuditLog, AuditLog, TrainingExample,
     )
 
     deleted = {"candidate": False, "screening_results": 0, "voice_sessions": 0, "resume_text": False}
@@ -123,10 +123,16 @@ def hard_delete_candidate(db: Session, candidate_id: int, tenant_id: int, reason
                     **deleted,
                 }
 
-        # Delete screening results
+        # TrainingExample.screening_result_id has no ON DELETE CASCADE.
+        # Remove those rows first so result deletion can CASCADE the ledger.
         results = db.query(ScreeningResult).filter(
             ScreeningResult.candidate_id == candidate_id
         ).all()
+        result_ids = [r.id for r in results]
+        if result_ids:
+            db.query(TrainingExample).filter(
+                TrainingExample.screening_result_id.in_(result_ids)
+            ).delete(synchronize_session=False)
         for r in results:
             db.delete(r)
             deleted["screening_results"] += 1

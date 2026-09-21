@@ -179,6 +179,7 @@ from app.backend.routes import crm
 from app.backend.routes import branding
 from app.backend.routes import nps
 from app.backend.routes import client_errors
+from app.backend.routes import decisions
 from app.backend.services import llm_service
 
 log = logging.getLogger("aria.startup")
@@ -656,6 +657,7 @@ app.include_router(tenant_audit.router)
 app.include_router(share_links.router)
 app.include_router(share_links.public_router)
 app.include_router(client_errors.router)
+app.include_router(decisions.router)
 
 
 # ─── Request Size Limits ───────────────────────────────────────────────────────
@@ -665,51 +667,68 @@ DEFAULT_MAX_REQUEST_SIZE = int(os.getenv("MAX_REQUEST_SIZE_MB", "25")) * 1024 * 
 
 
 class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
-    """Middleware to enforce maximum request body size limits."""
-
-    def __init__(self, app, max_size: int = DEFAULT_MAX_REQUEST_SIZE):
-        super().__init__(app)
-        self.max_size = max_size
-        # Endpoints that allow larger payloads (file uploads)
-        self.large_endpoints = {
-            "/api/analyze",
-            "/api/analyze/batch",
-            "/api/upload/resume",
-            "/api/upload/jd",
-            "/api/video/upload",
-            "/api/transcript/upload",
-        }
+    """Enforce request size without buffering multipart uploads into memory."""
 
     async def dispatch(self, request: Request, call_next):
-        # Skip size check for GET requests and small payloads
         if request.method in ("GET", "HEAD", "OPTIONS"):
             return await call_next(request)
+        from app.backend.services.upload_limits import is_multipart_upload_path, limit_for_path
 
-        # Check if endpoint allows larger payloads
         path = request.url.path
-        allows_large = any(path.startswith(endpoint) for endpoint in self.large_endpoints)
-
-        # Set appropriate limit
-        max_size = self.max_size * 3 if allows_large else self.max_size
-
-        # Check Content-Length header first
+        max_size = limit_for_path(path)
         content_length = request.headers.get("content-length")
         if content_length:
             try:
                 if int(content_length) > max_size:
                     return JSONResponse(
                         status_code=413,
-                        content={"detail": f"Request body too large. Maximum size: {max_size // (1024*1024)}MB"}
+                        content={"detail": f"Request body too large. Maximum size: {max_size // (1024*1024)}MB"},
                     )
             except ValueError:
                 pass
+        # Multipart handlers must not be fully buffered, but chunked bodies
+        # still need a streaming byte cap so they cannot grow unbounded.
+        received = 0
+        exceeded = False
 
-        body = await request.body()
-        if len(body) > max_size:
-            return JSONResponse(
-                status_code=413,
-                content={"detail": f"Request body too large. Maximum size: {max_size // (1024*1024)}MB"}
-            )
+        async def limited_receive():
+            nonlocal received, exceeded
+            message = await request.receive()
+            chunk = message.get("body") or b""
+            received += len(chunk)
+            if received > max_size:
+                exceeded = True
+                return {"type": "http.request", "body": b"", "more_body": False}
+            return message
+
+        if content_length is None:
+            first = await request.receive()
+            first_chunk = first.get("body") or b""
+            if len(first_chunk) > max_size:
+                return JSONResponse(
+                    status_code=413,
+                    content={"detail": f"Request body too large. Maximum size: {max_size // (1024*1024)}MB"},
+                )
+            received = len(first_chunk)
+            replayed = {"done": False}
+
+            async def replay_then_limit():
+                nonlocal received, exceeded
+                if not replayed["done"]:
+                    replayed["done"] = True
+                    return first
+                return await limited_receive()
+
+            request = Request(request.scope, replay_then_limit)
+            response = await call_next(request)
+            if exceeded:
+                return JSONResponse(
+                    status_code=413,
+                    content={"detail": f"Request body too large. Maximum size: {max_size // (1024*1024)}MB"},
+                )
+            return response
+        if is_multipart_upload_path(path):
+            return await call_next(request)
         return await call_next(request)
 
 

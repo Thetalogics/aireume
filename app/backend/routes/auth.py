@@ -45,6 +45,10 @@ EMAIL_VERIFICATION_EXPIRE_HOURS = int(os.getenv("EMAIL_VERIFICATION_EXPIRE_HOURS
 
 # ─── Per-IP Rate Limiter ─────────────────────────────────────────────────────
 
+class AuthRateLimitUnavailable(Exception):
+    pass
+
+
 class InMemoryRateLimiter:
     """Simple per-key rate limiter with sliding window."""
 
@@ -57,14 +61,33 @@ class InMemoryRateLimiter:
         try:
             from app.backend.services.shared_cache import cache_incr, _client
             from redis.exceptions import RedisError
-            if _client() is not None:
+            client = _client()
+            required = os.getenv("ENVIRONMENT", "").lower() == "production" or os.getenv(
+                "REDIS_REQUIRED", ""
+            ).lower() in ("1", "true", "yes")
+            if client is None:
+                if required:
+                    raise AuthRateLimitUnavailable("redis unavailable")
+            else:
                 count = cache_incr(f"rl:{key}", ttl_seconds=window_seconds)
                 if count > max_attempts:
                     return True, window_seconds
                 return False, 0
-        except ImportError:
-            pass
+        except ImportError as e:
+            if os.getenv("ENVIRONMENT", "").lower() == "production" or os.getenv("REDIS_REQUIRED", "").lower() in (
+                "1",
+                "true",
+                "yes",
+            ):
+                raise AuthRateLimitUnavailable("redis unavailable") from e
         except (OSError, RedisError, RuntimeError, ValueError, TypeError) as e:
+            if os.getenv("ENVIRONMENT", "").lower() == "production" or os.getenv("REDIS_REQUIRED", "").lower() in (
+                "1",
+                "true",
+                "yes",
+            ):
+                logger.error("auth rate limiter redis unavailable")
+                raise AuthRateLimitUnavailable("redis unavailable") from e
             logger.warning(
                 "Rate limiter cache unavailable; using in-memory: %s", e,
                 extra={"error_code": "CACHE_ERROR"},
@@ -90,6 +113,19 @@ class InMemoryRateLimiter:
 
 
 auth_rate_limiter = InMemoryRateLimiter()
+
+
+def _identity_fragment(value: str) -> str:
+    import hashlib
+
+    return hashlib.sha256((value or "").strip().lower().encode("utf-8")).hexdigest()[:16]
+
+
+def _guard_auth_limit(key: str, max_attempts: int, window_seconds: int) -> tuple:
+    try:
+        return auth_rate_limiter.is_rate_limited(key, max_attempts, window_seconds)
+    except AuthRateLimitUnavailable:
+        raise HTTPException(status_code=503, detail="Authentication temporarily unavailable")
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -266,7 +302,7 @@ def _create_auth_response(
 @router.post("/register")
 def register(request: Request, body: RegisterRequest, db: Session = Depends(get_db)):
     client_ip = _get_client_ip(request)
-    is_limited, retry_after = auth_rate_limiter.is_rate_limited(f"register:{client_ip}", max_attempts=5, window_seconds=60)
+    is_limited, retry_after = _guard_auth_limit(f"register:{client_ip}", max_attempts=5, window_seconds=60)
     if is_limited:
         raise HTTPException(
             status_code=429,
@@ -370,7 +406,7 @@ def _complete_email_verification(token: str, db: Session):
 def resend_verification(request: Request, request_data: dict, db: Session = Depends(get_db)):
     """Resend verification email by address (no auth — user cannot log in until verified)."""
     client_ip = _get_client_ip(request)
-    is_limited, retry_after = auth_rate_limiter.is_rate_limited(
+    is_limited, retry_after = _guard_auth_limit(
         f"resend-verify:{client_ip}", max_attempts=3, window_seconds=300
     )
     if is_limited:
@@ -401,7 +437,11 @@ def resend_verification(request: Request, request_data: dict, db: Session = Depe
 @router.post("/login")
 def login(request: Request, body: LoginRequest, db: Session = Depends(get_db)):
     ip = _get_client_ip(request)
-    is_limited, retry_after = auth_rate_limiter.is_rate_limited(f"login:{ip}", max_attempts=5, window_seconds=60)
+    is_limited, retry_after = _guard_auth_limit(f"login:{ip}", max_attempts=5, window_seconds=60)
+    if not is_limited:
+        is_limited, retry_after = _guard_auth_limit(
+            f"login:{ip}:{_identity_fragment(body.email)}", max_attempts=5, window_seconds=60
+        )
     if is_limited:
         raise HTTPException(
             status_code=429,
@@ -645,7 +685,7 @@ def forgot_password(request: Request, request_data: dict, db: Session = Depends(
     """Generate password reset token. Always returns 200 to prevent email enumeration."""
     # Rate limit password reset requests
     client_ip = _get_client_ip(request)
-    is_limited, retry_after = auth_rate_limiter.is_rate_limited(f"forgot:{client_ip}", max_attempts=3, window_seconds=60)
+    is_limited, retry_after = _guard_auth_limit(f"forgot:{client_ip}", max_attempts=3, window_seconds=60)
     if is_limited:
         raise HTTPException(
             status_code=429,
@@ -697,8 +737,17 @@ def forgot_password(request: Request, request_data: dict, db: Session = Depends(
 
 
 @router.post("/reset-password")
-def reset_password(request_data: dict, db: Session = Depends(get_db)):
+def reset_password(request: Request, request_data: dict, db: Session = Depends(get_db)):
     """Reset password using token."""
+    is_limited, retry_after = _guard_auth_limit(
+        f"reset:{_get_client_ip(request)}", max_attempts=5, window_seconds=60
+    )
+    if is_limited:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many reset attempts. Please try again later.",
+            headers={"Retry-After": str(retry_after)},
+        )
     token = request_data.get("token", "")
     new_password = request_data.get("new_password", "")
 

@@ -1,0 +1,36 @@
+{
+  "algorithm_version": "aria-fit-v1",
+  "input_snapshot": {
+    "schema_version": "decision_input_v1",
+    "resume_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "jd_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "parser_snapshot_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "components": {
+      "skills": 80,
+      "experience": 70,
+      "architecture": 60,
+      "education": 50,
+      "timeline": 90,
+      "domain": 75
+    },
+    "risk_penalty": 10
+  },
+  "effective_weights": {
+    "skills": 0.3,
+    "experience": 0.2,
+    "architecture": 0.15,
+    "education": 0.1,
+    "timeline": 0.15,
+    "domain": 0.1,
+    "risk": 0.1
+  },
+  "expected": {
+    "algorithm_version": "aria-fit-v1",
+    "component_fit_score": 73,
+    "deterministic_score": 72,
+    "final_fit_score": 72,
+    "eligibility_status": true,
+    "risk_penalty": 10,
+    "recommendation": "Consider"
+  }
+}

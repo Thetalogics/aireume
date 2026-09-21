@@ -82,6 +82,9 @@ def _generate_exp_explanation(actual: float, required: float, score: int) -> str
         return f"{actual:.1f} years falls short of {required:.0f} year requirement"
 
 
+ARIA_FIT_ALGORITHM_VERSION = "aria-fit-v1"
+
+
 def compute_fit_score(
     scores: Dict[str, Any],
     scoring_weights: Optional[Dict] = None,

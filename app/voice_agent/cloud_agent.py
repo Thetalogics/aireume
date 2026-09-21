@@ -68,7 +68,10 @@ def get_livekit_llm_model() -> str:
 
 ARIA_BACKEND_URL = os.getenv("ARIA_BACKEND_URL", "http://backend:8000")
 INTERNAL_SERVICE_SECRET = os.getenv("INTERNAL_SERVICE_SECRET", "dev-internal-service-secret")
-INTERNAL_HEADERS = {"X-Internal-Secret": INTERNAL_SERVICE_SECRET}
+INTERNAL_HEADERS = {
+    "X-Internal-Service-Secret": INTERNAL_SERVICE_SECRET,
+    "X-Internal-Secret": INTERNAL_SERVICE_SECRET,
+}
 CLOSE_PAUSE_S = float(os.getenv("ARIA_CALL_CLOSE_PAUSE_S", "1.5"))
 CONSOLE_SIGNOFF = (
     "This concludes your screening session. You can close this window now. Goodbye!"

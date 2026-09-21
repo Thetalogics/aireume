@@ -221,6 +221,13 @@ class AnalysisResponse(BaseModel):
     candidate_domain:     Optional[Dict[str, Any]] = None
     eligibility:          Optional[Dict[str, Any]] = None
     deterministic_features: Optional[Dict[str, Any]] = None
+    current_decision_id:  Optional[int] = None
+    decision_id:          Optional[int] = None
+    decision_version:     Optional[int] = None
+    algorithm_version:    Optional[str] = None
+    ai_recommendation:    Optional[str] = None
+    effective_recommendation: Optional[str] = None
+    override_indicator:   Optional[bool] = False
 
 
 class BatchAnalysisResult(BaseModel):
@@ -799,6 +806,7 @@ class ScheduleVoiceCallRequest(BaseModel):
     jd_id: Optional[int] = None
     phone_number: str  # E.164
     scheduled_at: Optional[datetime] = None  # UTC; None = schedule immediately
+    operation_id: Optional[str] = None
 
 
 class RescheduleVoiceCallRequest(BaseModel):
@@ -830,6 +838,7 @@ class InterviewCreateRequest(BaseModel):
     screening_result_id: Optional[int] = None
     phone_number: Optional[str] = None
     scheduled_at: Optional[str] = None
+    operation_id: Optional[str] = None
     focus_areas: Optional[List[str]] = None
     duration_minutes: Optional[int] = Field(None, ge=5, le=60)
 
