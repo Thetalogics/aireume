@@ -1,5 +1,20 @@
 # Deployment reliability
 
+## Alembic drift gate (Option B)
+
+CI does **not** treat generic `alembic check` as authoritative. `alembic/env.py`
+detaches Phase 2 columns (`current_decision_id`, `screening_decision_id`) from live
+ORM metadata so revision `001` `create_all` cannot create 081-owned columns.
+Autogenerate/check therefore compares a deliberately incomplete metadata graph
+with the migrated database and can return nonzero without meaning “head is
+behind,” or miss real post-080 drift.
+
+The hard gate is `app/backend/tests/test_alembic_drift.py`: checksum immutability
+of revisions through `080_phase1_reliability_closure` via
+`alembic/historical_migration_manifest.json` (SHA-256 of exact file bytes, no Git
+history at runtime), plus an explicit post-080 schema contract and a
+downgrade 082→081 / upgrade 081→082 cycle.
+
 ## Migration owner
 
 Only the one-shot `migrate` service runs Alembic (`RUN_DB_MIGRATIONS=1` → `python -m app.backend.services.migration_owner`).

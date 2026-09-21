@@ -1,5 +1,12 @@
 name: CI - Test on Pull Request
 
+# Event semantics (intentional):
+# - push / pull_request: full functional CI (tests, scans, compose, CodeQL-adjacent jobs)
+# - schedule (Monday 06:00 UTC): secret-scan-history only (full-history gitleaks)
+# - workflow_dispatch: functional jobs plus secret-scan-history
+# A scheduled full-history secret finding is a security-baseline event, not a product
+# functional regression.
+
 on:
   pull_request:
     branches: [ main, staging, production ]
@@ -247,6 +254,8 @@ jobs:
           --health-retries 5
     env:
       DATABASE_URL: postgresql://aria:aria@localhost:5432/aria_test
+      RELIABILITY_POSTGRES_URL: postgresql+psycopg2://aria:aria@localhost:5432/aria_test
+      RELIABILITY_REQUIRED: "1"
       PYTHONPATH: ${{ github.workspace }}
     steps:
     - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -260,6 +269,7 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install -r app/backend/requirements.txt
+        pip install pytest pytest-timeout
 
     - name: Assert a single Alembic head
       run: |
@@ -272,7 +282,22 @@ jobs:
         alembic -c alembic.ini upgrade head
         alembic -c alembic.ini downgrade -1
         alembic -c alembic.ini upgrade head
-        python -m pytest app/backend/tests/test_alembic_drift.py -v --tb=short
+        python -m pytest \
+          app/backend/tests/test_alembic_drift.py \
+          -v \
+          --tb=short \
+          --strict-markers \
+          --timeout=180 \
+          --junitxml=/tmp/alembic-drift.xml
+        python -c "
+        from xml.etree import ElementTree as ET
+        root = ET.parse('/tmp/alembic-drift.xml').getroot()
+        suite = root if root.tag.endswith('testsuite') else root.find('.//{*}testsuite')
+        skipped = int(suite.attrib.get('skipped', 0) or 0)
+        failed = int(suite.attrib.get('failures', 0) or 0)
+        errors = int(suite.attrib.get('errors', 0) or 0)
+        assert skipped == 0 and failed == 0 and errors == 0, suite.attrib
+        "
 
   secret-scan:
     runs-on: ubuntu-latest
@@ -359,9 +384,20 @@ jobs:
         ! grep -E 'revanth2245/resume-[^:]+:latest' /tmp/prod.yml
         grep -q 'REDIS_REQUIRED=1' docker-compose.prod.yml
         grep -q 'migrate:' docker-compose.prod.yml
-        docker compose -f docker-compose.staging.yml config >/dev/null || true
-        docker compose -f docker-compose.main.staging.yml config >/dev/null || true
-        docker compose -f docker-compose.voice.staging.yml config >/dev/null || true
+        test "$(grep -c 'service_completed_successfully' docker-compose.prod.yml)" -ge 2
+        grep -q 'profiles: \["local-ollama"\]' docker-compose.prod.yml
+        export STAGING_POSTGRES_PASSWORD=x
+        export STAGING_JWT_SECRET_KEY=x
+        export STAGING_LIVEKIT_NODE_IP=203.0.113.10
+        export STAGING_LIVEKIT_API_KEY=x
+        export STAGING_LIVEKIT_API_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+        docker compose -f docker-compose.staging.yml config >/tmp/staging.yml
+        export GEMINI_API_KEY=x
+        export LIVEKIT_URL=wss://example.invalid
+        export SIP_AUTH_PASSWORD=x
+        docker compose -f docker-compose.main.staging.yml config >/tmp/main-staging.yml
+        export ARIA_BACKEND_URL=https://example.invalid
+        docker compose -f docker-compose.voice.staging.yml config >/tmp/voice-staging.yml
 
   filesystem-scan:
     runs-on: ubuntu-latest
@@ -374,6 +410,9 @@ jobs:
       with:
         scan-type: fs
         scan-ref: .
+        scanners: vuln,misconfig
         severity: HIGH,CRITICAL
         ignore-unfixed: true
         exit-code: '1'
+        skip-dirs: node_modules,.venv,venv,.git
+        trivyignores: .trivyignore.yaml

@@ -1,0 +1,3 @@
+# Historical Alembic revisions are hashed as exact Git blob bytes (LF).
+alembic/versions/*.py text eol=lf
+alembic/historical_migration_manifest.json text eol=lf

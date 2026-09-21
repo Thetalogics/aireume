@@ -1,0 +1,9 @@
+# Exact historical fingerprints only. Do not ignore paths or rule IDs globally.
+# See security/historical-secret-baseline.md
+
+87c5223ec34a08074c0b10db22d3ff1436782f3d:.env.example:generic-api-key:23
+87c5223ec34a08074c0b10db22d3ff1436782f3d:.env.example:generic-api-key:43
+ad5f3f5e9784ed17aaa589cd2729fc5695153cd5:PRODUCTION_DEPLOYMENT_GUIDE.md:generic-api-key:75
+5874d139dfd407ac1d13304f6665ad2ebf751be9:app/backend/tests/test_billing.py:stripe-access-token:163
+0731f7960c235f5c34eb0449c13e5b5d270043e8:DEPLOYMENT_GUIDE.md:curl-auth-header:80
+0731f7960c235f5c34eb0449c13e5b5d270043e8:DEPLOYMENT_GUIDE.md:curl-auth-header:88

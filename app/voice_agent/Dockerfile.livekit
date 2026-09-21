@@ -1,4 +1,6 @@
 FROM livekit/livekit-server:latest
+# DS-0002: upstream image has no supported non-root user. Config is written to
+# /tmp/livekit.yaml (see livekit-entrypoint.sh). See security/trivy-exceptions.md.
 COPY app/voice_agent/livekit-entrypoint.sh /livekit-entrypoint.sh
 RUN chmod +x /livekit-entrypoint.sh
 ENTRYPOINT ["/livekit-entrypoint.sh"]

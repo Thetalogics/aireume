@@ -1,0 +1,22 @@
+# Path-scoped Dockerfile exceptions only. Do not ignore DS-0002/DS-0029 globally.
+misconfigurations:
+  - id: AVD-DS-0002
+    paths:
+      - nginx/Dockerfile
+    statement: >
+      Official nginx:alpine starts the master process as root so it can bind
+      TCP/80 and load /etc/nginx. Worker processes drop to the nginx user via
+      the stock nginx.conf. Compensating control: image contains only baked
+      nginx.prod.conf, no shell entrypoint, production tag is RELEASE_SHA not
+      :latest. Review by 2027-03-21.
+    expired_at: 2027-03-21
+  - id: AVD-DS-0002
+    paths:
+      - app/voice_agent/Dockerfile.livekit
+    statement: >
+      Upstream livekit/livekit-server image has no supported non-root runtime
+      user. Entrypoint writes config to /tmp/livekit.yaml (unprivileged path)
+      then execs the server. Compensating control: production uses
+      resume-livekit:RELEASE_SHA, keys from env only, no extra packages.
+      Review by 2027-03-21.
+    expired_at: 2027-03-21

@@ -19,7 +19,7 @@ if [ -n "$NODE_IP" ]; then
   NODE_IP_LINE="  node_ip: \"${NODE_IP}\""
 fi
 
-cat > /etc/livekit.yaml <<EOF
+cat > /tmp/livekit.yaml <<EOF
 port: 7880
 rtc:
   port_range_start: 50000
@@ -48,4 +48,4 @@ redis:
 EOF
 
 echo "LiveKit config written (key=${KEY}, secret_len=${#SECRET}, node_ip=${NODE_IP:-unset})"
-exec /livekit-server --config /etc/livekit.yaml
+exec /livekit-server --config /tmp/livekit.yaml

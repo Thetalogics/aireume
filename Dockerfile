@@ -23,7 +23,7 @@ FROM base AS build
 # g++: C++ compiler needed for building Python packages with C++ extensions
 # python3-dev: Python development headers needed for compilation
 # We clean up the apt cache after installation to keep the image size down
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     g++ \
     python3-dev \
