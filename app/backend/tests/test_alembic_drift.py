@@ -77,12 +77,26 @@ def _numeric_prefix(name: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
+def _files_map(payload: dict) -> dict[str, str]:
+    files = payload.get("files")
+    assert isinstance(files, list) and files, "manifest files must be a [{name, sha256}] list"
+    mapped: dict[str, str] = {}
+    for row in files:
+        assert isinstance(row, dict), row
+        name = row.get("name")
+        digest = row.get("sha256")
+        assert isinstance(name, str) and name.endswith(".py"), row
+        assert isinstance(digest, str) and re.fullmatch(r"[a-f0-9]{64}", digest), name
+        assert name not in mapped, name
+        mapped[name] = digest
+    return mapped
+
+
 def _load_manifest() -> dict:
     payload = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
     assert payload.get("algorithm") == "sha256", payload.get("algorithm")
     assert payload.get("through_revision") == THROUGH_REVISION, payload.get("through_revision")
-    files = payload.get("files")
-    assert isinstance(files, dict) and files, "manifest files missing"
+    payload["files"] = _files_map(payload)
     return payload
 
 

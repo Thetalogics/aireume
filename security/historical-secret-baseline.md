@@ -16,6 +16,13 @@ These findings predate commit `5c33aa65be7dea7e60ac7143c639c8bd4de9bee4`.
 | `0731f7960c235f5c34eb0449c13e5b5d270043e8:DEPLOYMENT_GUIDE.md:curl-auth-header:80` | `0731f7960c235f5c34eb0449c13e5b5d270043e8` | `DEPLOYMENT_GUIDE.md` | curl-auth-header | **Placeholder documentation** | Bearer token in curl example | N/A | Docs sample Authorization header in old commit. |
 | `0731f7960c235f5c34eb0449c13e5b5d270043e8:DEPLOYMENT_GUIDE.md:curl-auth-header:88` | `0731f7960c235f5c34eb0449c13e5b5d270043e8` | `DEPLOYMENT_GUIDE.md` | curl-auth-header | **Placeholder documentation** | Bearer token in curl example | N/A | Docs sample Authorization header in old commit. |
 
+`alembic/historical_migration_manifest.json` is not a credential store. Commit
+`2765569` used a `"filename": "<sha256>"` map; gitleaks `generic-api-key`
+matched SHA-256 next to names containing `token`/`key` (lines 9, 38, 52). Those
+three fingerprints are history-only. Current manifest is a `{name, sha256}`
+list so the detector does not see `*_tokens.py` / `*_keys.py` as API-key
+assignments.
+
 Do not add fingerprints here without classifying the finding and, for real
 credentials, stating rotation status honestly.
 
