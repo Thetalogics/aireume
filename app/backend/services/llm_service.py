@@ -211,10 +211,9 @@ def _gemini_thinking_config(model: str, json_mode: bool) -> dict[str, int | str]
 
 
 async def probe_gemini_config() -> None:
-    """One cheap generateContent using the production model and thinking config.
+    """One generateContent using the production model, thinking config, and read budget.
 
-    Raises when the key, model id, or thinking level is rejected. Startup uses
-    this so a present API key is not reported as READY.
+    Raises a reason startup can print: read timeout, busy (429/5xx), or rejected (4xx).
     """
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
     if not api_key:
@@ -228,18 +227,26 @@ async def probe_gemini_config() -> None:
     thinking = _gemini_thinking_config(model, True)
     if thinking is not None:
         generation_config["thinkingConfig"] = thinking
-    async with httpx.AsyncClient(timeout=httpx_timeout(GEMINI_CONNECT, 8)) as client:
-        response = await client.post(
-            f"{GEMINI_API_BASE}/models/{model}:generateContent",
-            params={"key": api_key},
-            json={
-                "contents": [{"role": "user", "parts": [{"text": 'Reply with JSON: {"ok": true}'}]}],
-                "generationConfig": generation_config,
-            },
-            headers={"Content-Type": "application/json"},
-        )
+    try:
+        async with httpx.AsyncClient(timeout=httpx_timeout(GEMINI_CONNECT, GEMINI_READ)) as client:
+            response = await client.post(
+                f"{GEMINI_API_BASE}/models/{model}:generateContent",
+                params={"key": api_key},
+                json={
+                    "contents": [{"role": "user", "parts": [{"text": 'Reply with JSON: {"ok": true}'}]}],
+                    "generationConfig": generation_config,
+                },
+                headers={"Content-Type": "application/json"},
+            )
+    except httpx.TimeoutException as exc:
+        raise RuntimeError(
+            f"Gemini timed out after {int(GEMINI_READ)}s read"
+        ) from exc
     if response.status_code >= 400:
-        raise RuntimeError(f"Gemini API HTTP {response.status_code}: {response.text[:180]}")
+        kind = "busy" if response.status_code >= 500 or response.status_code == 429 else "rejected"
+        raise RuntimeError(
+            f"Gemini {kind} HTTP {response.status_code}: {response.text[:180]}"
+        )
 
 
 async def gemini_generate_content(

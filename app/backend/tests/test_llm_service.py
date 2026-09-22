@@ -1,5 +1,6 @@
 """Tests for llm_service.py including OllamaHealthSentinel."""
 
+import httpx
 import pytest
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -434,6 +435,51 @@ class TestGeminiAnalysisHelpers:
                 await llm_service.probe_gemini_config()
 
         assert posted["body"]["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "low"}
+
+    @pytest.mark.asyncio
+    async def test_startup_probe_uses_analysis_read_budget(self, monkeypatch):
+        from app.backend.services import llm_service
+        from app.backend.services.reliability.timeouts import GEMINI_READ
+
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        monkeypatch.setenv("GEMINI_MODEL", "gemini-3.7-flash")
+
+        class Ok:
+            status_code = 200
+            text = '{"candidates":[]}'
+
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=Ok())
+            await llm_service.probe_gemini_config()
+
+        timeout = mock_client.call_args.kwargs["timeout"]
+        assert timeout.read == GEMINI_READ
+
+    @pytest.mark.asyncio
+    async def test_startup_probe_names_timeout_and_capacity(self, monkeypatch):
+        from app.backend.services import llm_service
+
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        monkeypatch.setenv("GEMINI_MODEL", "gemini-3.7-flash")
+
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_client.return_value.__aenter__.return_value.post = AsyncMock(
+                side_effect=httpx.ReadTimeout("")
+            )
+            with pytest.raises(RuntimeError, match="timed out") as timed_out:
+                await llm_service.probe_gemini_config()
+        assert "incompatible" not in str(timed_out.value).lower()
+
+        class Busy:
+            status_code = 503
+            text = "This model is currently experiencing high demand"
+
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=Busy())
+            with pytest.raises(RuntimeError, match="503") as busy:
+                await llm_service.probe_gemini_config()
+        assert "busy" in str(busy.value).lower()
+        assert "incompatible" not in str(busy.value).lower()
 
     @pytest.mark.asyncio
     async def test_gemini_raises_truncated_on_max_tokens_json(self, monkeypatch):

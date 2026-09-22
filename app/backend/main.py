@@ -312,11 +312,12 @@ async def _startup_checks() -> dict:
                 "note": gemini_model,
             }
         except Exception as exc:
-            logger.warning("Gemini startup probe failed for %s: %s", gemini_model, exc)
+            note = str(exc).strip() or type(exc).__name__
+            logger.warning("Gemini startup probe failed for %s: %s", gemini_model, note)
             results["gemini"] = {
                 "ok": False,
                 "label": "Gemini",
-                "note": f"incompatible {gemini_model}",
+                "note": note,
             }
         results["jd_cache"] = {
             "ok": True,
