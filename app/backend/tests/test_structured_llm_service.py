@@ -69,6 +69,37 @@ async def test_invoke_outlines_disabled_returns_none(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_outlines_order_is_ollama_then_gemini(monkeypatch):
+    monkeypatch.setenv("OUTLINES_STRUCTURED_JSON", "1")
+    seen: list[str] = []
+
+    async def _fake_ollama(*_args, **_kwargs):
+        seen.append("ollama")
+        return None
+
+    async def _fake_gemini(*_args, **_kwargs):
+        seen.append("gemini")
+        return None
+
+    monkeypatch.setattr(
+        "app.backend.services.structured_llm_service._try_outlines_ollama",
+        _fake_ollama,
+    )
+    monkeypatch.setattr(
+        "app.backend.services.structured_llm_service._try_outlines_gemini",
+        _fake_gemini,
+    )
+
+    result = await invoke_outlines_json_resilient(
+        ["prompt"],
+        output_type=InterviewKitLLMResponse,
+        log_label="interview_kit",
+    )
+    assert result is None
+    assert seen == ["ollama", "gemini"]
+
+
+@pytest.mark.asyncio
 async def test_invoke_outlines_gemini_success(monkeypatch):
     monkeypatch.setenv("OUTLINES_STRUCTURED_JSON", "1")
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")

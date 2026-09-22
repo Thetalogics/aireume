@@ -223,7 +223,7 @@ async def invoke_outlines_json_resilient(
     validate_parsed: Callable[[dict[str, Any]], bool] | None = None,
     on_rejected: Callable[[dict[str, Any], int, str], None] | None = None,
 ) -> dict[str, Any] | None:
-    """Schema-bound generation via Outlines (Gemini → Ollama)."""
+    """Schema-bound generation via Outlines (Ollama, then Gemini)."""
     if not is_structured_llm_enabled() or not _outlines_available():
         return None
 
@@ -245,9 +245,14 @@ async def invoke_outlines_json_resilient(
         tier_temp = temperature if attempt == 0 else min(temperature, 0.15)
         tier_label = f"{log_label}_outlines_tier{attempt + 1}"
 
+        from app.backend.services.app_llm_client import ANALYSIS_LLM_ORDER
+
+        outlines_fns = {
+            "ollama": _try_outlines_ollama,
+            "gemini": _try_outlines_gemini,
+        }
         provider_chain = [
-            ("gemini", _try_outlines_gemini),
-            ("ollama", _try_outlines_ollama),
+            (name, outlines_fns[name]) for name in ANALYSIS_LLM_ORDER if name in outlines_fns
         ]
 
         for provider_name, provider_fn in provider_chain:

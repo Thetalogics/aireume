@@ -471,7 +471,11 @@ class TestGeminiAnalysisHelpers:
         svc = LLMService()
         mock_json = '{"role_title": "Engineer", "domain": "Backend Engineering", "domain_keywords": ["python"], "architecture_signals": ["designed"], "education_fields": [], "min_required_years": 3, "max_required_years": 8, "seniority": "mid", "required_skills": ["Python"], "nice_to_have_skills": []}'
 
-        with patch(
+        with patch.object(
+            svc,
+            "_call_ollama",
+            new=AsyncMock(side_effect=RuntimeError("ollama down")),
+        ) as mock_ollama, patch(
             "app.backend.services.llm_service.gemini_generate_content",
             new=AsyncMock(
                 return_value=__import__(
@@ -482,6 +486,7 @@ class TestGeminiAnalysisHelpers:
         ) as mock_gemini:
             result = await svc.extract_jd_profile("Senior Python Engineer role")
 
+        mock_ollama.assert_awaited_once()
         mock_gemini.assert_awaited_once()
     @pytest.mark.asyncio
     async def test_gemini_retries_on_503(self, monkeypatch):

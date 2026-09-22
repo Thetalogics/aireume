@@ -75,6 +75,21 @@ request_id_var = contextvars.ContextVar('request_id', default='-')
 
 
 # ─── Startup Environment Validation ─────────────────────────────────────────────
+def _missing_llm_models() -> list[str]:
+    """Models the analysis chain will call. Empty OpenRouter is allowed when it has no key."""
+    missing: list[str] = []
+    if not (
+        os.getenv("OLLAMA_MODEL_BACKEND", "").strip()
+        or os.getenv("OLLAMA_MODEL", "").strip()
+    ):
+        missing.append("OLLAMA_MODEL_BACKEND")
+    if os.getenv("GEMINI_API_KEY", "").strip() and not os.getenv("GEMINI_MODEL", "").strip():
+        missing.append("GEMINI_MODEL")
+    if os.getenv("OPENROUTER_API_KEY", "").strip() and not os.getenv("OPENROUTER_MODEL", "").strip():
+        missing.append("OPENROUTER_MODEL")
+    return missing
+
+
 def _validate_environment() -> None:
     """Validate critical environment variables at startup. Fail fast in production."""
     env = os.getenv("ENVIRONMENT", "development")
@@ -92,7 +107,17 @@ def _validate_environment() -> None:
     if not os.getenv("OLLAMA_API_KEY") and not os.getenv("GEMINI_API_KEY"):
         warnings.append("OLLAMA_API_KEY not set - LLM features will be limited")
     elif os.getenv("GEMINI_API_KEY"):
-        logger.info("STARTUP: GEMINI_API_KEY set — resume analysis will use Google Gemini")
+        logger.info("STARTUP: GEMINI_API_KEY set — Gemini is the second analysis provider")
+
+    if os.getenv("TESTING", "").strip().lower() != "true" and env in ("staging", "production"):
+        missing_llm = _missing_llm_models()
+        if missing_llm:
+            logger.critical(
+                "FATAL: Missing LLM configuration: %s. Refusing to start.",
+                ", ".join(missing_llm),
+            )
+            import sys
+            sys.exit(1)
     if not os.getenv("CORS_ORIGINS"):
         warnings.append("CORS_ORIGINS not set - using default localhost origins")
 
@@ -268,19 +293,29 @@ async def _startup_checks() -> dict:
     if use_gemini_for_analysis():
         from app.backend.services.llm_service import probe_gemini_config
 
+        ollama_model = (
+            os.getenv("OLLAMA_MODEL_BACKEND", "").strip()
+            or os.getenv("OLLAMA_MODEL", "").strip()
+            or "unset"
+        )
+        results["analysis_llm"] = {
+            "ok": ollama_model != "unset",
+            "label": "Analysis LLM",
+            "note": f"Ollama ({ollama_model})",
+        }
         gemini_model = get_gemini_model()
         try:
             await probe_gemini_config()
-            results["analysis_llm"] = {
+            results["gemini"] = {
                 "ok": True,
-                "label": "Analysis LLM",
-                "note": f"Google Gemini ({gemini_model})",
+                "label": "Gemini",
+                "note": gemini_model,
             }
         except Exception as exc:
             logger.warning("Gemini startup probe failed for %s: %s", gemini_model, exc)
-            results["analysis_llm"] = {
+            results["gemini"] = {
                 "ok": False,
-                "label": "Analysis LLM",
+                "label": "Gemini",
                 "note": f"incompatible {gemini_model}",
             }
         results["jd_cache"] = {
@@ -288,6 +323,28 @@ async def _startup_checks() -> dict:
             "label": "JD profile cache",
             "note": "Postgres jd_cache table",
         }
+        openrouter_key = os.getenv("OPENROUTER_API_KEY", "").strip()
+        openrouter_model = os.getenv("OPENROUTER_MODEL", "").strip()
+        if not openrouter_key:
+            logger.warning("OpenRouter fallback not configured (missing OPENROUTER_API_KEY)")
+            results["openrouter"] = {
+                "ok": True,
+                "label": "OpenRouter",
+                "note": "not configured",
+            }
+        elif not openrouter_model:
+            logger.warning("OpenRouter fallback skipped (OPENROUTER_MODEL is not set)")
+            results["openrouter"] = {
+                "ok": True,
+                "label": "OpenRouter",
+                "note": "model not set",
+            }
+        else:
+            results["openrouter"] = {
+                "ok": True,
+                "label": "OpenRouter",
+                "note": openrouter_model,
+            }
     else:
         ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
         from app.backend.services.llm_service import get_ollama_model

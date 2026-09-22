@@ -1,4 +1,8 @@
-"""Shared application LLM client — Gemini primary, Ollama + OpenRouter fallbacks."""
+"""Shared application LLM client.
+
+Analysis order is Ollama, then Gemini, then OpenRouter. Model ids come from
+OLLAMA_MODEL_BACKEND, GEMINI_MODEL, and OPENROUTER_MODEL.
+"""
 
 from __future__ import annotations
 
@@ -11,6 +15,10 @@ from typing import Any
 import httpx
 
 logger = logging.getLogger(__name__)
+
+# Every analysis caller uses this. Outlines has no OpenRouter client, so it
+# takes the Ollama and Gemini entries and the legacy JSON path still runs OpenRouter.
+ANALYSIS_LLM_ORDER = ("ollama", "gemini", "openrouter")
 
 
 def parse_json_from_llm(text: str) -> dict[str, Any] | None:
@@ -47,7 +55,7 @@ async def generate_app_llm(
     log_label: str = "app",
     allow_provider_fallback: bool = True,
 ) -> str | None:
-    """Generate text via Gemini when configured, else Ollama/OpenRouter fallbacks."""
+    """Generate text via Ollama, then Gemini, then OpenRouter."""
     from app.backend.services.circuit_breaker import get_circuit_breaker, CircuitBreakerOpenError
     from app.backend.services.external_ai_boundary import prepare_external_prompt
     from app.backend.services.llm_concurrency import LLMConcurrencySaturated, llm_slot
@@ -221,6 +229,10 @@ async def _try_openrouter(
 
     api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
     if not api_key:
+        logger.warning(
+            "%s provider=openrouter outcome=skipped reason=missing_api_key",
+            log_label,
+        )
         return None
 
     try:
@@ -276,6 +288,16 @@ async def _try_openrouter(
     return None
 
 
+def _analysis_providers(*, allow_provider_fallback: bool) -> list[tuple[str, Any]]:
+    names = ANALYSIS_LLM_ORDER if allow_provider_fallback else ANALYSIS_LLM_ORDER[:1]
+    fns = {
+        "ollama": _try_ollama,
+        "gemini": _try_gemini,
+        "openrouter": _try_openrouter,
+    }
+    return [(name, fns[name]) for name in names]
+
+
 async def _generate_app_llm_uncached(
     prompt: str,
     *,
@@ -304,17 +326,12 @@ async def _generate_app_llm_uncached(
     }
     network_kwargs = {**llm_kwargs, "timeout": timeout}
 
-    text = await _try_gemini(prompt, **llm_kwargs)
-    if text:
-        return text
-    if not allow_provider_fallback:
-        return None
-
-    text = await _try_ollama(prompt, **network_kwargs)
-    if text:
-        return text
-
-    return await _try_openrouter(prompt, **network_kwargs)
+    for name, fn in _analysis_providers(allow_provider_fallback=allow_provider_fallback):
+        kwargs = llm_kwargs if name == "gemini" else network_kwargs
+        text = await fn(prompt, **kwargs)
+        if text:
+            return text
+    return None
 
 
 async def generate_app_llm_providers(
@@ -346,9 +363,7 @@ async def generate_app_llm_providers(
     }
     network_kwargs = {**llm_kwargs, "timeout": timeout}
 
-    providers: list[tuple[str, Any]] = [("gemini", _try_gemini)]
-    if allow_provider_fallback:
-        providers.extend([("ollama", _try_ollama), ("openrouter", _try_openrouter)])
+    providers = _analysis_providers(allow_provider_fallback=allow_provider_fallback)
 
     for name, fn in providers:
         kwargs = network_kwargs if name != "gemini" else llm_kwargs

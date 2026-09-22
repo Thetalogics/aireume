@@ -7,6 +7,42 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 
 @pytest.mark.asyncio
+async def test_analysis_order_is_ollama_then_gemini_then_openrouter(monkeypatch):
+    """One order for every analysis call: Ollama, Gemini, OpenRouter."""
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-3.7-flash")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+    monkeypatch.setenv("OPENROUTER_MODEL", "qwen/qwen3.8-27b:free")
+    monkeypatch.setenv("OLLAMA_MODEL_BACKEND", "deepseek-v4.1-flash:cloud")
+
+    from app.backend.services.app_llm_client import generate_app_llm
+
+    seen: list[str] = []
+
+    def _record(name: str):
+        async def _call(*_args, **_kwargs):
+            seen.append(name)
+            return None
+
+        return _call
+
+    with patch(
+        "app.backend.services.app_llm_client._try_ollama",
+        new=_record("ollama"),
+    ), patch(
+        "app.backend.services.app_llm_client._try_gemini",
+        new=_record("gemini"),
+    ), patch(
+        "app.backend.services.app_llm_client._try_openrouter",
+        new=_record("openrouter"),
+    ):
+        text = await generate_app_llm("prompt", max_output_tokens=128)
+
+    assert text is None
+    assert seen == ["ollama", "gemini", "openrouter"]
+
+
+@pytest.mark.asyncio
 async def test_generate_app_json_uses_gemini_when_key_set(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     monkeypatch.setenv("GEMINI_MODEL", "gemini-test")
@@ -14,6 +50,10 @@ async def test_generate_app_json_uses_gemini_when_key_set(monkeypatch):
     from app.backend.services.app_llm_client import generate_app_json
 
     with patch(
+        "app.backend.services.app_llm_client._try_ollama",
+        new_callable=AsyncMock,
+        return_value=None,
+    ), patch(
         "app.backend.services.llm_service.gemini_generate_content",
         new_callable=AsyncMock,
     ) as mock_gemini:
@@ -95,10 +135,27 @@ async def test_generate_app_llm_falls_back_to_openrouter_when_gemini_and_ollama_
 
     assert text == "hello from openrouter"
     assert mock_client.post.await_count == 2
-    urls = [call.args[0] for call in mock_client.post.await_args_list]
-    assert any(u.endswith("/api/generate") for u in urls)
-    assert any("openrouter.ai" in u for u in urls)
-    assert mock_async_client.call_count == 2
+    assert mock_client.post.await_args_list[0].args[0].endswith("/api/generate")
+    assert "openrouter.ai" in mock_client.post.await_args_list[1].args[0]
+
+
+@pytest.mark.asyncio
+async def test_openrouter_skip_is_logged_when_key_missing(monkeypatch, caplog):
+    from app.backend.services.app_llm_client import _try_openrouter
+
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    caplog.set_level("WARNING")
+    text = await _try_openrouter(
+        "prompt",
+        system=None,
+        max_output_tokens=32,
+        temperature=0,
+        timeout=5,
+        json_mode=True,
+        log_label="interview_kit_tier1",
+    )
+    assert text is None
+    assert "provider=openrouter outcome=skipped reason=missing_api_key" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -150,9 +207,10 @@ async def test_generate_app_llm_skips_fallbacks_when_disabled(monkeypatch):
         "app.backend.services.llm_service.gemini_generate_content",
         new_callable=AsyncMock,
         side_effect=RuntimeError("429"),
-    ), patch(
+    ) as mock_gemini, patch(
         "app.backend.services.app_llm_client._try_ollama",
         new_callable=AsyncMock,
+        return_value=None,
     ) as mock_ollama, patch(
         "app.backend.services.app_llm_client._try_openrouter",
         new_callable=AsyncMock,
@@ -164,5 +222,6 @@ async def test_generate_app_llm_skips_fallbacks_when_disabled(monkeypatch):
         )
 
     assert text is None
-    mock_ollama.assert_not_awaited()
+    mock_ollama.assert_awaited_once()
+    mock_gemini.assert_not_awaited()
     mock_openrouter.assert_not_awaited()

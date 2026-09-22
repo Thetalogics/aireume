@@ -120,6 +120,16 @@ services:
       - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-https://ollama.com}
       - OLLAMA_API_KEY=${OLLAMA_API_KEY:-}
       - OLLAMA_MODEL=${OLLAMA_MODEL:-gemma4:31b-cloud}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - GEMINI_MODEL=${GEMINI_MODEL:-}
+      - GEMINI_KIT_MODEL=${GEMINI_KIT_MODEL:-}
+      - GEMINI_NARRATIVE_MODEL=${GEMINI_NARRATIVE_MODEL:-}
+      - GEMINI_MAX_RETRIES=${GEMINI_MAX_RETRIES:-2}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - OPENROUTER_MODEL=${OPENROUTER_MODEL:-}
+      - OPENROUTER_BASE_URL=${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
+      - OPENROUTER_HTTP_REFERER=${OPENROUTER_HTTP_REFERER:-}
+      - OPENROUTER_APP_TITLE=${OPENROUTER_APP_TITLE:-ARIA Resume Screener}
     depends_on:
       postgres:
         condition: service_healthy
@@ -188,6 +198,16 @@ services:
     environment:
       # Ollama Cloud (default): https://ollama.com — get API key from https://ollama.com/settings/keys
       # For local Ollama, set OLLAMA_BASE_URL=http://ollama:11434 in your .env file
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - GEMINI_MODEL=${GEMINI_MODEL:-}
+      - GEMINI_KIT_MODEL=${GEMINI_KIT_MODEL:-}
+      - GEMINI_NARRATIVE_MODEL=${GEMINI_NARRATIVE_MODEL:-}
+      - GEMINI_MAX_RETRIES=${GEMINI_MAX_RETRIES:-2}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - OPENROUTER_MODEL=${OPENROUTER_MODEL:-}
+      - OPENROUTER_BASE_URL=${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
+      - OPENROUTER_HTTP_REFERER=${OPENROUTER_HTTP_REFERER:-}
+      - OPENROUTER_APP_TITLE=${OPENROUTER_APP_TITLE:-ARIA Resume Screener}
       - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-https://ollama.com}
       - OLLAMA_API_KEY=${OLLAMA_API_KEY:?OLLAMA_API_KEY is required. Get it from https://ollama.com/settings/keys}
       - DATABASE_URL=postgresql://${POSTGRES_USER:-aria}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-aria_db}

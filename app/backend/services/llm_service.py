@@ -698,41 +698,16 @@ class LLMService:
         prompt = self._build_jd_profile_prompt(job_description)
         _timeout = (timeout or 60) + 10
 
-        if use_gemini_for_analysis():
-            for attempt in range(self.max_retries + 1):
-                try:
-                    response = await gemini_generate_content(
-                        prompt,
-                        system="Return ONLY a valid JSON object. No markdown, no code fences.",
-                        max_output_tokens=2000,
-                        temperature=0.1,
-                    )
-                    parsed = self._parse_json_response(response.text)
-                    if parsed:
-                        logger.info("JD profile extracted via Google Gemini (model=%s)", get_gemini_model())
-                        return self._validate_jd_profile(parsed)
-                except Exception as e:
-                    logger.warning(
-                        "JD profile Gemini extraction failed (attempt %d): %s",
-                        attempt + 1,
-                        _redact_secrets(str(e)[:200]),
-                    )
-            logger.info("Gemini JD profile failed — trying Ollama cloud fallback")
+        from app.backend.services.app_llm_client import ANALYSIS_LLM_ORDER
 
-        # Cloud Ollama before local CPU (fast, works without local ollama container)
-        for attempt in range(self.max_retries + 1):
-            try:
-                response = await self._call_ollama(prompt, timeout=_timeout)
-                parsed = self._parse_json_response(response)
-                if parsed:
-                    logger.info("JD profile extracted via Ollama cloud")
-                    return self._validate_jd_profile(parsed)
-            except Exception as e:
-                logger.warning(
-                    "JD profile cloud extraction failed (attempt %d): %s",
-                    attempt + 1,
-                    _redact_secrets(str(e)[:200]),
-                )
+        for provider_name in ANALYSIS_LLM_ORDER:
+            parsed = await self._extract_jd_profile_from_provider(
+                provider_name,
+                prompt,
+                timeout=_timeout,
+            )
+            if parsed:
+                return self._validate_jd_profile(parsed)
 
         # Local CPU Ollama — opt-in only (OLLAMA_USE_LOCAL_JD_PROFILE=1)
         if use_local_jd_profile():
@@ -751,6 +726,58 @@ class LLMService:
 
         logger.warning("JD profile LLM extraction exhausted — using rules fallback")
         return self._fallback_jd_profile()
+
+    async def _extract_jd_profile_from_provider(
+        self,
+        provider_name: str,
+        prompt: str,
+        *,
+        timeout: float,
+    ) -> Dict[str, Any] | None:
+        try:
+            if provider_name == "ollama":
+                response = await self._call_ollama(prompt, timeout=timeout)
+                parsed = self._parse_json_response(response)
+                if parsed:
+                    logger.info("JD profile extracted via Ollama cloud")
+                return parsed
+            if provider_name == "gemini" and use_gemini_for_analysis():
+                response = await gemini_generate_content(
+                    prompt,
+                    system="Return ONLY a valid JSON object. No markdown, no code fences.",
+                    max_output_tokens=2000,
+                    temperature=0.1,
+                )
+                parsed = self._parse_json_response(response.text)
+                if parsed:
+                    logger.info(
+                        "JD profile extracted via Google Gemini (model=%s)",
+                        get_gemini_model(),
+                    )
+                return parsed
+            if provider_name == "openrouter":
+                from app.backend.services.app_llm_client import _try_openrouter
+
+                raw = await _try_openrouter(
+                    prompt,
+                    system="Return ONLY a valid JSON object. No markdown, no code fences.",
+                    max_output_tokens=2000,
+                    temperature=0.1,
+                    timeout=timeout,
+                    json_mode=True,
+                    log_label="jd_profile",
+                )
+                parsed = self._parse_json_response(raw) if raw else None
+                if parsed:
+                    logger.info("JD profile extracted via OpenRouter")
+                return parsed
+        except Exception as exc:
+            logger.warning(
+                "JD profile %s extraction failed: %s",
+                provider_name,
+                _redact_secrets(str(exc)[:200]),
+            )
+        return None
 
     # ─── Layer 2: LLM Resume Skill Extraction ───────────────────────────────
 

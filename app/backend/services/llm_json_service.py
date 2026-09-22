@@ -96,16 +96,17 @@ async def invoke_llm_json_resilient(
         }
         network_kwargs = {**llm_kwargs, "timeout": 120.0}
 
+        from app.backend.services.app_llm_client import ANALYSIS_LLM_ORDER
+
+        fns = {
+            "ollama": (_try_ollama, network_kwargs),
+            "gemini": (_try_gemini, llm_kwargs),
+            "openrouter": (_try_openrouter, network_kwargs),
+        }
+        names = ANALYSIS_LLM_ORDER if allow_provider_fallback else ANALYSIS_LLM_ORDER[:1]
         provider_chain: list[tuple[str, Any, dict[str, Any]]] = [
-            ("gemini", _try_gemini, llm_kwargs),
+            (name, fns[name][0], fns[name][1]) for name in names
         ]
-        if allow_provider_fallback:
-            provider_chain.extend(
-                [
-                    ("ollama", _try_ollama, network_kwargs),
-                    ("openrouter", _try_openrouter, network_kwargs),
-                ]
-            )
 
         tier_had_response = False
         for provider_name, provider_fn, kwargs in provider_chain:

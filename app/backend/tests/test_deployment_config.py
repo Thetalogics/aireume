@@ -21,6 +21,11 @@ def test_staging_backend_migrates_on_watchtower_restart():
     text = (ROOT / "docker-compose.main.staging.yml").read_text(encoding="utf-8")
     backend = _service_block(text, "backend", "frontend")
     assert "RUN_DB_MIGRATIONS=1" in backend
+    assert "GEMINI_MAX_RETRIES=${GEMINI_MAX_RETRIES:-2}" in backend
+    assert "GEMINI_MODEL=${GEMINI_MODEL:-gemini-3.7-flash}" in backend
+    assert "OLLAMA_MODEL_BACKEND=${OLLAMA_MODEL_BACKEND:-deepseek-v4.1-flash:cloud}" in backend
+    assert "OPENROUTER_MODEL=${OPENROUTER_MODEL:-qwen/qwen3.8-27b:free}" in backend
+    assert "OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}" in backend
     assert "\n  migrate:\n" not in text
     assert "staging-backend" in text.split("watchtower:", 1)[1]
 

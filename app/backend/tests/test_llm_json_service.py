@@ -6,6 +6,26 @@ from app.backend.services.llm_json_service import invoke_llm_json_resilient
 
 
 @pytest.mark.asyncio
+async def test_json_path_uses_analysis_order(monkeypatch):
+    seen: list[str] = []
+
+    def _record(name: str):
+        async def _call(*_args, **_kwargs):
+            seen.append(name)
+            return None
+
+        return _call
+
+    monkeypatch.setattr("app.backend.services.app_llm_client._try_ollama", _record("ollama"))
+    monkeypatch.setattr("app.backend.services.app_llm_client._try_gemini", _record("gemini"))
+    monkeypatch.setattr("app.backend.services.app_llm_client._try_openrouter", _record("openrouter"))
+
+    result = await invoke_llm_json_resilient(["prompt"], log_label="test")
+    assert result is None
+    assert seen == ["ollama", "gemini", "openrouter"]
+
+
+@pytest.mark.asyncio
 async def test_invoke_returns_none_when_all_tiers_empty(monkeypatch):
     async def _fake_gemini(*args, **kwargs):
         return ""
