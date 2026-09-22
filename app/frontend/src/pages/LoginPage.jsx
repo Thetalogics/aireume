@@ -89,7 +89,7 @@ export default function LoginPage() {
       setError('Please enter your workspace slug to sign in with SSO')
       return
     }
-    window.location.href = `/api/sso/login/${slug}`
+    window.location.href = ssoState?.login_url || `/api/sso/login/${slug}`
   }
 
   const ssoEnforced = ssoState?.enforced === true
@@ -139,6 +139,9 @@ export default function LoginPage() {
               </div>
               {checkingSSO && (
                 <p className="text-xs text-slate-400 mt-1">Checking workspace settings...</p>
+              )}
+              {ssoState?.found === false && (
+                <p className="text-xs text-red-600 mt-1">No workspace matches that name. Use the slug from signup.</p>
               )}
             </div>
 

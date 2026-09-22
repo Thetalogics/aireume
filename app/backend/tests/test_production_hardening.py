@@ -49,7 +49,7 @@ class TestLoginTenantBinding:
         assert beta.status_code == 200
         assert beta.json()["tenant"]["slug"] == "beta"
 
-    def test_wrong_workspace_returns_401(self, client, db):
+    def test_unknown_workspace_is_not_a_password_error(self, client, db):
         from app.backend.models.db_models import Tenant, User
 
         t = Tenant(name="OnlyCo", slug="onlyco")
@@ -71,7 +71,42 @@ class TestLoginTenantBinding:
             "password": "OnlyPass123!",
             "tenant_slug": "does-not-exist",
         })
-        assert resp.status_code == 401
+        assert resp.status_code == 400
+        assert "workspace" in str(resp.json()["detail"]).lower()
+        assert "password" not in str(resp.json()["detail"]).lower()
+
+    def test_login_accepts_company_name_and_email_case(self, client, db):
+        from app.backend.models.db_models import Tenant, User
+
+        t = Tenant(name="ThetaLogics", slug="thetalogics")
+        db.add(t)
+        db.commit()
+        db.refresh(t)
+        db.add(User(
+            tenant_id=t.id,
+            email="revanth.a@thetalogics.com",
+            hashed_password=_hash_password("OnlyPass123!"),
+            role="admin",
+            is_active=True,
+            email_verified=True,
+        ))
+        db.commit()
+
+        by_name = client.post("/api/auth/login", json={
+            "email": "Revanth.A@ThetaLogics.com",
+            "password": "OnlyPass123!",
+            "tenant_slug": "ThetaLogics",
+        })
+        assert by_name.status_code == 200
+        assert by_name.json()["tenant"]["slug"] == "thetalogics"
+
+        typo = client.post("/api/auth/login", json={
+            "email": "revanth.a@thetalogics.com",
+            "password": "OnlyPass123!",
+            "tenant_slug": "Thatelogics",
+        })
+        assert typo.status_code == 400
+        assert "workspace" in str(typo.json()["detail"]).lower()
 
 
 class TestAuthTokensNotInBody:

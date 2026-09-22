@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from jose import jwt
 from passlib.context import CryptContext
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.backend.db.database import get_db
@@ -147,6 +148,23 @@ def _create_token(data: dict, expires_delta: timedelta, include_jti: bool = True
 
 def _make_slug(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+
+
+def _tenant_for_workspace(db: Session, raw: str) -> Tenant | None:
+    """Match a typed workspace to a tenant by slug or company name."""
+    text = (raw or "").strip()
+    if not text:
+        return None
+    lowered = text.lower()
+    tenant = db.query(Tenant).filter(func.lower(Tenant.slug) == lowered).first()
+    if tenant:
+        return tenant
+    normalized = _make_slug(text)
+    if normalized and normalized != lowered:
+        tenant = db.query(Tenant).filter(Tenant.slug == normalized).first()
+        if tenant:
+            return tenant
+    return db.query(Tenant).filter(func.lower(Tenant.name) == lowered).first()
 
 
 def _tenant_dict(tenant: Tenant) -> dict:
@@ -451,11 +469,14 @@ def login(request: Request, body: LoginRequest, db: Session = Depends(get_db)):
 
     user_agent = request.headers.get("User-Agent")
 
-    slug = (body.tenant_slug or "").strip().lower() or None
-    query = db.query(User).filter(User.email == body.email, User.is_active == True)
-    if slug:
-        tenant_row = db.query(Tenant).filter(Tenant.slug == slug).first()
-        user = query.filter(User.tenant_id == tenant_row.id).first() if tenant_row else None
+    email = (body.email or "").strip().lower()
+    query = db.query(User).filter(func.lower(User.email) == email, User.is_active == True)
+    if (body.tenant_slug or "").strip():
+        tenant_row = _tenant_for_workspace(db, body.tenant_slug)
+        if tenant_row is None:
+            record_login_failure(db, email=body.email, ip_address=ip, user_agent=user_agent, reason="Unknown workspace")
+            raise HTTPException(status_code=400, detail="Unknown workspace")
+        user = query.filter(User.tenant_id == tenant_row.id).first()
     else:
         matches = query.all()
         if len(matches) > 1:

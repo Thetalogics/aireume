@@ -340,6 +340,13 @@ class TestSSOPublicConfig:
         assert resp.status_code == 200
         data = resp.json()
         assert data["enabled"] is False
+        assert data["found"] is False
+
+    def test_get_sso_config_public_matches_slug_case(self, client, test_tenant):
+        resp = client.get(f"/api/sso/config/{test_tenant.slug.upper()}")
+        assert resp.status_code == 200
+        assert resp.json()["found"] is True
+        assert resp.json()["enabled"] is False
 
 
 # ─── SSO Login Initiation Tests ───────────────────────────────────────────────

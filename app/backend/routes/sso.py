@@ -14,6 +14,7 @@ from app.backend.services.sso_service import is_sso_trust_ready, sso_service
 from app.backend.routes.auth import (
     _create_token,
     _create_auth_response,
+    _tenant_for_workspace,
     ACCESS_TOKEN_EXPIRE_MINUTES,
     REFRESH_TOKEN_EXPIRE_DAYS,
 )
@@ -24,7 +25,7 @@ FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
 
 
 def _get_sso_config_or_404(db: Session, tenant_slug: str) -> tuple:
-    tenant = db.query(Tenant).filter(Tenant.slug == tenant_slug).first()
+    tenant = _tenant_for_workspace(db, tenant_slug)
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
     sso_config = db.query(SSOConfig).filter(SSOConfig.tenant_id == tenant.id).first()
@@ -39,19 +40,20 @@ def get_sso_config_public(tenant_slug: str, db: Session = Depends(get_db)):
     Public endpoint — returns whether SSO is configured/enforced for a tenant.
     Used by the frontend login page to show 'Login with SSO' button.
     """
-    tenant = db.query(Tenant).filter(Tenant.slug == tenant_slug).first()
+    tenant = _tenant_for_workspace(db, tenant_slug)
     if not tenant:
-        return {"enabled": False, "enforced": False}
+        return {"enabled": False, "enforced": False, "found": False}
 
     sso_config = db.query(SSOConfig).filter(SSOConfig.tenant_id == tenant.id).first()
     if not sso_config or not sso_config.is_active or not is_sso_trust_ready(sso_config):
-        return {"enabled": False, "enforced": False}
+        return {"enabled": False, "enforced": False, "found": True}
 
     return {
         "enabled": True,
         "enforced": sso_config.enforce_sso,
         "provider_type": sso_config.provider_type,
-        "login_url": f"/api/sso/login/{tenant_slug}",
+        "login_url": f"/api/sso/login/{tenant.slug}",
+        "found": True,
     }
 
 
