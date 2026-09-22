@@ -82,15 +82,26 @@ def pick_stable_n_minus_1(flash_models: list[str]) -> str:
     return ordered[-1]
 
 
+def production_thinking_config(model: str) -> dict | None:
+    """Same thinkingConfig the app sends on JSON calls."""
+    from app.backend.services.gemini_model_caps import gemini_thinking_config
+
+    return gemini_thinking_config(model, True)
+
+
 def smoke_test_model(api_key: str, model: str) -> None:
     url = f"{GEMINI_LIST_URL}/{model}:generateContent"
+    generation_config: dict = {
+        "temperature": 0,
+        "maxOutputTokens": 64,
+        "responseMimeType": "application/json",
+    }
+    thinking = production_thinking_config(model)
+    if thinking:
+        generation_config["thinkingConfig"] = thinking
     body = {
         "contents": [{"role": "user", "parts": [{"text": 'Reply with JSON: {"ok": true}'}]}],
-        "generationConfig": {
-            "temperature": 0,
-            "maxOutputTokens": 64,
-            "responseMimeType": "application/json",
-        },
+        "generationConfig": generation_config,
     }
     _http_json("POST", url, headers={"x-goog-api-key": api_key}, body=body)
 

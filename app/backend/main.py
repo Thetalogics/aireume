@@ -266,12 +266,23 @@ async def _startup_checks() -> dict:
     from app.backend.services.llm_service import use_gemini_for_analysis, get_gemini_model
 
     if use_gemini_for_analysis():
+        from app.backend.services.llm_service import probe_gemini_config
+
         gemini_model = get_gemini_model()
-        results["analysis_llm"] = {
-            "ok": True,
-            "label": "Analysis LLM",
-            "note": f"Google Gemini ({gemini_model})",
-        }
+        try:
+            await probe_gemini_config()
+            results["analysis_llm"] = {
+                "ok": True,
+                "label": "Analysis LLM",
+                "note": f"Google Gemini ({gemini_model})",
+            }
+        except Exception as exc:
+            logger.warning("Gemini startup probe failed for %s: %s", gemini_model, exc)
+            results["analysis_llm"] = {
+                "ok": False,
+                "label": "Analysis LLM",
+                "note": f"incompatible {gemini_model}",
+            }
         results["jd_cache"] = {
             "ok": True,
             "label": "JD profile cache",

@@ -84,7 +84,7 @@ def get_audit_logs(
 
 @platform_router.get("/audit-logs/export")
 def export_audit_logs(
-    format: str = Query("csv", regex="^(csv|json)$"),
+    format: str = Query("csv", pattern="^(csv|json)$"),
     action: Optional[str] = Query(None),
     start_date: Optional[str] = Query(None),
     end_date: Optional[str] = Query(None),

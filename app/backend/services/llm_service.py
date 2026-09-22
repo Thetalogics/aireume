@@ -198,19 +198,48 @@ def _gemini_thinking_config(model: str, json_mode: bool) -> dict[str, int | str]
 
     generateContent sends one body when generation finishes. Gemini 3 defaults to
     thinkingLevel medium and does not honor thinkingBudget, so the client sits on
-    an open socket until GEMINI_READ with no bytes. Gemini 2.5 still uses thinkingBudget.
+    an open socket until GEMINI_READ with no bytes. Gemini 3.7+ Flash rejects
+    thinkingLevel minimal. Gemini 2.5 still uses thinkingBudget.
     """
-    lowered = model.lower()
-    if "gemini-3" in lowered:
-        # ponytail: minimal (low on Pro, which rejects minimal). Raise if JSON quality drops.
-        if "pro" in lowered and "flash" not in lowered:
-            return {"thinkingLevel": "low"}
-        return {"thinkingLevel": "minimal"}
-    if not json_mode:
-        return None
-    if "pro" in lowered:
-        return {"thinkingBudget": int(os.getenv("GEMINI_PRO_THINKING_BUDGET", "128"))}
-    return {"thinkingBudget": 0}
+    from app.backend.services.gemini_model_caps import gemini_thinking_config
+
+    return gemini_thinking_config(
+        model,
+        json_mode,
+        pro_budget=int(os.getenv("GEMINI_PRO_THINKING_BUDGET", "128")),
+    )
+
+
+async def probe_gemini_config() -> None:
+    """One cheap generateContent using the production model and thinking config.
+
+    Raises when the key, model id, or thinking level is rejected. Startup uses
+    this so a present API key is not reported as READY.
+    """
+    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("GEMINI_API_KEY not set")
+    model = get_gemini_model()
+    generation_config: dict = {
+        "temperature": 0,
+        "maxOutputTokens": 16,
+        "responseMimeType": "application/json",
+    }
+    thinking = _gemini_thinking_config(model, True)
+    if thinking is not None:
+        generation_config["thinkingConfig"] = thinking
+    async with httpx.AsyncClient(timeout=httpx_timeout(GEMINI_CONNECT, 8)) as client:
+        response = await client.post(
+            f"{GEMINI_API_BASE}/models/{model}:generateContent",
+            params={"key": api_key},
+            json={
+                "contents": [{"role": "user", "parts": [{"text": 'Reply with JSON: {"ok": true}'}]}],
+                "generationConfig": generation_config,
+            },
+            headers={"Content-Type": "application/json"},
+        )
+    if response.status_code >= 400:
+        raise RuntimeError(f"Gemini API HTTP {response.status_code}: {response.text[:180]}")
 
 
 async def gemini_generate_content(

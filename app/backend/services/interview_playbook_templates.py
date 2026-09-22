@@ -221,8 +221,7 @@ def risk_gap_thread_steps(family: str, skill: str, ctx: Dict[str, str]) -> List[
     if family == "talent_acquisition":
         return [
             {
-                "text": f"This role needs strong {skill}. Tell me about a search where that was "
-                f"critical — what did you do personally?",
+                "text": f"How have you used {skill} on a search you owned, and what did you do personally?",
                 "what_to_listen_for": [f"{skill} in practice", "Examples", "Outcome"],
                 "follow_ups": [f"If light: Any adjacent experience with {skill}?"],
             },
@@ -230,16 +229,14 @@ def risk_gap_thread_steps(family: str, skill: str, ctx: Dict[str, str]) -> List[
     if family == "engineering":
         return [
             {
-                "text": f"The role calls for {skill}. Describe a production scenario where you used "
-                f"it under pressure — your decisions and outcome.",
+                "text": f"Tell me about a time you used {skill} under pressure — your decisions and the outcome.",
                 "what_to_listen_for": [f"Real {skill} usage", "Trade-offs", "Debugging"],
                 "follow_ups": [f"What would you do differently next time with {skill}?"],
             },
         ]
     return [
         {
-            "text": f"This role needs {skill} — where has that shown up in your work, and what was "
-            f"your hands-on contribution?",
+            "text": f"Where has {skill} shown up in your work, and what was your hands-on contribution?",
             "what_to_listen_for": [
                 f"Practical {skill} examples",
                 "Personal vs team contribution",

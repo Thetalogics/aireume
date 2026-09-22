@@ -19,6 +19,28 @@ def _load_mod():
     return mod
 
 
+def test_smoke_thinking_matches_runtime_helper():
+    from app.backend.services.llm_service import _gemini_thinking_config
+
+    mod = _load_mod()
+    for model in ("gemini-3.5-flash", "gemini-3.7-flash", "gemini-3.8-flash"):
+        assert mod.production_thinking_config(model) == _gemini_thinking_config(model, True)
+
+
+def test_smoke_sends_the_app_thinking_config(monkeypatch):
+    mod = _load_mod()
+    posted: dict = {}
+
+    def fake_http(method, url, *, headers=None, body=None):
+        posted["body"] = body
+        return {"candidates": []}
+
+    monkeypatch.setattr(mod, "_http_json", fake_http)
+    mod.smoke_test_model("gk", "gemini-3.8-flash")
+    thinking = posted["body"]["generationConfig"]["thinkingConfig"]
+    assert thinking == {"thinkingLevel": "low"}
+
+
 def test_gemini_api_key_prefers_process_env_over_portainer_stack():
     mod = _load_mod()
     key = mod.gemini_api_key_from_sources(

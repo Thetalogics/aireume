@@ -407,8 +407,33 @@ class TestGeminiAnalysisHelpers:
         from app.backend.services.llm_service import _gemini_thinking_config
 
         assert _gemini_thinking_config("gemini-3.5-flash", True) == {"thinkingLevel": "minimal"}
+        assert _gemini_thinking_config("gemini-3.7-flash", True) == {"thinkingLevel": "low"}
+        assert _gemini_thinking_config("gemini-3.8-flash", True) == {"thinkingLevel": "low"}
         assert _gemini_thinking_config("gemini-3.1-pro", True) == {"thinkingLevel": "low"}
         assert _gemini_thinking_config("gemini-2.5-flash", True) == {"thinkingBudget": 0}
+
+    @pytest.mark.asyncio
+    async def test_startup_probe_uses_thinking_config_and_reports_400(self, monkeypatch):
+        from app.backend.services import llm_service
+
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        monkeypatch.setenv("GEMINI_MODEL", "gemini-3.8-flash")
+        posted: dict = {}
+
+        class FakeResponse:
+            status_code = 400
+            text = "Thinking level MINIMAL is not supported"
+
+        async def fake_post(*_args, **kwargs):
+            posted["body"] = kwargs["json"]
+            return FakeResponse()
+
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_client.return_value.__aenter__.return_value.post = fake_post
+            with pytest.raises(RuntimeError, match="400"):
+                await llm_service.probe_gemini_config()
+
+        assert posted["body"]["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "low"}
 
     @pytest.mark.asyncio
     async def test_gemini_raises_truncated_on_max_tokens_json(self, monkeypatch):
