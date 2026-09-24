@@ -12,21 +12,14 @@ async def test_generate_recruiter_json_uses_gemini_when_key_set(monkeypatch):
     from app.backend.services.recruiter.llm_client import generate_recruiter_json
 
     with patch(
-        "app.backend.services.llm_service.gemini_generate_content",
+        "app.backend.services.app_llm_client._try_ollama",
         new_callable=AsyncMock,
-    ) as mock_gemini:
-        from app.backend.services.llm_service import GeminiGenerateResult
-
-        mock_gemini.return_value = GeminiGenerateResult(
-            '{"score": 82, "evidence": ["strong answer"]}',
-            "STOP",
-        )
-
+        return_value='{"score": 82, "evidence": ["strong answer"]}',
+    ) as mock_ollama:
         result = await generate_recruiter_json("Evaluate this answer")
 
         assert result == {"score": 82, "evidence": ["strong answer"]}
-        mock_gemini.assert_awaited_once()
-        assert mock_gemini.await_args.kwargs["response_mime_type"] == "application/json"
+        mock_ollama.assert_awaited_once()
 
 
 @pytest.mark.asyncio

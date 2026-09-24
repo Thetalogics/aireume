@@ -76,18 +76,13 @@ request_id_var = contextvars.ContextVar('request_id', default='-')
 
 # ─── Startup Environment Validation ─────────────────────────────────────────────
 def _missing_llm_models() -> list[str]:
-    """Models the analysis chain will call. Empty OpenRouter is allowed when it has no key."""
-    missing: list[str] = []
-    if not (
+    """Analysis calls one Ollama model. Gemini and OpenRouter are not required."""
+    if (
         os.getenv("OLLAMA_MODEL_BACKEND", "").strip()
         or os.getenv("OLLAMA_MODEL", "").strip()
     ):
-        missing.append("OLLAMA_MODEL_BACKEND")
-    if os.getenv("GEMINI_API_KEY", "").strip() and not os.getenv("GEMINI_MODEL", "").strip():
-        missing.append("GEMINI_MODEL")
-    if os.getenv("OPENROUTER_API_KEY", "").strip() and not os.getenv("OPENROUTER_MODEL", "").strip():
-        missing.append("OPENROUTER_MODEL")
-    return missing
+        return []
+    return ["OLLAMA_MODEL_BACKEND"]
 
 
 def _validate_environment() -> None:
@@ -104,10 +99,10 @@ def _validate_environment() -> None:
             missing_vars.append(var)
 
     # Warn for missing but not critical
-    if not os.getenv("OLLAMA_API_KEY") and not os.getenv("GEMINI_API_KEY"):
+    if not os.getenv("OLLAMA_API_KEY"):
         warnings.append("OLLAMA_API_KEY not set - LLM features will be limited")
-    elif os.getenv("GEMINI_API_KEY"):
-        logger.info("STARTUP: GEMINI_API_KEY set — Gemini is the second analysis provider")
+    else:
+        logger.info("STARTUP: analysis LLM is Ollama only")
 
     if os.getenv("TESTING", "").strip().lower() != "true" and env in ("staging", "production"):
         missing_llm = _missing_llm_models()
@@ -348,9 +343,26 @@ async def _startup_checks() -> dict:
             }
     else:
         ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-        from app.backend.services.llm_service import get_ollama_model
+        from app.backend.services.llm_service import get_ollama_model, is_ollama_cloud
 
         narrative_model = get_ollama_model()
+        if is_ollama_cloud(ollama_url):
+            results["analysis_llm"] = {
+                "ok": True,
+                "label": "Analysis LLM",
+                "note": f"Ollama ({narrative_model})",
+            }
+            results["jd_cache"] = {
+                "ok": True,
+                "label": "JD profile cache",
+                "note": "Postgres jd_cache table",
+            }
+            results["environment"] = {
+                "ok": True,
+                "label": "Environment",
+                "note": os.getenv("ENVIRONMENT", "development"),
+            }
+            return results
         pulled_models = []
         hot_models = []
         ollama_ok = False

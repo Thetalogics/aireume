@@ -533,7 +533,7 @@ class TestGeminiAnalysisHelpers:
             result = await svc.extract_jd_profile("Senior Python Engineer role")
 
         mock_ollama.assert_awaited_once()
-        mock_gemini.assert_awaited_once()
+        mock_gemini.assert_not_awaited()
     @pytest.mark.asyncio
     async def test_gemini_retries_on_503(self, monkeypatch):
         from app.backend.services import llm_service

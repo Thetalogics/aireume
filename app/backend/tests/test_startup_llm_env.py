@@ -23,18 +23,13 @@ def test_staging_exits_when_ollama_model_missing(monkeypatch):
         _validate_environment()
 
 
-def test_staging_exits_when_gemini_model_missing(monkeypatch):
+def test_staging_starts_without_gemini_or_openrouter(monkeypatch):
     _ready(monkeypatch)
     monkeypatch.delenv("GEMINI_MODEL", raising=False)
-    with pytest.raises(SystemExit):
-        _validate_environment()
-
-
-def test_staging_exits_when_openrouter_model_missing(monkeypatch):
-    _ready(monkeypatch)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.delenv("OPENROUTER_MODEL", raising=False)
-    with pytest.raises(SystemExit):
-        _validate_environment()
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    _validate_environment()
 
 
 def test_staging_starts_when_llm_models_are_set(monkeypatch):

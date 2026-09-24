@@ -69,8 +69,8 @@ def use_local_jd_profile() -> bool:
 # ─── Google Gemini (direct API) ─────────────────────────────────────────────
 
 def use_gemini_for_analysis() -> bool:
-    """When GEMINI_API_KEY is set, analysis LLM calls use Google Gemini instead of Ollama."""
-    return bool(os.getenv("GEMINI_API_KEY", "").strip())
+    """Analysis is Ollama Cloud only. A Gemini key must not divert those calls."""
+    return False
 
 
 def should_run_ollama_sentinel() -> bool:
@@ -715,21 +715,6 @@ class LLMService:
             )
             if parsed:
                 return self._validate_jd_profile(parsed)
-
-        # Local CPU Ollama — opt-in only (OLLAMA_USE_LOCAL_JD_PROFILE=1)
-        if use_local_jd_profile():
-            for attempt in range(self.max_retries + 1):
-                try:
-                    response = await self._call_ollama_local(prompt, timeout=_timeout)
-                    parsed = self._parse_json_response(response)
-                    if parsed:
-                        return self._validate_jd_profile(parsed)
-                except Exception as e:
-                    logger.warning(
-                        "JD profile local extraction failed (attempt %d): %s",
-                        attempt + 1,
-                        _redact_secrets(str(e)[:200]),
-                    )
 
         logger.warning("JD profile LLM extraction exhausted — using rules fallback")
         return self._fallback_jd_profile()

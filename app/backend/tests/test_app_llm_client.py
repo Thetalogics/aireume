@@ -7,8 +7,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 
 @pytest.mark.asyncio
-async def test_analysis_order_is_ollama_then_gemini_then_openrouter(monkeypatch):
-    """One order for every analysis call: Ollama, Gemini, OpenRouter."""
+async def test_analysis_order_is_ollama_only(monkeypatch):
+    """Analysis calls Ollama and does not continue to Gemini or OpenRouter."""
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     monkeypatch.setenv("GEMINI_MODEL", "gemini-3.7-flash")
     monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
@@ -39,7 +39,7 @@ async def test_analysis_order_is_ollama_then_gemini_then_openrouter(monkeypatch)
         text = await generate_app_llm("prompt", max_output_tokens=128)
 
     assert text is None
-    assert seen == ["ollama", "gemini", "openrouter"]
+    assert seen == ["ollama"]
 
 
 @pytest.mark.asyncio
@@ -66,9 +66,8 @@ async def test_generate_app_json_uses_gemini_when_key_set(monkeypatch):
 
         result = await generate_app_json("Analyze this JD")
 
-        assert result == {"role_category": "technical", "confidence": 0.9}
-        mock_gemini.assert_awaited_once()
-        assert mock_gemini.await_args.kwargs["response_mime_type"] == "application/json"
+        assert result is None
+        mock_gemini.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -133,10 +132,9 @@ async def test_generate_app_llm_falls_back_to_openrouter_when_gemini_and_ollama_
     ) as mock_async_client:
         text = await generate_app_llm("prompt", max_output_tokens=128)
 
-    assert text == "hello from openrouter"
-    assert mock_client.post.await_count == 2
-    assert mock_client.post.await_args_list[0].args[0].endswith("/api/generate")
-    assert "openrouter.ai" in mock_client.post.await_args_list[1].args[0]
+    assert text is None
+    assert mock_client.post.await_count == 1
+    assert mock_client.post.await_args.args[0].endswith("/api/generate")
 
 
 @pytest.mark.asyncio

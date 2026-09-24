@@ -1,4 +1,4 @@
-"""Voice LLM client — Gemini API (preferred) with Ollama fallback."""
+"""Voice planner LLM. Ollama only. LiveKit's own model slot is cloud_agent.py."""
 from __future__ import annotations
 
 import json
@@ -19,7 +19,8 @@ _http_client: httpx.AsyncClient | None = None
 
 
 def use_gemini_for_voice() -> bool:
-    return bool(os.getenv("GEMINI_API_KEY", "").strip())
+    """In-process voice planning stays on Ollama. LiveKit cloud keeps LIVEKIT_LLM_MODEL."""
+    return False
 
 
 def get_voice_llm_model() -> str:

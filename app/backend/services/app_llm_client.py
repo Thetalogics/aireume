@@ -1,7 +1,7 @@
 """Shared application LLM client.
 
-Analysis order is Ollama, then Gemini, then OpenRouter. Model ids come from
-OLLAMA_MODEL_BACKEND, GEMINI_MODEL, and OPENROUTER_MODEL.
+Analysis uses Ollama Cloud only. The model id comes from OLLAMA_MODEL_BACKEND
+or OLLAMA_MODEL. LiveKit voice is a separate process and is not this client.
 """
 
 from __future__ import annotations
@@ -16,9 +16,9 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-# Every analysis caller uses this. Outlines has no OpenRouter client, so it
-# takes the Ollama and Gemini entries and the legacy JSON path still runs OpenRouter.
-ANALYSIS_LLM_ORDER = ("ollama", "gemini", "openrouter")
+# Every analysis caller uses this. Gemini and OpenRouter stay in the file and
+# are not in the chain. LiveKit voice does not use this tuple.
+ANALYSIS_LLM_ORDER = ("ollama",)
 
 
 def parse_json_from_llm(text: str) -> dict[str, Any] | None:

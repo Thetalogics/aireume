@@ -96,7 +96,7 @@ async def test_outlines_order_is_ollama_then_gemini(monkeypatch):
         log_label="interview_kit",
     )
     assert result is None
-    assert seen == ["ollama", "gemini"]
+    assert seen == ["ollama"]
 
 
 @pytest.mark.asyncio
@@ -108,7 +108,7 @@ async def test_invoke_outlines_gemini_success(monkeypatch):
         return json.dumps(_valid_kit_payload())
 
     async def _fake_ollama(*args, **kwargs):
-        return None
+        return json.dumps(_valid_kit_payload())
 
     monkeypatch.setattr(
         "app.backend.services.structured_llm_service._try_outlines_gemini",

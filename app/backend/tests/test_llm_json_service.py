@@ -22,7 +22,7 @@ async def test_json_path_uses_analysis_order(monkeypatch):
 
     result = await invoke_llm_json_resilient(["prompt"], log_label="test")
     assert result is None
-    assert seen == ["ollama", "gemini", "openrouter"]
+    assert seen == ["ollama"]
 
 
 @pytest.mark.asyncio
@@ -60,11 +60,11 @@ async def test_invoke_parses_json_on_second_tier(monkeypatch):
         return None
 
     monkeypatch.setattr(
-        "app.backend.services.app_llm_client._try_gemini",
+        "app.backend.services.app_llm_client._try_ollama",
         _fake_gemini,
     )
     monkeypatch.setattr(
-        "app.backend.services.app_llm_client._try_ollama",
+        "app.backend.services.app_llm_client._try_gemini",
         _fake_empty,
     )
     monkeypatch.setattr(
@@ -90,11 +90,11 @@ async def test_invoke_retries_when_validator_rejects_first_tier(monkeypatch):
         return None
 
     monkeypatch.setattr(
-        "app.backend.services.app_llm_client._try_gemini",
+        "app.backend.services.app_llm_client._try_ollama",
         _fake_gemini,
     )
     monkeypatch.setattr(
-        "app.backend.services.app_llm_client._try_ollama",
+        "app.backend.services.app_llm_client._try_gemini",
         _fake_empty,
     )
     monkeypatch.setattr(
