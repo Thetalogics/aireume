@@ -74,7 +74,7 @@ def use_gemini_for_analysis() -> bool:
 
 
 def should_run_ollama_sentinel() -> bool:
-    """Skip local Ollama warmup probes when analysis runs entirely on Gemini."""
+    """Analysis uses Ollama, so the health sentinel runs even when a Gemini key is set."""
     if not use_gemini_for_analysis():
         return True
     if use_local_jd_profile():

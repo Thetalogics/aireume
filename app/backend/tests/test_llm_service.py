@@ -355,12 +355,12 @@ class TestAnalyzeWithLLM:
 
 
 class TestGeminiAnalysisHelpers:
-    def test_should_run_ollama_sentinel_false_when_gemini_only(self, monkeypatch):
+    def test_should_run_ollama_sentinel_when_gemini_key_is_set(self, monkeypatch):
         from app.backend.services.llm_service import should_run_ollama_sentinel
 
         monkeypatch.setenv("GEMINI_API_KEY", "test-key")
         monkeypatch.setenv("OLLAMA_USE_LOCAL_JD_PROFILE", "0")
-        assert should_run_ollama_sentinel() is False
+        assert should_run_ollama_sentinel() is True
 
     def test_should_run_ollama_sentinel_true_when_local_jd_enabled(self, monkeypatch):
         from app.backend.services.llm_service import should_run_ollama_sentinel
