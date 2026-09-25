@@ -73,6 +73,25 @@ def discard_stale(
     return payload
 
 
+def _coerce_narrative_generation_mode(
+    narrative: dict,
+    *,
+    status: str,
+    generation_mode: str | None,
+) -> str | None:
+    if generation_mode is None:
+        if narrative.get("ai_enhanced") is True:
+            generation_mode = "ai"
+        elif status in {"ready", "fallback"} and narrative:
+            generation_mode = "deterministic_fallback"
+
+    if generation_mode == "ai":
+        narrative["ai_enhanced"] = True
+    elif generation_mode == "deterministic_fallback":
+        narrative["ai_enhanced"] = False
+    return generation_mode
+
+
 def apply_narrative_if_generation(
     db: Session,
     *,
@@ -82,14 +101,23 @@ def apply_narrative_if_generation(
     narrative: dict,
     status: str,
     error: str | None = None,
+    generation_mode: str | None = None,
     merge_analysis: dict | None = None,
     screening_decision_id: int | None = None,
 ) -> WriteOutcome:
+    narrative = dict(narrative or {})
+    generation_mode = _coerce_narrative_generation_mode(
+        narrative,
+        status=status,
+        generation_mode=generation_mode,
+    )
     values = {
         "narrative_json": json.dumps(narrative, default=str),
         "narrative_status": status,
         "narrative_error": error,
     }
+    if generation_mode is not None:
+        values["generation_mode"] = generation_mode
     if merge_analysis is not None:
         values["analysis_result"] = json.dumps(merge_analysis, default=str)
     filters = [

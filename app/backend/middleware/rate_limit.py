@@ -50,7 +50,6 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         self.buckets = {}  # {tenant_id: {"tokens": float, "last_refill": float}}
         self.lock = threading.Lock()
         self.config_cache = {}  # {tenant_id: {"rpm": int, "cached_at": float}}
-        self._llm_tokens = {}
         self._last_consume = {}
 
     def _is_whitelisted(self, path: str) -> bool:
@@ -222,24 +221,20 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             return True
         return False
 
-    def _check_llm_concurrency(self, tenant_id: int, config: dict) -> bool:
-        """Acquire a distributed LLM permit. Returns False when at the limit."""
+    def _check_llm_concurrency(self, tenant_id: int, config: dict) -> str | None:
+        """Acquire a distributed LLM permit token, or None when at the limit."""
         from app.backend.services.llm_concurrency import LlmConcurrencyUnavailable, acquire_llm_permit
 
         max_concurrent = config.get("llm_concurrent_max", 2)
         try:
             token = acquire_llm_permit(tenant_id, max_concurrent)
         except LlmConcurrencyUnavailable:
-            return False
-        if token is None:
-            return False
-        self._llm_tokens[tenant_id] = token
-        return True
+            return None
+        return token
 
-    def _release_llm_concurrency(self, tenant_id: int):
+    def _release_llm_concurrency(self, tenant_id: int, token: str | None):
         from app.backend.services.llm_concurrency import release_llm_permit
 
-        token = self._llm_tokens.pop(tenant_id, None)
         release_llm_permit(tenant_id, token)
 
     async def dispatch(self, request: Request, call_next):
@@ -282,9 +277,10 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         # Check LLM concurrency for LLM endpoints
         is_llm = self._is_llm_path(path)
-        acquired_llm = False
+        llm_token = None
         if is_llm:
-            if not self._check_llm_concurrency(tenant_id, config):
+            llm_token = self._check_llm_concurrency(tenant_id, config)
+            if llm_token is None:
                 response = JSONResponse(
                     status_code=429,
                     content={"detail": "Concurrent LLM limit exceeded. Try again later."},
@@ -295,7 +291,6 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                     },
                 )
                 return response
-            acquired_llm = True
 
         try:
             response = await call_next(request)
@@ -310,5 +305,5 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             response.headers["X-RateLimit-Reset"] = str(reset_at)
             return response
         finally:
-            if acquired_llm:
-                self._release_llm_concurrency(tenant_id)
+            if llm_token is not None:
+                self._release_llm_concurrency(tenant_id, llm_token)

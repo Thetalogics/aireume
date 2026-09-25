@@ -54,3 +54,18 @@ def test_reliability_ci_uses_installed_postgres_driver():
     assert "psycopg2-binary==" in requirements
     assert "postgresql+psycopg2://" in workflow
     assert "postgresql+psycopg://" not in workflow
+
+
+def test_backend_requirements_are_top_level_pinned():
+    root = Path(__file__).resolve().parents[3]
+    requirements = (root / "app/backend/requirements.txt").read_text().splitlines()
+
+    floating = []
+    for line in requirements:
+        requirement = line.strip()
+        if not requirement or requirement.startswith("#"):
+            continue
+        if "==" not in requirement:
+            floating.append(requirement)
+
+    assert floating == []

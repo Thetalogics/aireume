@@ -424,6 +424,37 @@ class QueueManager:
                 logger.warning("lease_lost before process job_id=%s", job.id)
                 db.rollback()
                 return False
+            if job.job_type in ("llm_narrative", "interview_kit", "voice_strategy"):
+                from app.backend.services.background_enrichment import complete_enrichment_job
+
+                logger.info("Processing enrichment job %s type=%s", job.id, job.job_type)
+                completed = await complete_enrichment_job(
+                    job,
+                    db,
+                    expected_worker_id=self.worker_id,
+                )
+                if not completed:
+                    return False
+                db.refresh(job)
+
+                total_time_ms = int((time.time() - start_time) * 1000)
+                queue_wait_ms = int((job.started_at - job.queued_at).total_seconds() * 1000) if job.started_at and job.queued_at else 0
+                metrics = JobMetrics(
+                    job_id=job.id,
+                    tenant_id=job.tenant_id,
+                    queue_wait_time_ms=queue_wait_ms,
+                    total_time_ms=total_time_ms,
+                    stage_timings={"total_enrichment": total_time_ms},
+                    worker_id=self.worker_id,
+                    worker_version=self.worker_version,
+                    retry_attempts=job.retry_count,
+                )
+                db.add(metrics)
+                db.commit()
+                self.jobs_processed += 1
+                logger.info("Enrichment job completed: %s, time=%sms", job.id, total_time_ms)
+                return True
+
             artifact = db.query(AnalysisArtifact).filter(AnalysisArtifact.id == job.artifact_id).first()
             if not artifact:
                 raise ValueError(f"Artifact not found: {job.artifact_id}")

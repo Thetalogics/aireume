@@ -1,5 +1,10 @@
 import { Sparkles, Loader2, AlertTriangle, CheckCircle2, X } from 'lucide-react'
-import { isKitPending, isNarrativePending, isVoiceStrategyPending } from '../../lib/enrichmentUtils'
+import {
+  getGenerationMode,
+  isKitPending,
+  isNarrativePending,
+  isVoiceStrategyPending,
+} from '../../lib/enrichmentUtils'
 
 export default function EnrichmentBanner({ result, onDismiss }) {
   if (!result) return null
@@ -7,7 +12,13 @@ export default function EnrichmentBanner({ result, onDismiss }) {
   const narrativePending = isNarrativePending(result)
   const kitPending = isKitPending(result)
   const voicePending = isVoiceStrategyPending(result)
-  const narrativeFallback = result.narrative_status === 'fallback' || result.narrative_status === 'failed'
+  const generationMode = getGenerationMode(result)
+  const narrativeFallback = (
+    generationMode === 'deterministic_fallback' ||
+    generationMode === 'failed' ||
+    result.narrative_status === 'fallback' ||
+    result.narrative_status === 'failed'
+  )
   const hasInsights = Boolean(result.fit_summary || (result.strengths && result.strengths.length))
   const allDone = !narrativePending && !kitPending && !voicePending
 
@@ -35,7 +46,7 @@ export default function EnrichmentBanner({ result, onDismiss }) {
     title = 'Standard analysis shown'
     message =
       result.narrative_error ||
-      'AI insights were unavailable. Fit scores and skill matching remain accurate.'
+      'Using deterministic standard analysis. Fit scores and skill matching remain accurate.'
   } else if (allDone) {
     icon = CheckCircle2
     tone = 'emerald'

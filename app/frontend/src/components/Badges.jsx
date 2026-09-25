@@ -1,4 +1,5 @@
 import { Loader2, Sparkles, MessageSquare, Mic } from 'lucide-react'
+import { getGenerationMode } from '../lib/enrichmentUtils'
 
 export function FitBadge({ score }) {
   if (score == null)
@@ -21,6 +22,7 @@ export function RecommendBadge({ rec }) {
 
 export function NarrativeStatusBadge({ result }) {
   const status = result?.narrative_status
+  const generationMode = getGenerationMode(result)
   const isPending = status === 'pending' || status === 'processing' || result?.narrative_pending === true
 
   if (isPending) {
@@ -32,16 +34,16 @@ export function NarrativeStatusBadge({ result }) {
     )
   }
 
-  if (status === 'ready' && result?.ai_enhanced) {
+  if (status === 'ready' && generationMode === 'ai') {
     return (
-      <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-green-700 bg-green-50 px-1.5 py-0.5 rounded-md ring-1 ring-green-200" title="AI-enhanced narrative">
+      <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-green-700 bg-green-50 px-1.5 py-0.5 rounded-md ring-1 ring-green-200" title="AI-generated narrative">
         <Sparkles className="w-3 h-3" />
         AI
       </span>
     )
   }
 
-  if (status === 'failed') {
+  if (status === 'failed' || generationMode === 'failed') {
     return (
       <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded-md ring-1 ring-amber-200" title="Standard analysis (AI enhancement unavailable)">
         Std
@@ -49,9 +51,9 @@ export function NarrativeStatusBadge({ result }) {
     )
   }
 
-  if (status === 'fallback') {
+  if (status === 'fallback' || generationMode === 'deterministic_fallback') {
     return (
-      <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded-md ring-1 ring-amber-200" title="Rule-based analysis">
+      <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded-md ring-1 ring-amber-200" title="Standard deterministic analysis">
         Std
       </span>
     )

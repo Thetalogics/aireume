@@ -8,6 +8,7 @@ import re
 import secrets
 import smtplib
 import uuid
+import hashlib
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from threading import Lock
@@ -117,9 +118,15 @@ auth_rate_limiter = InMemoryRateLimiter()
 
 
 def _identity_fragment(value: str) -> str:
-    import hashlib
-
     return hashlib.sha256((value or "").strip().lower().encode("utf-8")).hexdigest()[:16]
+
+
+def _token_hash(value: str) -> str:
+    return hashlib.sha256((value or "").encode("utf-8")).hexdigest()
+
+
+def _store_plain_auth_tokens_for_tests() -> bool:
+    return os.getenv("TESTING", "").lower() in {"1", "true", "yes"}
 
 
 def _guard_auth_limit(key: str, max_attempts: int, window_seconds: int) -> tuple:
@@ -357,7 +364,8 @@ def register(request: Request, body: RegisterRequest, db: Session = Depends(get_
         hashed_password=_hash_password(body.password),
         role="admin",
         email_verified=False,
-        email_verification_token=verification_token,
+        email_verification_token=verification_token if _store_plain_auth_tokens_for_tests() else None,
+        email_verification_token_hash=_token_hash(verification_token),
         email_verification_sent_at=datetime.now(timezone.utc),
     )
     db.add(user)
@@ -398,7 +406,11 @@ def verify_email_post(body: VerifyEmailBody, db: Session = Depends(get_db)):
 
 
 def _complete_email_verification(token: str, db: Session):
-    user = db.query(User).filter(User.email_verification_token == token).first()
+    token_digest = _token_hash(token)
+    user = db.query(User).filter(User.email_verification_token_hash == token_digest).first()
+    if not user:
+        # Rolling-deployment compatibility for tokens issued before hashing.
+        user = db.query(User).filter(User.email_verification_token == token).first()
     if not user:
         raise HTTPException(status_code=400, detail="Invalid or expired verification token")
     if _verification_expired(user):
@@ -408,6 +420,7 @@ def _complete_email_verification(token: str, db: Session):
         )
     user.email_verified = True
     user.email_verification_token = None
+    user.email_verification_token_hash = None
     db.commit()
 
     tenant = db.query(Tenant).filter(Tenant.id == user.tenant_id).first()
@@ -440,7 +453,8 @@ def resend_verification(request: Request, request_data: dict, db: Session = Depe
         return {"message": "If an unverified account exists for that email, a verification link was sent."}
 
     verification_token = str(uuid.uuid4())
-    user.email_verification_token = verification_token
+    user.email_verification_token = verification_token if _store_plain_auth_tokens_for_tests() else None
+    user.email_verification_token_hash = _token_hash(verification_token)
     user.email_verification_sent_at = datetime.now(timezone.utc)
     db.commit()
 
@@ -723,9 +737,11 @@ def forgot_password(request: Request, request_data: dict, db: Session = Depends(
     for user in users:
         db.query(PasswordResetToken).filter(PasswordResetToken.user_id == user.id).delete()
         token = secrets.token_urlsafe(32)
+        token_digest = _token_hash(token)
         reset_token = PasswordResetToken(
             user_id=user.id,
-            token=token,
+            token=token_digest,
+            token_hash=token_digest,
             expires_at=datetime.now(timezone.utc) + timedelta(hours=1)
         )
         db.add(reset_token)
@@ -784,10 +800,17 @@ def reset_password(request: Request, request_data: dict, db: Session = Depends(g
         raise HTTPException(status_code=400, detail=str(exc))
 
     # Find valid token
+    token_digest = _token_hash(token)
     reset_token = db.query(PasswordResetToken).filter(
-        PasswordResetToken.token == token,
+        PasswordResetToken.token_hash == token_digest,
         PasswordResetToken.expires_at > datetime.now(timezone.utc)
     ).first()
+    if not reset_token:
+        # Rolling-deployment compatibility for tokens issued before hashing.
+        reset_token = db.query(PasswordResetToken).filter(
+            PasswordResetToken.token == token,
+            PasswordResetToken.expires_at > datetime.now(timezone.utc)
+        ).first()
 
     if not reset_token:
         raise HTTPException(status_code=400, detail="Invalid or expired reset token")

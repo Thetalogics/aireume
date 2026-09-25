@@ -31,7 +31,6 @@ from decimal import Decimal
 from typing import AsyncGenerator, Dict, Any, List, Optional, Callable
 
 from app.backend.services.metrics import LLM_CALL_DURATION, LLM_FALLBACK_TOTAL
-from app.backend.services.llm_service import get_ollama_semaphore
 from app.backend.services.constants import (
     RECOMMENDATION_THRESHOLDS,
     SENIORITY_RANGES,
@@ -2571,19 +2570,23 @@ async def _background_llm_narrative(
     from app.backend.services.reliability.stale import apply_narrative_if_generation
 
     # Helper to write status to DB
-    async def _write_status(status: str, error: Optional[str] = None) -> bool:
+    async def _write_status(
+        status: str,
+        error: Optional[str] = None,
+        generation_mode: Optional[str] = None,
+    ) -> bool:
         """Write narrative_status only when generation still matches."""
         try:
             db = SessionLocal()
             try:
+                values = {"narrative_status": status, "narrative_error": error}
+                if generation_mode is not None:
+                    values["generation_mode"] = generation_mode
                 updated = db.query(ScreeningResult).filter(
                     ScreeningResult.id == screening_result_id,
                     ScreeningResult.tenant_id == tenant_id,
                     ScreeningResult.analysis_generation == expected_analysis_generation,
-                ).update(
-                    {"narrative_status": status, "narrative_error": error},
-                    synchronize_session=False,
-                )
+                ).update(values, synchronize_session=False)
                 if updated != 1:
                     db.rollback()
                     return False
@@ -2649,6 +2652,15 @@ async def _background_llm_narrative(
                             narrative=narrative,
                             status=status,
                             error=error,
+                            generation_mode=(
+                                "ai"
+                                if narrative.get("ai_enhanced") is True and status == "ready"
+                                else "deterministic_fallback"
+                                if status in ("ready", "fallback")
+                                else "failed"
+                                if status == "failed"
+                                else "pending"
+                            ),
                             merge_analysis=merged_analysis,
                             screening_decision_id=screening_decision_id,
                         )
@@ -2755,27 +2767,20 @@ async def _background_llm_narrative(
 
     try:
         _bg_timeout = float(os.getenv("LLM_NARRATIVE_TIMEOUT", "500"))
-        sem = get_ollama_semaphore()
-        if sem.locked():
-            log.info(
-                "Waiting for Ollama slot for screening_result_id=%s (another request in progress)...",
-                screening_result_id,
-            )
-        async with sem:
-            log.info("Acquired Ollama slot for screening_result_id=%s", screening_result_id)
-            # Write 'processing' status before starting LLM call
-            await _write_status("processing")
+        # Write 'processing' status before starting LLM call. Provider adapters
+        # own LLM concurrency; wrapping composite calls here can self-deadlock.
+        await _write_status("processing")
 
-            _start_time = time.monotonic()
-            llm_result = await asyncio.wait_for(explain_with_llm(llm_context), timeout=_bg_timeout)
-            elapsed = time.monotonic() - _start_time
-            LLM_CALL_DURATION.observe(elapsed)
-            log.info(
-                "LLM call completed for screening_result_id=%s in %.1fs (response keys: %s)",
-                screening_result_id,
-                elapsed,
-                list(llm_result.keys()) if isinstance(llm_result, dict) else "N/A",
-            )
+        _start_time = time.monotonic()
+        llm_result = await asyncio.wait_for(explain_with_llm(llm_context), timeout=_bg_timeout)
+        elapsed = time.monotonic() - _start_time
+        LLM_CALL_DURATION.observe(elapsed)
+        log.info(
+            "LLM call completed for screening_result_id=%s in %.1fs (response keys: %s)",
+            screening_result_id,
+            elapsed,
+            list(llm_result.keys()) if isinstance(llm_result, dict) else "N/A",
+        )
 
         # Success path
         narrative_status = "ready"
@@ -2787,7 +2792,7 @@ async def _background_llm_narrative(
     except asyncio.CancelledError:
         log.info("Background LLM task cancelled for screening_result_id=%s", screening_result_id)
         # Write failed status to DB before returning
-        await _write_status("failed", "Analysis was cancelled")
+        await _write_status("failed", "Analysis was cancelled", generation_mode="failed")
         return
     except asyncio.TimeoutError:
         elapsed = (time.monotonic() - _start_time) if _start_time is not None else _bg_timeout
@@ -3012,17 +3017,23 @@ async def run_hybrid_pipeline(
         fallback = _build_fallback_narrative(python_result, python_result["skill_analysis"])
         python_result["narrative_pending"] = True
         
-        # Spawn background LLM task
-        task = asyncio.create_task(
-            _background_llm_narrative(
+        from app.backend.db.database import SessionLocal
+        from app.backend.services.background_enrichment import enqueue_enrichment_job
+
+        enqueue_db = SessionLocal()
+        try:
+            enqueue_enrichment_job(
+                enqueue_db,
+                job_type="llm_narrative",
                 screening_result_id=screening_result_id,
                 tenant_id=tenant_id,
+                expected_generation=expected_analysis_generation,
                 llm_context=llm_context,
-                python_result=python_result,
-                expected_analysis_generation=expected_analysis_generation,
+                python_result={k: v for k, v in python_result.items() if not k.startswith("_")},
+                priority=7,
             )
-        )
-        register_background_task(task)
+        finally:
+            enqueue_db.close()
         
         return _merge_immediate_pipeline_result(python_result, fallback)
 
@@ -3030,13 +3041,9 @@ async def run_hybrid_pipeline(
     _LLM_TIMEOUT = float(os.getenv("LLM_NARRATIVE_TIMEOUT", "500"))
 
     try:
-        sem = get_ollama_semaphore()
-        if sem.locked():
-            log.info("Waiting for Ollama slot (another request in progress)...")
-        async with sem:
-            start = time.monotonic()
-            llm_result = await asyncio.wait_for(explain_with_llm(llm_context), timeout=_LLM_TIMEOUT)
-            LLM_CALL_DURATION.observe(time.monotonic() - start)
+        start = time.monotonic()
+        llm_result = await asyncio.wait_for(explain_with_llm(llm_context), timeout=_LLM_TIMEOUT)
+        LLM_CALL_DURATION.observe(time.monotonic() - start)
         log.info("LLM narrative succeeded for fit_score=%s", python_result.get("fit_score"))
     except asyncio.TimeoutError:
         log.warning(
@@ -3193,17 +3200,23 @@ async def astream_hybrid_pipeline(
         # Yield parsing stage with Python results
         yield {"stage": "parsing", "result": parsing_payload}
         
-        # Spawn background LLM task
-        task = asyncio.create_task(
-            _background_llm_narrative(
+        from app.backend.db.database import SessionLocal
+        from app.backend.services.background_enrichment import enqueue_enrichment_job
+
+        enqueue_db = SessionLocal()
+        try:
+            enqueue_enrichment_job(
+                enqueue_db,
+                job_type="llm_narrative",
                 screening_result_id=screening_result_id,
                 tenant_id=tenant_id,
+                expected_generation=expected_analysis_generation,
                 llm_context=llm_context,
-                python_result=python_result,
-                expected_analysis_generation=expected_analysis_generation,
+                python_result={k: v for k, v in python_result.items() if not k.startswith("_")},
+                priority=7,
             )
-        )
-        register_background_task(task)
+        finally:
+            enqueue_db.close()
         
         # Yield complete with fallback narrative and analysis_id for polling
         final["analysis_id"] = screening_result_id
@@ -3223,13 +3236,9 @@ async def astream_hybrid_pipeline(
 
     async def _llm_task():
         try:
-            sem = get_ollama_semaphore()
-            if sem.locked():
-                log.info("Waiting for Ollama slot (another request in progress)...")
-            async with sem:
-                start = time.monotonic()
-                result = await asyncio.wait_for(explain_with_llm(llm_context), timeout=_LLM_TIMEOUT_STREAM)
-                LLM_CALL_DURATION.observe(time.monotonic() - start)
+            start = time.monotonic()
+            result = await asyncio.wait_for(explain_with_llm(llm_context), timeout=_LLM_TIMEOUT_STREAM)
+            LLM_CALL_DURATION.observe(time.monotonic() - start)
             log.info("LLM stream narrative succeeded")
             await llm_queue.put(("ok", result))
         except asyncio.TimeoutError:

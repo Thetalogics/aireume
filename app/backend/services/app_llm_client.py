@@ -14,11 +14,27 @@ from typing import Any
 
 import httpx
 
+from app.backend.services.external_ai_boundary import (
+    PreparedExternalPrompt,
+    prepare_external_llm_prompt,
+    require_prepared_external_prompt,
+)
+
 logger = logging.getLogger(__name__)
 
 # Every analysis caller uses this. Gemini and OpenRouter stay in the file and
 # are not in the chain. LiveKit voice does not use this tuple.
 ANALYSIS_LLM_ORDER = ("ollama",)
+
+
+def _prepared_from_provider_arg(
+    value: PreparedExternalPrompt | str,
+    *,
+    system: str | None = None,
+) -> PreparedExternalPrompt:
+    if isinstance(value, PreparedExternalPrompt):
+        return require_prepared_external_prompt(value)
+    return prepare_external_llm_prompt(str(value), system=system)
 
 
 def parse_json_from_llm(text: str) -> dict[str, Any] | None:
@@ -57,18 +73,15 @@ async def generate_app_llm(
 ) -> str | None:
     """Generate text via Ollama, then Gemini, then OpenRouter."""
     from app.backend.services.circuit_breaker import get_circuit_breaker, CircuitBreakerOpenError
-    from app.backend.services.external_ai_boundary import prepare_external_prompt
     from app.backend.services.llm_concurrency import LLMConcurrencySaturated, llm_slot
 
-    prompt = prepare_external_prompt(prompt)
-    system = prepare_external_prompt(system) if system else None
+    prepared = prepare_external_llm_prompt(prompt, system=system)
 
     breaker = get_circuit_breaker("llm")
 
     async def _inner() -> str | None:
         return await _generate_app_llm_uncached(
-            prompt,
-            system=system,
+            prepared,
             max_output_tokens=max_output_tokens,
             temperature=temperature,
             timeout=timeout,
@@ -99,14 +112,15 @@ async def generate_app_llm(
 
 
 async def _try_gemini(
-    prompt: str,
+    prepared: PreparedExternalPrompt | str,
     *,
-    system: str | None,
+    system: str | None = None,
     max_output_tokens: int,
     temperature: float,
     json_mode: bool,
     log_label: str,
 ) -> str | None:
+    prepared = _prepared_from_provider_arg(prepared, system=system)
     from app.backend.services.llm_service import (
         GeminiTruncatedError,
         gemini_generate_content,
@@ -123,8 +137,8 @@ async def _try_gemini(
         return None
     try:
         result = await gemini_generate_content(
-            prompt,
-            system=system,
+            prepared.prompt,
+            system=prepared.system,
             max_output_tokens=max_output_tokens,
             temperature=temperature,
             response_mime_type="application/json" if json_mode else None,
@@ -151,15 +165,16 @@ async def _try_gemini(
 
 
 async def _try_ollama(
-    prompt: str,
+    prepared: PreparedExternalPrompt | str,
     *,
-    system: str | None,
+    system: str | None = None,
     max_output_tokens: int,
     temperature: float,
     timeout: float,
     json_mode: bool,
     log_label: str,
 ) -> str | None:
+    prepared = _prepared_from_provider_arg(prepared, system=system)
     from app.backend.services.llm_service import get_ollama_headers, get_ollama_model, get_ollama_semaphore
 
     ollama_base = os.getenv("OLLAMA_BASE_URL", "http://ollama:11434")
@@ -169,15 +184,15 @@ async def _try_ollama(
         async with semaphore:
             async with httpx.AsyncClient(timeout=timeout) as client:
                 headers = get_ollama_headers(ollama_base)
-                if system:
+                if prepared.system:
                     resp = await client.post(
                         f"{ollama_base}/api/chat",
                         headers=headers,
                         json={
                             "model": ollama_model,
                             "messages": [
-                                {"role": "system", "content": system},
-                                {"role": "user", "content": prompt},
+                                {"role": "system", "content": prepared.system},
+                                {"role": "user", "content": prepared.prompt},
                             ],
                             "stream": False,
                             "options": {
@@ -191,7 +206,7 @@ async def _try_ollama(
                 else:
                     payload: dict[str, Any] = {
                         "model": ollama_model,
-                        "prompt": prompt,
+                        "prompt": prepared.prompt,
                         "stream": False,
                         "options": {
                             "temperature": temperature,
@@ -216,15 +231,16 @@ async def _try_ollama(
 
 
 async def _try_openrouter(
-    prompt: str,
+    prepared: PreparedExternalPrompt | str,
     *,
-    system: str | None,
+    system: str | None = None,
     max_output_tokens: int,
     temperature: float,
     timeout: float,
     json_mode: bool,
     log_label: str,
 ) -> str | None:
+    prepared = _prepared_from_provider_arg(prepared, system=system)
     from app.backend.services.llm_service import get_openrouter_model
 
     api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
@@ -243,9 +259,9 @@ async def _try_openrouter(
     base_url = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").rstrip("/")
 
     messages: list[dict[str, str]] = []
-    if system:
-        messages.append({"role": "system", "content": system})
-    messages.append({"role": "user", "content": prompt})
+    if prepared.system:
+        messages.append({"role": "system", "content": prepared.system})
+    messages.append({"role": "user", "content": prepared.prompt})
 
     payload: dict[str, Any] = {
         "model": model,
@@ -299,9 +315,8 @@ def _analysis_providers(*, allow_provider_fallback: bool) -> list[tuple[str, Any
 
 
 async def _generate_app_llm_uncached(
-    prompt: str,
+    prepared: PreparedExternalPrompt,
     *,
-    system: str | None = None,
     max_output_tokens: int = 1024,
     temperature: float = 0.2,
     timeout: float = 120.0,
@@ -309,16 +324,16 @@ async def _generate_app_llm_uncached(
     log_label: str = "app",
     allow_provider_fallback: bool = True,
 ) -> str | None:
+    prepared = require_prepared_external_prompt(prepared)
     from app.backend.services.llm_service import compute_max_output_tokens
 
     effective_max = compute_max_output_tokens(
-        prompt,
-        system=system,
+        prepared.prompt,
+        system=prepared.system,
         requested=max_output_tokens,
         json_mode=json_mode,
     )
     llm_kwargs = {
-        "system": system,
         "max_output_tokens": effective_max,
         "temperature": temperature,
         "json_mode": json_mode,
@@ -328,7 +343,7 @@ async def _generate_app_llm_uncached(
 
     for name, fn in _analysis_providers(allow_provider_fallback=allow_provider_fallback):
         kwargs = llm_kwargs if name == "gemini" else network_kwargs
-        text = await fn(prompt, **kwargs)
+        text = await fn(prepared, **kwargs)
         if text:
             return text
     return None
@@ -348,14 +363,14 @@ async def generate_app_llm_providers(
     """Try each LLM provider in order; returns (text, provider_name)."""
     from app.backend.services.llm_service import compute_max_output_tokens
 
+    prepared = prepare_external_llm_prompt(prompt, system=system)
     effective_max = compute_max_output_tokens(
-        prompt,
-        system=system,
+        prepared.prompt,
+        system=prepared.system,
         requested=max_output_tokens,
         json_mode=json_mode,
     )
     llm_kwargs = {
-        "system": system,
         "max_output_tokens": effective_max,
         "temperature": temperature,
         "json_mode": json_mode,
@@ -368,7 +383,7 @@ async def generate_app_llm_providers(
     for name, fn in providers:
         kwargs = network_kwargs if name != "gemini" else llm_kwargs
         try:
-            text = await fn(prompt, **kwargs)
+            text = await fn(prepared, **kwargs)
         except Exception as exc:
             logger.warning("%s %s call failed: %s", log_label, name, exc)
             continue

@@ -35,6 +35,9 @@ PII_FIELDS_TO_ANONYMIZE = [
     "github_url", "website", "current_company", "current_title",
 ]
 
+OBJECT_DELETION_MAX_ATTEMPTS = 10
+OBJECT_DELETION_OVERDUE_HOURS = 24
+
 
 def get_retention_config(tenant_id: Optional[int] = None, db: Optional[Session] = None) -> Dict[str, int]:
     """Get retention configuration, optionally tenant-specific.
@@ -43,15 +46,172 @@ def get_retention_config(tenant_id: Optional[int] = None, db: Optional[Session] 
     """
     if tenant_id and db:
         try:
-            from app.backend.models.db_models import TenantConfig
-            config = db.query(TenantConfig).filter(TenantConfig.tenant_id == tenant_id).first()
-            if config and config.retention_policy:
-                custom = json.loads(config.retention_policy)
-                return {**DEFAULT_RETENTION_DAYS, **custom}
+            from app.backend.models.db_models import DataRetentionPolicy
+            policy = db.query(DataRetentionPolicy).filter(
+                DataRetentionPolicy.tenant_id == tenant_id
+            ).first()
+            if policy:
+                return {
+                    **DEFAULT_RETENTION_DAYS,
+                    "candidate_data": policy.candidate_retention_days,
+                    "screening_results": policy.screening_result_retention_days,
+                    "voice_screening": policy.voice_transcript_retention_days,
+                    "analysis_results": policy.screening_result_retention_days,
+                }
         except Exception as e:
             logger.warning("Failed to load tenant retention config: %s", e)
 
     return DEFAULT_RETENTION_DAYS.copy()
+
+
+def _sanitize_delete_error(error: str | Exception | None) -> str:
+    text = str(error or "delete_failed")
+    text = text.replace("\r", " ").replace("\n", " ")
+    return text[:500]
+
+
+def _next_object_delete_retry(attempts: int) -> datetime:
+    delay_minutes = min(24 * 60, 2 ** min(max(attempts, 0), 8))
+    return datetime.now(timezone.utc) + timedelta(minutes=delay_minutes)
+
+
+def _delete_or_queue_object_keys(
+    db: Session,
+    *,
+    tenant_id: int,
+    candidate_id: int,
+    keys: List[str | None],
+) -> Dict[str, Any]:
+    """Delete object-storage keys or create retry rows for failed deletes."""
+    from app.backend.models.db_models import PendingObjectDeletion
+    from app.backend.services.object_storage import ObjectStorageService
+
+    summary: Dict[str, Any] = {
+        "object_storage_complete": True,
+        "object_storage_deleted": 0,
+        "object_storage_queued": 0,
+    }
+    for key in [k for k in keys if k]:
+        deleted_ok = False
+        last_error = "delete_failed"
+        try:
+            if ObjectStorageService.is_available():
+                deleted_ok = bool(ObjectStorageService.delete(key))
+            else:
+                last_error = "object_storage_unavailable"
+        except Exception as exc:
+            last_error = str(exc)
+            summary["object_storage_error"] = last_error
+
+        if deleted_ok:
+            summary["object_storage_deleted"] += 1
+            continue
+
+        summary["object_storage_complete"] = False
+        summary["object_storage_queued"] += 1
+        pending = (
+            db.query(PendingObjectDeletion)
+            .filter(
+                PendingObjectDeletion.tenant_id == tenant_id,
+                PendingObjectDeletion.storage_key == key,
+            )
+            .first()
+        )
+        if pending:
+            pending.candidate_id = pending.candidate_id or candidate_id
+            pending.attempts = (pending.attempts or 0) + 1
+            pending.status = "pending"
+            pending.next_retry_at = _next_object_delete_retry(pending.attempts)
+            pending.last_error = _sanitize_delete_error(last_error)
+        else:
+            attempts = 1
+            db.add(PendingObjectDeletion(
+                tenant_id=tenant_id,
+                storage_key=key,
+                candidate_id=candidate_id,
+                status="pending",
+                attempts=attempts,
+                next_retry_at=_next_object_delete_retry(attempts),
+                last_error=_sanitize_delete_error(last_error),
+            ))
+
+    return summary
+
+
+def process_pending_object_deletions(db: Session, *, limit: int = 100) -> Dict[str, int]:
+    """Retry GDPR object-storage deletes recorded in the durable outbox."""
+    from app.backend.models.db_models import PendingObjectDeletion
+    from app.backend.services.object_storage import ObjectStorageService
+
+    now = datetime.now(timezone.utc)
+    summary = {
+        "processed": 0,
+        "deleted": 0,
+        "remaining": 0,
+        "errors": 0,
+        "dead_lettered": 0,
+        "overdue": 0,
+    }
+    overdue_cutoff = now - timedelta(hours=OBJECT_DELETION_OVERDUE_HOURS)
+    summary["overdue"] = db.query(PendingObjectDeletion).filter(
+        PendingObjectDeletion.status == "pending",
+        PendingObjectDeletion.created_at < overdue_cutoff,
+    ).count()
+    if summary["overdue"]:
+        try:
+            from app.backend.services.metrics import GDPR_DELETION_OVERDUE_TOTAL
+
+            GDPR_DELETION_OVERDUE_TOTAL.inc(summary["overdue"])
+        except Exception:
+            pass
+
+    if not ObjectStorageService.is_available():
+        summary["remaining"] = db.query(PendingObjectDeletion).filter(
+            PendingObjectDeletion.status == "pending",
+        ).count()
+        return summary
+
+    rows = (
+        db.query(PendingObjectDeletion)
+        .filter(
+            PendingObjectDeletion.status == "pending",
+            (PendingObjectDeletion.next_retry_at.is_(None) | (PendingObjectDeletion.next_retry_at <= now)),
+        )
+        .order_by(PendingObjectDeletion.next_retry_at.asc(), PendingObjectDeletion.created_at.asc(), PendingObjectDeletion.id.asc())
+        .limit(limit)
+        .all()
+    )
+    for row in rows:
+        summary["processed"] += 1
+        try:
+            if ObjectStorageService.delete(row.storage_key):
+                row.status = "completed"
+                row.completed_at = datetime.now(timezone.utc)
+                summary["deleted"] += 1
+            else:
+                row.attempts = (row.attempts or 0) + 1
+                row.last_error = "delete_failed"
+                if row.attempts >= OBJECT_DELETION_MAX_ATTEMPTS:
+                    row.status = "dead_letter"
+                    row.dead_lettered_at = datetime.now(timezone.utc)
+                    summary["dead_lettered"] += 1
+                else:
+                    row.next_retry_at = _next_object_delete_retry(row.attempts)
+                    summary["remaining"] += 1
+        except Exception as exc:
+            row.attempts = (row.attempts or 0) + 1
+            row.last_error = _sanitize_delete_error(exc)
+            summary["errors"] += 1
+            if row.attempts >= OBJECT_DELETION_MAX_ATTEMPTS:
+                row.status = "dead_letter"
+                row.dead_lettered_at = datetime.now(timezone.utc)
+                summary["dead_lettered"] += 1
+            else:
+                row.next_retry_at = _next_object_delete_retry(row.attempts)
+                summary["remaining"] += 1
+
+    db.commit()
+    return summary
 
 
 def hard_delete_candidate(db: Session, candidate_id: int, tenant_id: int, reason: str = "gdpr_request") -> Dict[str, Any]:
@@ -83,33 +243,14 @@ def hard_delete_candidate(db: Session, candidate_id: int, tenant_id: int, reason
         candidate_hash = hashlib.sha256(f"{candidate.email}|{candidate_id}".encode()).hexdigest()[:16]
 
         if candidate.resume_file_key or candidate.resume_pdf_key:
-            from app.backend.models.db_models import PendingObjectDeletion
-            from app.backend.services.object_storage import ObjectStorageService
-            storage_ok = True
-            for key in (candidate.resume_file_key, candidate.resume_pdf_key):
-                if not key:
-                    continue
-                deleted_ok = False
-                try:
-                    if ObjectStorageService.is_available():
-                        deleted_ok = bool(ObjectStorageService.delete(key))
-                    else:
-                        deleted_ok = False
-                except Exception as exc:
-                    storage_ok = False
-                    deleted["object_storage_error"] = str(exc)
-                    deleted_ok = False
-                if not deleted_ok:
-                    storage_ok = False
-                    db.add(PendingObjectDeletion(
-                        tenant_id=tenant_id,
-                        storage_key=key,
-                        candidate_id=candidate_id,
-                        attempts=1,
-                        last_error=deleted.get("object_storage_error") or "delete_failed",
-                    ))
-            deleted["object_storage_complete"] = storage_ok
-            if not storage_ok:
+            storage = _delete_or_queue_object_keys(
+                db,
+                tenant_id=tenant_id,
+                candidate_id=candidate_id,
+                keys=[candidate.resume_file_key, candidate.resume_pdf_key],
+            )
+            deleted.update(storage)
+            if not storage["object_storage_complete"]:
                 try:
                     from app.backend.services.metrics import GDPR_DELETION_FAILURE_TOTAL, GDPR_DELETION_RETRY_TOTAL
                     GDPR_DELETION_FAILURE_TOTAL.labels(reason="object_storage").inc()
@@ -210,6 +351,17 @@ def anonymize_candidate(db: Session, candidate_id: int, tenant_id: int, reason: 
                 setattr(candidate, field, f"[ANONYMIZED_{candidate_hash}]")
                 anonymized["fields"] += 1
 
+        if candidate.resume_file_key or candidate.resume_pdf_key:
+            storage = _delete_or_queue_object_keys(
+                db,
+                tenant_id=tenant_id,
+                candidate_id=candidate_id,
+                keys=[candidate.resume_file_key, candidate.resume_pdf_key],
+            )
+            anonymized.update(storage)
+            candidate.resume_file_key = None
+            candidate.resume_pdf_key = None
+
         candidate.raw_resume_text = None
         candidate.parser_snapshot_json = None
         candidate.ai_professional_summary = None
@@ -287,9 +439,12 @@ def cleanup_expired_data(db: Session, tenant_id: Optional[int] = None) -> Dict[s
     retention_days = config.get("candidate_data", 730)
     cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
 
-    summary = {"anonymized": 0, "deleted": 0, "errors": 0}
+    summary = {"anonymized": 0, "deleted": 0, "errors": 0, "object_deletes_retried": 0}
 
     try:
+        pending_result = process_pending_object_deletions(db)
+        summary["object_deletes_retried"] = pending_result["processed"]
+
         query = db.query(Candidate).filter(
             Candidate.created_at < cutoff,
             Candidate.status != "anonymized",

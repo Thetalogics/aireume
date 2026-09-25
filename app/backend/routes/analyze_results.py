@@ -542,6 +542,7 @@ def get_narrative(
                 pass
         return {
             "status": "fallback",
+            "generation_mode": getattr(result, "generation_mode", None) or "deterministic_fallback",
             "error": result.narrative_error or "AI analysis encountered an error",
             "narrative": narrative,
             "interview_kit_status": getattr(result, "interview_kit_status", None),
@@ -559,6 +560,7 @@ def get_narrative(
                 pass
         return {
             "status": "failed",
+            "generation_mode": getattr(result, "generation_mode", None) or "failed",
             "error": result.narrative_error or "AI analysis encountered an error",
             "narrative": narrative,
             "interview_kit_status": getattr(result, "interview_kit_status", None),
@@ -575,6 +577,9 @@ def get_narrative(
                 voice_strategy_status = getattr(result, "voice_strategy_status", None) or "pending"
                 return {
                     "status": "ready",
+                    "generation_mode": getattr(result, "generation_mode", None) or (
+                        "ai" if narrative.get("ai_enhanced") is True else "deterministic_fallback"
+                    ),
                     "narrative": narrative,
                     "interview_kit_status": kit_status,
                     "interview_kit_error": getattr(result, "interview_kit_error", None),
@@ -588,7 +593,11 @@ def get_narrative(
     kit_status = getattr(result, "interview_kit_status", None)
     kit_error = getattr(result, "interview_kit_error", None)
     voice_strategy_status = getattr(result, "voice_strategy_status", None)
-    payload = {"status": status or "pending", **_outcome_payload(result)}
+    payload = {
+        "status": status or "pending",
+        "generation_mode": getattr(result, "generation_mode", None) or "pending",
+        **_outcome_payload(result),
+    }
     if kit_status:
         payload["interview_kit_status"] = kit_status
     if kit_error:

@@ -12,9 +12,8 @@ import hashlib
 import json
 import logging
 import os
+import uuid
 from typing import Any, Dict, Optional
-
-from app.backend.services.llm_service import get_ollama_semaphore
 
 log = logging.getLogger("aria.enrichment")
 
@@ -23,6 +22,7 @@ INTERVIEW_KIT_TIMEOUT = float(os.getenv("LLM_INTERVIEW_KIT_TIMEOUT", "180"))
 KIT_LLM_MAX_ATTEMPTS = max(1, int(os.getenv("LLM_INTERVIEW_KIT_RETRIES", "2")))
 MIN_USABLE_KIT_QUESTIONS = max(1, int(os.getenv("INTERVIEW_KIT_MIN_QUESTIONS", "4")))
 VOICE_STRATEGY_TIMEOUT = float(os.getenv("LLM_VOICE_STRATEGY_TIMEOUT", "180"))
+ENRICHMENT_JOB_TYPES = {"llm_narrative", "interview_kit", "voice_strategy"}
 
 
 def _prebuild_voice_strategy_enabled() -> bool:
@@ -884,12 +884,10 @@ async def background_interview_kit(
     interview_questions = None
 
     try:
-        sem = get_ollama_semaphore()
-        async with sem:
-            kit = await asyncio.wait_for(
-                generate_interview_kit_with_llm(llm_context),
-                timeout=INTERVIEW_KIT_TIMEOUT,
-            )
+        kit = await asyncio.wait_for(
+            generate_interview_kit_with_llm(llm_context),
+            timeout=INTERVIEW_KIT_TIMEOUT,
+        )
         if count_kit_questions(kit) <= 0:
             log.warning(
                 "Interview kit LLM returned no questions for screening_result_id=%s — using deterministic kit",
@@ -991,12 +989,10 @@ async def background_voice_strategy(
         config_hash = voice_strategy_config_hash(DEFAULT_VOICE_STRATEGY_CONFIG)
 
         try:
-            sem = get_ollama_semaphore()
-            async with sem:
-                strategy = await asyncio.wait_for(
-                    agent.generate_strategy(context, DEFAULT_VOICE_STRATEGY_CONFIG),
-                    timeout=VOICE_STRATEGY_TIMEOUT,
-                )
+            strategy = await asyncio.wait_for(
+                agent.generate_strategy(context, DEFAULT_VOICE_STRATEGY_CONFIG),
+                timeout=VOICE_STRATEGY_TIMEOUT,
+            )
             db.refresh(row, with_for_update=True)
             if row.analysis_generation != expected_generation:
                 db.rollback()
@@ -1026,6 +1022,173 @@ async def background_voice_strategy(
         db.close()
 
 
+def _enrichment_input_hash(
+    job_type: str,
+    tenant_id: int,
+    screening_result_id: int,
+    expected_generation: int,
+) -> str:
+    raw = f"enrichment:{job_type}:{tenant_id}:{screening_result_id}:{expected_generation}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def enqueue_enrichment_job(
+    db,
+    *,
+    job_type: str,
+    screening_result_id: int,
+    tenant_id: int,
+    expected_generation: int,
+    llm_context: Optional[Dict[str, Any]] = None,
+    python_result: Optional[Dict[str, Any]] = None,
+    screening_decision_id: int | None = None,
+    priority: int = 8,
+) -> bool:
+    """Create a durable enrichment job unless one already exists."""
+    if job_type not in ENRICHMENT_JOB_TYPES:
+        raise ValueError(f"Unsupported enrichment job type: {job_type}")
+    from app.backend.models.db_models import AnalysisJob, ScreeningResult
+
+    input_hash = _enrichment_input_hash(
+        job_type,
+        tenant_id,
+        screening_result_id,
+        expected_generation,
+    )
+    existing = (
+        db.query(AnalysisJob)
+        .filter(
+            AnalysisJob.tenant_id == tenant_id,
+            AnalysisJob.input_hash == input_hash,
+            AnalysisJob.status.in_(("queued", "processing", "retrying", "completed")),
+        )
+        .first()
+    )
+    if existing is not None:
+        return False
+
+    row = (
+        db.query(ScreeningResult)
+        .filter(
+            ScreeningResult.id == screening_result_id,
+            ScreeningResult.tenant_id == tenant_id,
+            ScreeningResult.analysis_generation == expected_generation,
+        )
+        .first()
+    )
+    digest = hashlib.sha256(input_hash.encode("utf-8")).hexdigest()
+    job = AnalysisJob(
+        id=uuid.uuid4(),
+        tenant_id=tenant_id,
+        candidate_id=getattr(row, "candidate_id", None),
+        user_id=getattr(row, "user_id", None),
+        job_type=job_type,
+        resume_hash=digest,
+        jd_hash=hashlib.sha256(f"{digest}:jd".encode("utf-8")).hexdigest(),
+        input_hash=input_hash,
+        status="queued",
+        priority=priority,
+        max_retries=2 if job_type != "llm_narrative" else 3,
+        job_config={
+            "screening_result_id": screening_result_id,
+            "expected_generation": expected_generation,
+            "llm_context": llm_context or {},
+            "python_result": python_result or {},
+            "screening_decision_id": screening_decision_id,
+        },
+    )
+    db.add(job)
+    db.commit()
+    log.info(
+        "Enqueued durable %s enrichment job id=%s screening_result_id=%s generation=%s",
+        job_type,
+        job.id,
+        screening_result_id,
+        expected_generation,
+    )
+    return True
+
+
+async def complete_enrichment_job(job, db, *, expected_worker_id: str) -> bool:
+    """Run one durable enrichment job under the queue worker lease."""
+    from datetime import datetime, timezone
+
+    from app.backend.models.db_models import AnalysisJob
+
+    locked = (
+        db.query(AnalysisJob)
+        .filter(AnalysisJob.id == job.id)
+        .with_for_update()
+        .populate_existing()
+        .one()
+    )
+    lease = locked.leased_until
+    if lease is not None and lease.tzinfo is None:
+        lease = lease.replace(tzinfo=timezone.utc)
+    if (
+        locked.status != "processing"
+        or locked.worker_id != expected_worker_id
+        or (lease is not None and lease < datetime.now(timezone.utc))
+    ):
+        db.rollback()
+        log.warning("lease_lost before enrichment job commit job_id=%s", job.id)
+        return False
+
+    cfg = locked.job_config or {}
+    screening_result_id = int(cfg["screening_result_id"])
+    expected_generation = int(cfg["expected_generation"])
+    tenant_id = locked.tenant_id
+    locked.processing_stage = "enriching"
+    locked.progress_percent = 40
+    db.commit()
+
+    if locked.job_type == "llm_narrative":
+        from app.backend.services.hybrid_pipeline import _background_llm_narrative
+
+        await _background_llm_narrative(
+            screening_result_id=screening_result_id,
+            tenant_id=tenant_id,
+            llm_context=cfg.get("llm_context") or {},
+            python_result=cfg.get("python_result") or {},
+            expected_analysis_generation=expected_generation,
+            screening_decision_id=cfg.get("screening_decision_id"),
+        )
+    elif locked.job_type == "interview_kit":
+        await background_interview_kit(
+            screening_result_id,
+            tenant_id,
+            cfg.get("llm_context") or {},
+            cfg.get("python_result") or {},
+            expected_generation=expected_generation,
+        )
+    elif locked.job_type == "voice_strategy":
+        await background_voice_strategy(
+            screening_result_id,
+            tenant_id,
+            expected_generation=expected_generation,
+        )
+    else:
+        raise ValueError(f"Unsupported enrichment job type: {locked.job_type}")
+
+    locked = (
+        db.query(AnalysisJob)
+        .filter(AnalysisJob.id == job.id)
+        .with_for_update()
+        .populate_existing()
+        .one()
+    )
+    if locked.status != "processing" or locked.worker_id != expected_worker_id:
+        db.rollback()
+        log.warning("lease_lost after enrichment job body job_id=%s", job.id)
+        return False
+    locked.status = "completed"
+    locked.completed_at = datetime.now(timezone.utc)
+    locked.progress_percent = 100
+    locked.processing_stage = "complete"
+    db.commit()
+    return True
+
+
 def schedule_post_narrative_enrichment(
     screening_result_id: int,
     tenant_id: int,
@@ -1053,20 +1216,23 @@ def schedule_post_narrative_enrichment(
         interview_kit_status="pending",
     ):
         return
-    from app.backend.services.hybrid_pipeline import register_background_task
+    from app.backend.db.database import SessionLocal
 
-    interview_kit_task = asyncio.create_task(
-        background_interview_kit(
-            screening_result_id,
-            tenant_id,
-            llm_context,
-            python_result,
+    enqueue_db = SessionLocal()
+    try:
+        enqueue_enrichment_job(
+            enqueue_db,
+            job_type="interview_kit",
+            screening_result_id=screening_result_id,
+            tenant_id=tenant_id,
             expected_generation=expected_generation,
+            llm_context=llm_context,
+            python_result=python_result,
         )
-    )
-    register_background_task(interview_kit_task)
+    finally:
+        enqueue_db.close()
     log.info(
-        "Scheduled independent interview kit LLM for screening_result_id=%s (narrative_status=%s)",
+        "Enqueued independent interview kit job for screening_result_id=%s (narrative_status=%s)",
         screening_result_id,
         narrative_status,
     )
@@ -1078,14 +1244,17 @@ def schedule_post_narrative_enrichment(
             expected_generation=expected_generation,
             voice_strategy_status="pending",
         )
-        voice_strategy_task = asyncio.create_task(
-            background_voice_strategy(
-                screening_result_id,
-                tenant_id,
+        voice_db = SessionLocal()
+        try:
+            enqueue_enrichment_job(
+                voice_db,
+                job_type="voice_strategy",
+                screening_result_id=screening_result_id,
+                tenant_id=tenant_id,
                 expected_generation=expected_generation,
             )
-        )
-        register_background_task(voice_strategy_task)
+        finally:
+            voice_db.close()
     else:
         _update_screening_fields(
             screening_result_id,

@@ -12,6 +12,9 @@ import {
   needsEnrichmentRefetch,
   isReportCacheable,
   isInterviewKitReady,
+  getGenerationMode,
+  isAiGenerated,
+  isDeterministicFallback,
 } from './enrichmentUtils'
 
 describe('enrichmentUtils', () => {
@@ -47,15 +50,24 @@ describe('enrichmentUtils', () => {
     const prev = { fit_score: 80, interview_kit_status: 'pending' }
     const merged = mergeNarrativePollResult(prev, {
       status: 'ready',
+      generation_mode: 'ai',
       interview_kit_status: 'processing',
       voice_strategy_status: 'pending',
       narrative: { strengths: ['Leadership'] },
     })
     expect(merged.narrative_status).toBe('ready')
+    expect(merged.generation_mode).toBe('ai')
     expect(merged.ai_enhanced).toBe(true)
     expect(merged.strengths).toEqual(['Leadership'])
     expect(merged.narrative_pending).toBe(false)
     expect(merged.interview_kit_status).toBe('processing')
+  })
+
+  it('uses generation_mode as the source of truth for AI/fallback labels', () => {
+    expect(getGenerationMode({ generation_mode: 'ai', ai_enhanced: false })).toBe('ai')
+    expect(isAiGenerated({ generation_mode: 'ai' })).toBe(true)
+    expect(isDeterministicFallback({ generation_mode: 'deterministic_fallback' })).toBe(true)
+    expect(getGenerationMode({ narrative_status: 'fallback' })).toBe('deterministic_fallback')
   })
 
   it('detects missing narrative hydration when status is ready but body empty', () => {

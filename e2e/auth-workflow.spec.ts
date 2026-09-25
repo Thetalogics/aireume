@@ -33,6 +33,13 @@ test.describe('Auth workflow (login page)', () => {
         body: JSON.stringify({ detail: 'Invalid email or password' }),
       });
     });
+    await page.route('**/api/auth/refresh', async (route) => {
+      await route.fulfill({
+        status: 401,
+        contentType: 'application/json',
+        body: JSON.stringify({ detail: 'Not authenticated' }),
+      });
+    });
   });
 
   test('renders workspace, email and password fields', async ({ page }) => {

@@ -5,7 +5,7 @@ Phase 2 columns from live SQLAlchemy metadata so revision 001's create_all
 cannot materialize 081-owned columns. Autogenerate/check therefore compares
 a deliberately incomplete metadata graph to the live database and can return
 nonzero for expected isolation, or miss real post-080 drift. This module
-asserts the schema contract and 082 cycle explicitly instead.
+asserts the schema contract and current head cycle explicitly instead.
 """
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ from sqlalchemy import create_engine, inspect, text
 from app.backend.tests.reliability_env import require_postgres
 
 ROOT = Path(__file__).resolve().parents[3]
-HEAD = "082_reliability_closure"
+HEAD = "085_object_delete_controls"
 THROUGH_REVISION = "080_phase1_reliability_closure"
 MANIFEST_PATH = ROOT / "alembic" / "historical_migration_manifest.json"
 VERSIONS_DIR = ROOT / "alembic" / "versions"
@@ -205,8 +205,14 @@ def test_m5_phase2_revisions_are_not_manifest_members():
     files = payload["files"]
     assert "081_phase2_screening_decisions.py" not in files
     assert "082_reliability_closure.py" not in files
+    assert "083_generation_mode.py" not in files
+    assert "084_auth_token_hashes.py" not in files
+    assert "085_pending_object_deletion_controls.py" not in files
     assert (VERSIONS_DIR / "081_phase2_screening_decisions.py").is_file()
     assert (VERSIONS_DIR / "082_reliability_closure.py").is_file()
+    assert (VERSIONS_DIR / "083_generation_mode.py").is_file()
+    assert (VERSIONS_DIR / "084_auth_token_hashes.py").is_file()
+    assert (VERSIONS_DIR / "085_pending_object_deletion_controls.py").is_file()
 
 
 def test_m5_tampered_historical_file_fails(tmp_path):
@@ -229,7 +235,7 @@ def test_m5_tampered_historical_file_fails(tmp_path):
 
 
 @pytest.mark.timeout(180)
-def test_m1_m3_m6_head_schema_and_082_cycle():
+def test_m1_m3_m6_head_schema_and_current_head_cycle():
     url = require_postgres()
     from sqlalchemy.engine import make_url
 

@@ -29,26 +29,47 @@ jobs:
     outputs:
       image_tag: ${{ steps.tag.outputs.image_tag }}
       environment: ${{ steps.tag.outputs.environment }}
+      release_sha: ${{ steps.tag.outputs.release_sha }}
     steps:
+      - name: Verify workflow_run source
+        if: ${{ github.event_name == 'workflow_run' }}
+        env:
+          EXPECTED_REPOSITORY: ${{ github.repository }}
+          SOURCE_REPOSITORY: ${{ github.event.workflow_run.head_repository.full_name }}
+          SOURCE_WORKFLOW: ${{ github.event.workflow_run.name }}
+          SOURCE_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+        run: |
+          test "$SOURCE_CONCLUSION" = "success"
+          test "$SOURCE_REPOSITORY" = "$EXPECTED_REPOSITORY"
+          test "$SOURCE_WORKFLOW" = "CI - Test on Pull Request"
+
       - name: Resolve image tag
         id: tag
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             ENV="${{ github.event.inputs.environment }}"
-          elif [ "${{ github.ref_name }}" = "production" ]; then
-            ENV="production"
+            RELEASE_SHA="${{ github.sha }}"
+            RELEASE_BRANCH="${{ github.ref_name }}"
           else
-            ENV="staging"
+            RELEASE_SHA="${{ github.event.workflow_run.head_sha }}"
+            RELEASE_BRANCH="${{ github.event.workflow_run.head_branch }}"
+
+            if [ "$RELEASE_BRANCH" = "production" ]; then
+              ENV="production"
+            else
+              ENV="staging"
+            fi
           fi
 
           if [ "$ENV" = "production" ]; then
-            echo "image_tag=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+            echo "image_tag=${RELEASE_SHA}" >> "$GITHUB_OUTPUT"
           else
             echo "image_tag=staging" >> "$GITHUB_OUTPUT"
           fi
 
           echo "environment=$ENV" >> "$GITHUB_OUTPUT"
-          echo "Branch: ${{ github.ref_name }} → Environment: $ENV → Tag: ${GITHUB_SHA}"
+          echo "release_sha=$RELEASE_SHA" >> "$GITHUB_OUTPUT"
+          echo "Branch: ${RELEASE_BRANCH} → Environment: $ENV → SHA: ${RELEASE_SHA}"
 
   # ─── Build and push images ─────────────────────────────────────────────
   build-and-push:
@@ -58,10 +79,13 @@ jobs:
       backend_digest: ${{ steps.backend.outputs.digest }}
     env:
       IMAGE_TAG: ${{ needs.resolve-tag.outputs.image_tag }}
+      RELEASE_SHA: ${{ needs.resolve-tag.outputs.release_sha }}
       DH_USER: ${{ secrets.DOCKERHUB_USERNAME }}
 
     steps:
     - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      with:
+        ref: ${{ env.RELEASE_SHA }}
 
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2 # v3.10.0
@@ -80,11 +104,11 @@ jobs:
         file: ./app/backend/Dockerfile
         push: true
         tags: |
-          ${{ env.DH_USER }}/resume-backend:${{ github.sha }}
+          ${{ env.DH_USER }}/resume-backend:${{ env.RELEASE_SHA }}
           ${{ env.DH_USER }}/resume-backend:${{ env.IMAGE_TAG }}
         build-args: |
-          BUILD_ID=${{ github.sha }}
-          GIT_SHA=${{ github.sha }}
+          BUILD_ID=${{ env.RELEASE_SHA }}
+          GIT_SHA=${{ env.RELEASE_SHA }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
         sbom: true
@@ -96,11 +120,11 @@ jobs:
         context: ./app/frontend
         push: true
         tags: |
-          ${{ env.DH_USER }}/resume-frontend:${{ github.sha }}
+          ${{ env.DH_USER }}/resume-frontend:${{ env.RELEASE_SHA }}
           ${{ env.DH_USER }}/resume-frontend:${{ env.IMAGE_TAG }}
         build-args: |
-          BUILD_ID=${{ github.sha }}
-          GIT_SHA=${{ github.sha }}
+          BUILD_ID=${{ env.RELEASE_SHA }}
+          GIT_SHA=${{ env.RELEASE_SHA }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
         provenance: false
@@ -111,7 +135,7 @@ jobs:
         context: ./nginx
         push: true
         tags: |
-          ${{ env.DH_USER }}/resume-nginx:${{ github.sha }}
+          ${{ env.DH_USER }}/resume-nginx:${{ env.RELEASE_SHA }}
           ${{ env.DH_USER }}/resume-nginx:${{ env.IMAGE_TAG }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
@@ -124,7 +148,7 @@ jobs:
         file: ./app/voice_agent/Dockerfile.livekit
         push: true
         tags: |
-          ${{ env.DH_USER }}/resume-livekit:${{ github.sha }}
+          ${{ env.DH_USER }}/resume-livekit:${{ env.RELEASE_SHA }}
           ${{ env.DH_USER }}/resume-livekit:${{ env.IMAGE_TAG }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
@@ -137,7 +161,7 @@ jobs:
         file: ./app/speech_service/Dockerfile
         push: true
         tags: |
-          ${{ env.DH_USER }}/resume-speech-service:${{ github.sha }}
+          ${{ env.DH_USER }}/resume-speech-service:${{ env.RELEASE_SHA }}
           ${{ env.DH_USER }}/resume-speech-service:${{ env.IMAGE_TAG }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
@@ -150,7 +174,7 @@ jobs:
         file: ./app/voice_agent/Dockerfile
         push: true
         tags: |
-          ${{ env.DH_USER }}/resume-voice-agent:${{ github.sha }}
+          ${{ env.DH_USER }}/resume-voice-agent:${{ env.RELEASE_SHA }}
           ${{ env.DH_USER }}/resume-voice-agent:${{ env.IMAGE_TAG }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
@@ -170,7 +194,8 @@ jobs:
           echo "Staging: Watchtower auto-pulls updated images within ~60 seconds (tag: staging)."
           echo "Production: Watchtower is MONITOR-ONLY by default (approval gate)."
           echo "  Promote a production release manually on the VPS using the immutable SHA:"
-          echo "    export RELEASE_SHA=${{ github.sha }}"
+          echo "    export RELEASE_SHA=${{ needs.resolve-tag.outputs.release_sha }}"
+          echo "    export BACKEND_IMAGE=${{ secrets.DOCKERHUB_USERNAME }}/resume-backend@${{ needs.build-and-push.outputs.backend_digest }}"
           echo "    docker compose -f docker-compose.prod.yml pull"
           echo "    docker compose -f docker-compose.prod.yml up -d"
           echo "  Rollback: RELEASE_SHA=<previous known-good SHA> docker compose -f docker-compose.prod.yml up -d"

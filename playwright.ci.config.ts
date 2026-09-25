@@ -3,10 +3,13 @@ import { defineConfig, devices } from '@playwright/test';
 /**
  * CI config: deterministic, no backend or secrets required.
  *
- * Serves the built frontend with `vite preview` and runs only the
- * unauthenticated login-page specs (real Chromium, real DOM). Authenticated
- * specs are intentionally excluded here — they need the full stack and run
- * locally (playwright.local.config.ts) or against staging (playwright.config.ts).
+ * Serves the built frontend with `vite preview` and runs deterministic browser
+ * specs in real Chromium:
+ * - unauthenticated login-page coverage
+ * - authenticated app-shell/dashboard coverage with mocked tenant APIs
+ *
+ * Full upload/analyze E2E still needs backend services and runs locally
+ * (playwright.local.config.ts) or against staging (playwright.config.ts).
  *
  *   npx playwright test --config=playwright.ci.config.ts
  */
@@ -17,8 +20,8 @@ export default defineConfig({
   retries: process.env.CI ? 1 : 0,
   workers: 1,
   reporter: [['list'], ['html', { open: 'never' }]],
-  // Only the unauthenticated login-page flow — no backend needed.
-  grep: /Auth workflow \(login page\)/,
+  // Deterministic browser smoke — no backend or secrets needed.
+  grep: /Auth workflow \(login page\)|Authenticated CI smoke/,
   use: {
     baseURL: 'http://localhost:4173',
     trace: 'on-first-retry',

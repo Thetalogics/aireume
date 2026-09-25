@@ -651,6 +651,15 @@ def _mirror_narrative(
     if output is not None:
         result.narrative_json = json.dumps(output, default=str)
     result.narrative_status = status
+    result.generation_mode = (
+        "ai"
+        if output and output.get("ai_enhanced") is True and status == "ready"
+        else "deterministic_fallback"
+        if status in ("ready", "fallback")
+        else "failed"
+        if status == "failed"
+        else "pending"
+    )
 
 
 def list_screening_decisions(

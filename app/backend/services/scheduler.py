@@ -42,9 +42,12 @@ def recover_stale_jobs():
 
 
 def gdpr_cleanup_job():
-    from app.backend.services.gdpr_service import cleanup_expired_data
+    from app.backend.services.gdpr_service import cleanup_expired_data, process_pending_object_deletions
     db = SessionLocal()
     try:
+        retry_result = process_pending_object_deletions(db)
+        if retry_result.get("processed"):
+            logger.info("GDPR object deletion retry complete: %s", retry_result)
         result = cleanup_expired_data(db)
         logger.info("GDPR cleanup complete: %s", result)
         try:
@@ -136,7 +139,7 @@ def start_scheduler():
     logger.info(
         "Background scheduler started "
         "(dunning retries: every 1 h, stale job recovery: every 5 min, trial expiry: every 1 h, "
-        "scheduled reports: every 1 h)"
+        "scheduled reports: every 1 h, GDPR cleanup/object retry: every 6 h)"
     )
 
 

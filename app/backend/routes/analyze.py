@@ -54,8 +54,6 @@ from app.backend.services.hybrid_pipeline import (
     astream_hybrid_pipeline,
     parse_jd_rules,
     shutdown_background_tasks,
-    _background_llm_narrative,
-    register_background_task,
 )
 # RecruiterAutoTrigger feeds into the unified interview system (/api/interviews/*).
 # It creates deep interview sessions via the recruiter orchestrator, which is
@@ -127,7 +125,9 @@ from app.backend.routes.analyze_helpers import (
     _reject_injected_text,
     _process_single_resume,
     _is_parse_failure_result,
-    _check_and_increment_usage,
+    consume_direct_analysis_quota,
+    release_direct_analysis_quota,
+    reserve_direct_analysis_quota,
     require_explicit_use_existing_candidate,
     _process_with_semaphore,
     _spawn_background_narrative,
@@ -501,10 +501,15 @@ async def analyze_endpoint(
     _validate_optional_analyze_payloads(scoring_weights, skill_overrides)
     _assert_custom_weights_allowed_if_provided(db, current_user.tenant_id, scoring_weights)
 
-    # ─── CHECK AND INCREMENT USAGE (after validation) ─────────────────────────
+    # ─── RESERVE QUOTA (after validation; consumed after persistence) ─────────
     async with _get_tenant_lock(current_user.tenant_id):
-        allowed, message = _check_and_increment_usage(db, current_user.tenant_id, current_user.id, 1)
-    if not allowed:
+        quota_hold, message = reserve_direct_analysis_quota(
+            db,
+            current_user.tenant_id,
+            current_user.id,
+            1,
+        )
+    if quota_hold is None:
         raise HTTPException(status_code=429, detail=message)
 
     weights = _parse_user_scoring_weights(scoring_weights)
@@ -652,6 +657,7 @@ async def analyze_endpoint(
             if project_id:
                 _link_to_project(db, project_id, current_user.tenant_id, existing.id, db_result.id, current_user.id)
 
+            consume_direct_analysis_quota(db, quota_hold)
             return result
 
     t_start = time.time()
@@ -798,6 +804,7 @@ async def analyze_endpoint(
             extra={"error_code": "UPSTREAM_ERROR"},
         )
 
+    consume_direct_analysis_quota(db, quota_hold)
     return result
 
 
@@ -985,8 +992,13 @@ async def analyze_stream_endpoint(
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
     async with _get_tenant_lock(current_user.tenant_id):
-        allowed, message = _check_and_increment_usage(db, current_user.tenant_id, current_user.id, 1)
-    if not allowed:
+        quota_hold, message = reserve_direct_analysis_quota(
+            db,
+            current_user.tenant_id,
+            current_user.id,
+            1,
+        )
+    if quota_hold is None:
         raise HTTPException(status_code=429, detail=message)
 
     gap_analysis = analyze_gaps(parsed_data.get("work_experience", []))
@@ -1024,8 +1036,10 @@ async def analyze_stream_endpoint(
 
     # Cancellation token: set when client disconnects so pipeline can break early
     cancel_event = asyncio.Event()
+    quota_consumed = False
 
     async def event_stream():
+        nonlocal quota_consumed
         final_result: dict = {}
         python_scores_saved = False
 
@@ -1214,6 +1228,7 @@ async def analyze_stream_endpoint(
                     if cand and action != "use_existing":
                         _store_candidate_profile(cand, parsed_data, gap_analysis, file_hash, final_result.get("analysis_quality", "medium"), content, resume.filename, db=save_db)
                     save_db.commit()
+                    quota_consumed = consume_direct_analysis_quota(save_db, quota_hold)
                     log.info("Final DB save completed for screening_result_id=%s (fit_score=%s)", screening_result_id, final_result.get("fit_score"))
 
                     # Persist skill overrides to template after successful analysis
@@ -1316,6 +1331,16 @@ async def analyze_stream_endpoint(
             )
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
         finally:
+            if not quota_consumed:
+                release_db = SessionLocal()
+                try:
+                    release_direct_analysis_quota(
+                        release_db,
+                        quota_hold,
+                        reason="stream_not_persisted",
+                    )
+                finally:
+                    release_db.close()
             # Guaranteed [DONE] event
             yield "data: [DONE]\n\n"
 
@@ -1504,10 +1529,15 @@ async def batch_analyze_chunked_endpoint(
     _validate_optional_analyze_payloads(scoring_weights)
     _assert_custom_weights_allowed_if_provided(db, current_user.tenant_id, scoring_weights)
 
-    # CHECK AND INCREMENT USAGE
+    # Reserve submitted valid rows; released by reconciliation if the process dies.
     async with _get_tenant_lock(current_user.tenant_id):
-        allowed, message = _check_and_increment_usage(db, current_user.tenant_id, current_user.id, valid_count)
-    if not allowed:
+        quota_hold, message = reserve_direct_analysis_quota(
+            db,
+            current_user.tenant_id,
+            current_user.id,
+            valid_count,
+        )
+    if quota_hold is None:
         raise HTTPException(status_code=429, detail=message)
 
     weights = None
@@ -1606,6 +1636,7 @@ async def batch_analyze_chunked_endpoint(
         for i, r in enumerate(batch_results)
     ]
 
+    consume_direct_analysis_quota(db, quota_hold)
     return BatchAnalysisResponse(
         results=ranked,
         failed=failed_items,
@@ -1812,10 +1843,15 @@ async def batch_analyze_stream_endpoint(
     _validate_optional_analyze_payloads(scoring_weights, skill_overrides)
     _assert_custom_weights_allowed_if_provided(db, current_user.tenant_id, scoring_weights)
 
-    # CHECK AND INCREMENT USAGE
+    # Reserve submitted valid rows; stream cleanup releases if nothing is persisted.
     async with _get_tenant_lock(current_user.tenant_id):
-        allowed, message = _check_and_increment_usage(db, current_user.tenant_id, current_user.id, valid_count)
-    if not allowed:
+        quota_hold, message = reserve_direct_analysis_quota(
+            db,
+            current_user.tenant_id,
+            current_user.id,
+            valid_count,
+        )
+    if quota_hold is None:
         raise HTTPException(status_code=429, detail=message)
 
     parsed_weights = None
@@ -1884,7 +1920,10 @@ async def batch_analyze_stream_endpoint(
     total = len(file_data) + len(failed_items)
 
     # ── SSE generator ────────────────────────────────────────────────────────
+    quota_consumed = False
+
     async def event_generator():
+        nonlocal quota_consumed
         completed = 0
         successful_count = 0
         failed_count = len(failed_items)
@@ -2010,6 +2049,11 @@ async def batch_analyze_stream_endpoint(
             successful=successful_count,
             failed_count=failed_count,
         )
+        consume_db = SessionLocal()
+        try:
+            quota_consumed = consume_direct_analysis_quota(consume_db, quota_hold)
+        finally:
+            consume_db.close()
         yield f"data: {json.dumps(done_evt.model_dump(exclude_none=True), default=_json_default)}\n\n"
         yield "data: [DONE]\n\n"
 
@@ -2028,8 +2072,24 @@ async def batch_analyze_stream_endpoint(
                     extra={"error_code": "IO_ERROR"},
                 )
 
+    async def event_generator_with_cleanup():
+        try:
+            async for chunk in event_generator():
+                yield chunk
+        finally:
+            if not quota_consumed:
+                release_db = SessionLocal()
+                try:
+                    release_direct_analysis_quota(
+                        release_db,
+                        quota_hold,
+                        reason="batch_stream_not_completed",
+                    )
+                finally:
+                    release_db.close()
+
     return StreamingResponse(
-        event_generator(),
+        event_generator_with_cleanup(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
     )
@@ -2206,11 +2266,15 @@ async def batch_analyze_endpoint(
 
     if ranked:
         async with _get_tenant_lock(current_user.tenant_id):
-            allowed, message = _check_and_increment_usage(
-                db, current_user.tenant_id, current_user.id, len(ranked),
+            quota_hold, message = reserve_direct_analysis_quota(
+                db,
+                current_user.tenant_id,
+                current_user.id,
+                len(ranked),
             )
-        if not allowed:
+        if quota_hold is None:
             raise HTTPException(status_code=429, detail=message)
+        consume_direct_analysis_quota(db, quota_hold)
     
     return BatchAnalysisResponse(
         results=ranked,

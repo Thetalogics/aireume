@@ -64,16 +64,13 @@ class TestMetricsOverview:
         # The platform admin client already created one tenant ("PlatformAdminCorp")
         # Register two more tenants
         for name in ["TenantA", "TenantB"]:
-            from passlib.context import CryptContext
-            pwd_context = CryptContext(schemes=["sha256_crypt"], deprecated="auto")
-
             tenant = Tenant(name=name, slug=name.lower(), subscription_status="active")
             db.add(tenant)
             db.flush()
             user = User(
                 tenant_id=tenant.id,
                 email=f"admin@{name.lower()}.com",
-                hashed_password=pwd_context.hash("Password123!"),
+                hashed_password="not-used-by-metrics-test",
                 role="admin",
                 is_active=True,
             )

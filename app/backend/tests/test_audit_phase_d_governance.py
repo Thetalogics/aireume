@@ -1,5 +1,6 @@
 """AUD-001 residual GETDEL, scoring, proxy signals, CSV, identity, adverse-action."""
 import io
+from pathlib import Path
 import threading
 
 import pytest
@@ -270,6 +271,85 @@ def test_object_storage_delete_is_invoked_on_hard_delete(db, monkeypatch, seed_s
     assert "tenant/1/resume.pdf" in calls
 
 
+def test_pending_object_deletion_is_retryable(db, monkeypatch, seed_subscription_plans):
+    from app.backend.models.db_models import Candidate, PendingObjectDeletion, Tenant
+    from app.backend.services import gdpr_service
+
+    calls = []
+    available = {"value": False}
+    monkeypatch.setattr(
+        "app.backend.services.object_storage.ObjectStorageService.is_available",
+        staticmethod(lambda: available["value"]),
+    )
+    monkeypatch.setattr(
+        "app.backend.services.object_storage.ObjectStorageService.delete",
+        staticmethod(lambda key: calls.append(key) or True),
+    )
+    tenant = Tenant(name="Retry Tenant", slug="retry-tenant")
+    db.add(tenant)
+    db.commit()
+    db.refresh(tenant)
+    cand = Candidate(
+        tenant_id=tenant.id,
+        name="Retry Me",
+        email="retry@example.com",
+        resume_file_key="tenant/retry/resume.pdf",
+    )
+    db.add(cand)
+    db.commit()
+    db.refresh(cand)
+
+    out = gdpr_service.anonymize_candidate(db, cand.id, tenant.id)
+    assert out.get("object_storage_complete") is False
+    row = db.query(PendingObjectDeletion).filter_by(storage_key="tenant/retry/resume.pdf").one()
+    assert row.status == "pending"
+    assert row.next_retry_at is not None
+    assert row.last_error == "object_storage_unavailable"
+
+    available["value"] = True
+    row.next_retry_at = None
+    db.commit()
+    retry = gdpr_service.process_pending_object_deletions(db)
+    assert retry["deleted"] == 1
+    assert calls == ["tenant/retry/resume.pdf"]
+    db.refresh(row)
+    assert row.status == "completed"
+    assert row.completed_at is not None
+    assert db.query(PendingObjectDeletion).filter_by(status="pending").count() == 0
+
+
+def test_pending_object_deletion_dead_letters_after_repeated_failures(db, monkeypatch, seed_subscription_plans):
+    from app.backend.models.db_models import PendingObjectDeletion, Tenant
+    from app.backend.services import gdpr_service
+
+    monkeypatch.setattr(
+        "app.backend.services.object_storage.ObjectStorageService.is_available",
+        staticmethod(lambda: True),
+    )
+    monkeypatch.setattr(
+        "app.backend.services.object_storage.ObjectStorageService.delete",
+        staticmethod(lambda key: False),
+    )
+    tenant = Tenant(name="Dead Letter Tenant", slug="dead-letter-tenant")
+    db.add(tenant)
+    db.commit()
+    db.refresh(tenant)
+    row = PendingObjectDeletion(
+        tenant_id=tenant.id,
+        storage_key="tenant/dead/resume.pdf",
+        attempts=gdpr_service.OBJECT_DELETION_MAX_ATTEMPTS - 1,
+        status="pending",
+    )
+    db.add(row)
+    db.commit()
+
+    retry = gdpr_service.process_pending_object_deletions(db)
+    assert retry["dead_lettered"] == 1
+    db.refresh(row)
+    assert row.status == "dead_letter"
+    assert row.dead_lettered_at is not None
+
+
 def test_anonymize_removes_pii_marker(db, seed_subscription_plans):
     from app.backend.models.db_models import Candidate, ScreeningResult, Tenant
     from app.backend.services import gdpr_service
@@ -340,6 +420,75 @@ def test_external_ai_boundary_redacts_email_before_provider(monkeypatch):
     assert "jane.audit@example.com" not in redacted.lower()
 
 
+@pytest.mark.asyncio
+async def test_voice_llm_uses_external_ai_boundary(monkeypatch):
+    from app.backend.services.external_ai_boundary import PreparedExternalPrompt
+    from app.voice_agent import voice_llm
+
+    captured = {}
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {"response": "{\"ok\": true}"}
+
+    class FakeClient:
+        async def post(self, url, *, json, headers):
+            captured["prompt"] = json["prompt"]
+            return FakeResponse()
+
+    async def fake_get_client():
+        return FakeClient()
+
+    monkeypatch.setattr(voice_llm, "use_gemini_for_voice", lambda: False)
+    monkeypatch.setattr(voice_llm, "get_voice_llm_model", lambda: "voice-model")
+    monkeypatch.setattr(voice_llm, "_get_client", fake_get_client)
+    monkeypatch.setattr(
+        voice_llm,
+        "prepare_external_llm_prompt",
+        lambda prompt, system=None: PreparedExternalPrompt(
+            prompt=prompt.replace("jane.audit@example.com", "[EMAIL]"),
+            system=system,
+        ),
+    )
+
+    result = await voice_llm.generate_json("Contact jane.audit@example.com")
+    assert result == {"ok": True}
+    assert "jane.audit@example.com" not in captured["prompt"]
+    assert "[EMAIL]" in captured["prompt"]
+
+
+def test_direct_ai_provider_calls_are_confined_to_adapter_modules():
+    root = Path(__file__).resolve().parents[3]
+    approved = {
+        Path("app/backend/services/app_llm_client.py"),
+        Path("app/backend/services/llm_service.py"),
+        Path("app/backend/services/structured_llm_service.py"),
+        Path("app/voice_agent/voice_llm.py"),
+    }
+    ignored_parts = {"tests", "scripts", "wip"}
+    provider_markers = (
+        "/api/generate",
+        ":generateContent",
+        "openrouter.ai/api",
+        "ChatGoogleGenerativeAI",
+        "ollama.AsyncClient",
+    )
+
+    violations = []
+    for base in (root / "app/backend", root / "app/voice_agent"):
+        for path in base.rglob("*.py"):
+            rel = path.relative_to(root)
+            if any(part in ignored_parts for part in rel.parts):
+                continue
+            text = path.read_text(encoding="utf-8")
+            if any(marker in text for marker in provider_markers) and rel not in approved:
+                violations.append(str(rel))
+
+    assert violations == []
+
+
 def test_llm_slots_are_shared_across_process_identities(monkeypatch):
     from app.backend.services import shared_cache
 
@@ -359,5 +508,3 @@ def test_share_passcode_uses_bcrypt():
     assert not verify_passcode("wrong", stored)
     legacy = __import__("hashlib").sha256(b"s3cret-pass").hexdigest()
     assert verify_passcode("s3cret-pass", legacy)
-
-

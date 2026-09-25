@@ -104,9 +104,10 @@ function LegacyHandoffRedirect() {
 }
 
 function HomePage() {
+  const { user, loading } = useAuth()
   const { isHiringManager, isViewer } = usePermissions()
-  if (isHiringManager) return <Navigate to="/requisitions" replace />
-  if (isViewer) return <Navigate to="/candidates" replace />
+  if (!loading && user && isHiringManager) return <Navigate to="/requisitions" replace />
+  if (!loading && user && isViewer) return <Navigate to="/candidates" replace />
   return (
     <Shell>
       <OnboardingGate>

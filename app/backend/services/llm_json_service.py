@@ -15,6 +15,8 @@ from typing import Any, Dict, List, Optional, Type
 
 from pydantic import BaseModel
 
+from app.backend.services.external_ai_boundary import prepare_external_llm_prompt
+
 log = logging.getLogger("aria.llm_json")
 
 DEFAULT_TIER_DELAY_S = float(os.getenv("LLM_JSON_TIER_DELAY", "1.5"))
@@ -78,17 +80,17 @@ async def invoke_llm_json_resilient(
         if attempt > 0:
             await asyncio.sleep(DEFAULT_TIER_DELAY_S * attempt)
 
+        prepared = prepare_external_llm_prompt(prompt)
         tier_tokens = _tier_output_tokens(prompt, max_output_tokens=max_output_tokens, attempt=attempt)
         tier_temp = temperature if attempt == 0 else min(temperature, 0.15)
         tier_label = f"{log_label}_tier{attempt + 1}"
 
         effective_max = compute_max_output_tokens(
-            prompt,
+            prepared.prompt,
             requested=tier_tokens,
             json_mode=True,
         )
         llm_kwargs = {
-            "system": None,
             "max_output_tokens": effective_max,
             "temperature": tier_temp,
             "json_mode": True,
@@ -111,7 +113,7 @@ async def invoke_llm_json_resilient(
         tier_had_response = False
         for provider_name, provider_fn, kwargs in provider_chain:
             try:
-                raw = await provider_fn(prompt, **kwargs)
+                raw = await provider_fn(prepared, **kwargs)
             except Exception as err:
                 log.warning(
                     "%s tier %s %s call failed: %s: %s",

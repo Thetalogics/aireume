@@ -573,11 +573,12 @@ def get_screening_result(
         "status_updated_at":    result.status_updated_at,
         "narrative_status":     result.narrative_status or "pending",
         "narrative_error":      result.narrative_error,
+        "generation_mode":      getattr(result, "generation_mode", None) or "pending",
         "interview_kit_status": getattr(result, "interview_kit_status", None) or "pending",
         "interview_kit_error": getattr(result, "interview_kit_error", None),
         "voice_strategy_status": getattr(result, "voice_strategy_status", None) or "pending",
         **outcome_fields_from_result(result),
-        "ai_enhanced":          result.narrative_status == "ready" and result.narrative_json is not None,
+        "ai_enhanced":          (getattr(result, "generation_mode", None) == "ai"),
         "narrative_pending":    result.narrative_status in ("pending", "processing"),
         "current_decision_id":  result.current_decision_id,
         "decision_id":          result.current_decision_id,
@@ -590,6 +591,8 @@ def get_screening_result(
     response_data["deterministic_score"] = result.deterministic_score
     response_data["status_updated_at"] = result.status_updated_at
     response_data["role_template_id"] = result.role_template_id
+    response_data["generation_mode"] = getattr(result, "generation_mode", None) or "pending"
+    response_data["ai_enhanced"] = response_data["generation_mode"] == "ai"
     response_data["interview_kit_status"] = getattr(result, "interview_kit_status", None) or "pending"
     response_data["interview_kit_error"] = getattr(result, "interview_kit_error", None)
     response_data["voice_strategy_status"] = getattr(result, "voice_strategy_status", None) or "pending"
@@ -1187,9 +1190,10 @@ def get_candidate(
             # Narrative status fields (for UI polling)
             "narrative_status":     r.narrative_status or "pending",
             "narrative_error":      r.narrative_error,
+            "generation_mode":      getattr(r, "generation_mode", None) or "pending",
             "interview_kit_status": getattr(r, "interview_kit_status", None) or "pending",
             "voice_strategy_status": getattr(r, "voice_strategy_status", None) or "pending",
-            "ai_enhanced":          r.narrative_status == "ready" and r.narrative_json is not None,
+            "ai_enhanced":          (getattr(r, "generation_mode", None) == "ai"),
             "narrative_pending":    r.narrative_status in ("pending", "processing"),
         }
 
@@ -1209,6 +1213,8 @@ def get_candidate(
         result_item["deterministic_score"] = r.deterministic_score
         result_item["status_updated_at"] = r.status_updated_at
         result_item["role_template_id"] = r.role_template_id
+        result_item["generation_mode"] = getattr(r, "generation_mode", None) or "pending"
+        result_item["ai_enhanced"] = result_item["generation_mode"] == "ai"
         result_item["interview_kit_status"] = getattr(r, "interview_kit_status", None) or "pending"
         result_item["voice_strategy_status"] = getattr(r, "voice_strategy_status", None) or "pending"
         result_item.update(outcome_fields_from_result(r))

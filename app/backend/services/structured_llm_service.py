@@ -16,6 +16,12 @@ from typing import Any, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
+from app.backend.services.external_ai_boundary import (
+    PreparedExternalPrompt,
+    prepare_external_llm_prompt,
+    require_prepared_external_prompt,
+)
+
 log = logging.getLogger("aria.structured_llm")
 
 DEFAULT_TIER_DELAY_S = float(os.getenv("LLM_JSON_TIER_DELAY", "1.5"))
@@ -74,13 +80,14 @@ def parse_outlines_json_text(raw: str, output_type: type[T]) -> dict[str, Any] |
 
 
 async def _try_outlines_gemini(
-    prompt: str,
+    prepared: PreparedExternalPrompt,
     *,
     output_type: type[BaseModel],
     max_output_tokens: int,
     temperature: float,
     log_label: str,
 ) -> str | None:
+    prepared = require_prepared_external_prompt(prepared)
     from app.backend.services.llm_service import (
         _gemini_thinking_config,
         compute_max_output_tokens,
@@ -109,7 +116,7 @@ async def _try_outlines_gemini(
         return None
 
     effective_max = compute_max_output_tokens(
-        prompt,
+        prepared.prompt,
         requested=max_output_tokens,
         json_mode=True,
     )
@@ -133,7 +140,7 @@ async def _try_outlines_gemini(
                 config["thinking_config"] = {"thinking_budget": thinking["thinkingBudget"]}
         response = client.models.generate_content(
             model=gemini_model,
-            contents=prompt,
+            contents=prepared.prompt,
             config=config,
         )
         return response.text or ""
@@ -157,14 +164,15 @@ async def _try_outlines_gemini(
 
 
 async def _try_outlines_ollama(
-    prompt: str,
+    prepared: PreparedExternalPrompt,
     *,
     output_type: type[BaseModel],
     max_output_tokens: int,
     temperature: float,
     log_label: str,
 ) -> str | None:
-    from app.backend.services.llm_service import get_ollama_model, get_ollama_semaphore
+    prepared = require_prepared_external_prompt(prepared)
+    from app.backend.services.llm_service import get_ollama_headers, get_ollama_model, get_ollama_semaphore
 
     try:
         from ollama import AsyncClient
@@ -184,11 +192,12 @@ async def _try_outlines_ollama(
     async def _generate() -> str:
         client = AsyncClient(
             host=ollama_base,
+            headers=get_ollama_headers(ollama_base),
             timeout=httpx_timeout(OLLAMA_CONNECT, OLLAMA_READ),
         )
         model = from_ollama(client, ollama_model)
         return await model.generate(
-            prompt,
+            prepared.prompt,
             output_type,
             options={
                 "temperature": temperature,
@@ -237,8 +246,9 @@ async def invoke_outlines_json_resilient(
         if attempt > 0:
             await asyncio.sleep(DEFAULT_TIER_DELAY_S * attempt)
 
+        prepared = prepare_external_llm_prompt(prompt)
         tier_tokens = compute_max_output_tokens(
-            prompt,
+            prepared.prompt,
             requested=max_output_tokens,
             json_mode=True,
         )
@@ -257,7 +267,7 @@ async def invoke_outlines_json_resilient(
 
         for provider_name, provider_fn in provider_chain:
             raw = await provider_fn(
-                prompt,
+                prepared,
                 output_type=output_type,
                 max_output_tokens=tier_tokens,
                 temperature=tier_temp,

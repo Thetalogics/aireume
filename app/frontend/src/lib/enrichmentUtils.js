@@ -15,6 +15,24 @@ export function isNarrativePending(result) {
   return s === 'pending' || s === 'processing' || result?.narrative_pending === true
 }
 
+export function getGenerationMode(result) {
+  if (!result) return 'pending'
+  if (result.generation_mode) return result.generation_mode
+  if (result.ai_enhanced === true) return 'ai'
+  if (result.narrative_status === 'failed') return 'failed'
+  if (result.narrative_status === 'fallback') return 'deterministic_fallback'
+  if (result.narrative_status === 'ready') return 'deterministic_fallback'
+  return 'pending'
+}
+
+export function isAiGenerated(result) {
+  return getGenerationMode(result) === 'ai'
+}
+
+export function isDeterministicFallback(result) {
+  return getGenerationMode(result) === 'deterministic_fallback'
+}
+
 /** True when LLM narrative body fields are present on the result object. */
 export function hasNarrativeContent(result) {
   if (!result) return false
@@ -155,7 +173,13 @@ export function mergeNarrativePollResult(prev, data) {
     interview_kit_error: data.interview_kit_error ?? prev?.interview_kit_error,
     voice_strategy_status: voice ?? prev?.voice_strategy_status,
     narrative_error: data.error ?? prev?.narrative_error,
-    ai_enhanced: data.status === 'ready',
+    generation_mode: data.generation_mode ?? prev?.generation_mode ?? (
+      data.status === 'ready' && narrative.ai_enhanced === true ? 'ai' :
+      data.status === 'failed' ? 'failed' :
+      narrativeDone ? 'deterministic_fallback' :
+      'pending'
+    ),
+    ai_enhanced: (data.generation_mode ?? prev?.generation_mode) === 'ai' || narrative.ai_enhanced === true,
     call_fit_score: data.call_fit_score ?? prev?.call_fit_score,
     call_source: data.call_source ?? prev?.call_source,
     consolidated_recommendation: data.consolidated_recommendation ?? prev?.consolidated_recommendation,

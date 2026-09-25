@@ -23,6 +23,7 @@ import os
 import hashlib
 import logging
 import shutil
+import tempfile
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional
@@ -38,7 +39,7 @@ router = APIRouter(prefix="/api/upload", tags=["upload"])
 log = logging.getLogger("aria.upload")
 
 # Chunk storage configuration
-CHUNK_STORAGE_DIR = Path("/tmp/aria_chunks")
+CHUNK_STORAGE_DIR = Path(os.getenv("ARIA_CHUNK_STORAGE_DIR", str(Path(tempfile.gettempdir()) / "aria_chunks")))
 CHUNK_MAX_AGE_HOURS = 24
 MAX_CHUNK_SIZE = 15 * 1024 * 1024  # 15MB (with buffer for Cloudflare's 100MB limit)
 MAX_FILE_SIZE = 500 * 1024 * 1024  # 500MB total file size limit

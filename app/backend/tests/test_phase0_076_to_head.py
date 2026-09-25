@@ -22,7 +22,7 @@ pytestmark = [
 
 ROOT = Path(__file__).resolve().parents[3]
 START = "076_candidate_merge"
-HEAD = "082_reliability_closure"
+HEAD = "085_object_delete_controls"
 
 
 def _engine():

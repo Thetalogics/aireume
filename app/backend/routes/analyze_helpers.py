@@ -7,7 +7,9 @@ import asyncio
 import logging
 import time
 import concurrent.futures
+import uuid
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import datetime, date, timezone, timedelta
 from decimal import Decimal
 from typing import Any, Optional
@@ -46,8 +48,6 @@ from app.backend.services.hybrid_pipeline import (
     astream_hybrid_pipeline,
     parse_jd_rules,
     shutdown_background_tasks,
-    _background_llm_narrative,
-    register_background_task,
 )
 # RecruiterAutoTrigger feeds into the unified interview system (/api/interviews/*).
 # It creates deep interview sessions via the recruiter orchestrator, which is
@@ -64,6 +64,15 @@ from app.backend.services.team_service import get_team_profile
 from app.backend.services.skill_trend_service import get_skill_trends
 
 log = logging.getLogger("aria.analysis")
+
+
+@dataclass(frozen=True)
+class AnalysisQuotaHold:
+    """Durable direct-analysis quota hold."""
+
+    reservation_id: int
+    operation_id: str
+    quantity: int
 
 
 
@@ -1768,6 +1777,140 @@ def _release_analysis_quota(db: Session, tenant_id: int, quantity: int = 1) -> b
     return result.rowcount == 1
 
 
+def _analysis_limit_for_tenant(db: Session, tenant_id: int) -> int | None:
+    from app.backend.services.plan_entitlement_service import get_tenant_plan
+
+    plan = get_tenant_plan(db, tenant_id)
+    if plan is None:
+        return 20
+    return _get_plan_limits(plan).get("analyses_per_month", 20)
+
+
+def reserve_direct_analysis_quota(
+    db: Session,
+    tenant_id: int,
+    user_id: int | None,
+    quantity: int = 1,
+    *,
+    operation_id: str | None = None,
+) -> tuple[AnalysisQuotaHold | None, str]:
+    """Reserve direct-route analysis quota durably and commit the hold."""
+    from app.backend.services.reliability.quota_reservation import (
+        QuotaLimitExceeded,
+        reserve_analysis_quota,
+    )
+
+    tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
+    if not tenant:
+        return None, "Tenant not found"
+    operation_id = operation_id or f"direct-{uuid.uuid4()}"
+    try:
+        _ensure_monthly_reset(tenant)
+        db.flush()
+        analyses_limit = _analysis_limit_for_tenant(db, tenant_id)
+        reservation = reserve_analysis_quota(
+            db,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            quantity=quantity,
+            operation_id=operation_id,
+            analyses_limit=analyses_limit,
+        )
+        db.commit()
+    except QuotaLimitExceeded as exc:
+        db.rollback()
+        return None, str(exc)
+    except (SQLAlchemyError, OSError, RuntimeError, ValueError, TypeError):
+        db.rollback()
+        raise
+
+    try:
+        if analyses_limit and analyses_limit > 0:
+            from app.backend.services.usage_alert_service import usage_alert_service
+
+            tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
+            if tenant:
+                usage_alert_service.check_and_alert(
+                    db,
+                    tenant_id,
+                    "analyses_per_month",
+                    tenant.analyses_count_this_month,
+                    analyses_limit,
+                )
+    except (OSError, RuntimeError, ValueError, TypeError, SQLAlchemyError) as e:
+        log.warning(
+            "Usage alert check failed: %s", e,
+            extra={"error_code": "DB_ERROR" if isinstance(e, SQLAlchemyError) else "UPSTREAM_ERROR"},
+        )
+
+    return (
+        AnalysisQuotaHold(
+            reservation_id=reservation.id,
+            operation_id=operation_id,
+            quantity=quantity,
+        ),
+        "",
+    )
+
+
+def consume_direct_analysis_quota(db: Session, hold: AnalysisQuotaHold | None) -> bool:
+    """Mark a direct-route hold consumed after analysis persistence succeeds."""
+    if hold is None:
+        return False
+    from app.backend.models.db_models import QuotaReservation
+
+    reservation = (
+        db.query(QuotaReservation)
+        .filter(
+            QuotaReservation.id == hold.reservation_id,
+            QuotaReservation.operation_id == hold.operation_id,
+        )
+        .with_for_update()
+        .first()
+    )
+    if reservation is None or reservation.status != "pending":
+        return False
+    reservation.status = "consumed"
+    db.commit()
+    return True
+
+
+def release_direct_analysis_quota(
+    db: Session,
+    hold: AnalysisQuotaHold | None,
+    *,
+    reason: str,
+) -> bool:
+    """Release a direct-route hold when the operation does not persist a result."""
+    if hold is None:
+        return False
+    from app.backend.models.db_models import QuotaReservation
+    from app.backend.services.reliability.quota_reservation import release_quota_reservation
+
+    reservation = (
+        db.query(QuotaReservation)
+        .filter(
+            QuotaReservation.id == hold.reservation_id,
+            QuotaReservation.operation_id == hold.operation_id,
+        )
+        .with_for_update()
+        .first()
+    )
+    if reservation is None or reservation.status != "pending":
+        return False
+    released = release_quota_reservation(
+        db,
+        reservation,
+        reason=reason,
+        already_locked=True,
+    )
+    if released:
+        db.commit()
+    else:
+        db.rollback()
+    return released
+
+
 def release_job_analysis_quota(db: Session, job) -> bool:
     """Release a job hold atomically; caller owns commit or rollback."""
     from sqlalchemy.orm.attributes import flag_modified
@@ -1895,7 +2038,7 @@ def _spawn_background_narrative(
     expected_generation: int,
     screening_decision_id: int | None = None,
 ) -> None:
-    """Build llm_context from Python result and spawn background LLM narrative task."""
+    """Build llm_context from Python result and enqueue durable narrative work."""
     llm_context = {
         "jd_analysis":       result.get("jd_analysis", {}),
         "candidate_profile": result.get("candidate_profile", {}),
@@ -1912,15 +2055,22 @@ def _spawn_background_narrative(
     # Strip internal keys for background task
     python_result = {k: v for k, v in result.items() if not k.startswith("_")}
 
-    task = asyncio.create_task(
-        _background_llm_narrative(
+    from app.backend.db.database import SessionLocal
+    from app.backend.services.background_enrichment import enqueue_enrichment_job
+
+    db = SessionLocal()
+    try:
+        enqueue_enrichment_job(
+            db,
+            job_type="llm_narrative",
             screening_result_id=screening_result_id,
             tenant_id=tenant_id,
+            expected_generation=expected_generation,
             llm_context=llm_context,
             python_result=python_result,
-            expected_analysis_generation=expected_generation,
             screening_decision_id=screening_decision_id,
+            priority=7,
         )
-    )
-    register_background_task(task)
+    finally:
+        db.close()
 

@@ -6,7 +6,13 @@ import {
 import { useState, useEffect, useRef, memo } from 'react'
 import StreamingText from './StreamingText'
 import { getNarrative, recordOutcome, recordOutcomeFeedback } from '../lib/api'
-import { hasNarrativeContent, needsNarrativeHydration, isNarrativePending } from '../lib/enrichmentUtils'
+import {
+  getGenerationMode,
+  hasNarrativeContent,
+  isDeterministicFallback,
+  isNarrativePending,
+  needsNarrativeHydration,
+} from '../lib/enrichmentUtils'
 import { safeStr } from '../lib/utils'
 import { usePlanFeature, useHasSubscriptionContext } from '../hooks/useSubscription'
 import { PlanLockedButton } from './PlanLockedInline'
@@ -122,7 +128,12 @@ export default memo(function ResultCard({ result, defaultExpandEducation = false
   
   // Check if narrative is AI-enhanced (real LLM response vs fallback)
   // narrativeData comes from polling, result.narrative_json would be from initial result
-  const aiEnhanced = narrativeData?.ai_enhanced ?? result?.ai_enhanced ?? null
+  const generationMode = getGenerationMode({
+    ...result,
+    ...(narrativeData || {}),
+    generation_mode: narrativeData?.generation_mode ?? result?.generation_mode,
+  })
+  const aiEnhanced = generationMode === 'ai'
 
   const mergedFitSummary = narrativeData?.fit_summary || fit_summary || ''
   const mergedStrengths = narrativeData?.strengths || strengths || []
@@ -143,6 +154,7 @@ export default memo(function ResultCard({ result, defaultExpandEducation = false
       recommendation_rationale: result.recommendation_rationale,
       explainability: result.explainability,
       candidate_profile_summary: result.candidate_profile_summary,
+      generation_mode: result.generation_mode,
     })
   }, [result, narrativeData])
 
@@ -187,16 +199,25 @@ export default memo(function ResultCard({ result, defaultExpandEducation = false
         const response = await getNarrative(effectiveAnalysisId)
         
         if (response.status === 'ready' && response.narrative) {
-          setNarrativeData(response.narrative)
+          setNarrativeData({
+            ...response.narrative,
+            generation_mode: response.generation_mode,
+          })
           stopPolling()
         } else if (response.status === 'fallback' || response.status === 'failed') {
-          setNarrativeData(response.narrative || {})
+          setNarrativeData({
+            ...(response.narrative || {}),
+            generation_mode: response.generation_mode,
+          })
           if (response.status === 'failed' && !(response.narrative?.fit_summary || response.narrative?.strengths?.length)) {
             setNarrativeError(response.error || 'AI enhancement unavailable')
           }
           stopPolling()
         } else if (response.narrative) {
-          setNarrativeData(response.narrative)
+          setNarrativeData({
+            ...response.narrative,
+            generation_mode: response.generation_mode,
+          })
           if (response.status === 'ready' || response.status === 'fallback' || response.status === 'failed') {
             stopPolling()
           } else {
@@ -290,6 +311,7 @@ export default memo(function ResultCard({ result, defaultExpandEducation = false
             isPolling={isNarrativeEnhancing}
             analysisQuality={analysis_quality}
             aiEnhanced={aiEnhanced}
+            generationMode={generationMode}
           />
         )}
 
@@ -311,12 +333,12 @@ export default memo(function ResultCard({ result, defaultExpandEducation = false
         )}
 
         {/* Standard mode info banner — shown when ai_enhanced is false without error */}
-        {narrativeData && !narrativeData.ai_enhanced && !narrativeError && (
-          <div className="mt-2 flex items-center gap-2 rounded-lg bg-blue-50 border border-blue-200 px-3 py-2 text-sm text-blue-700">
-            <svg className="h-4 w-4 flex-shrink-0 text-blue-400" fill="currentColor" viewBox="0 0 20 20">
+        {narrativeData && isDeterministicFallback({ generation_mode: generationMode }) && !narrativeError && (
+          <div className="mt-2 flex items-center gap-2 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-sm text-amber-800">
+            <svg className="h-4 w-4 flex-shrink-0 text-amber-500" fill="currentColor" viewBox="0 0 20 20">
               <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a.75.75 0 000 1.5h.253a.25.25 0 01.244.304l-.459 2.066A1.75 1.75 0 0010.747 15H11a.75.75 0 000-1.5h-.253a.25.25 0 01-.244-.304l.459-2.066A1.75 1.75 0 009.253 9H9z" clipRule="evenodd" />
             </svg>
-            <span>AI analysis used standard mode.</span>
+            <span>Using deterministic standard analysis. Fit scores and skill matching remain authoritative.</span>
           </div>
         )}
 

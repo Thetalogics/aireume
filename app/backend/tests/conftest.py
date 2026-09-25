@@ -227,7 +227,11 @@ def _drop_all_tables():
 try:
     from passlib.context import CryptContext as _CC
     import app.backend.routes.auth as _auth_mod
-    _auth_mod.pwd_context = _CC(schemes=["sha256_crypt"], deprecated="auto")
+    _auth_mod.pwd_context = _CC(
+        schemes=["sha256_crypt"],
+        deprecated="auto",
+        sha256_crypt__rounds=1000,
+    )
 except Exception:
     pass  # If patching fails, fall through and let tests error naturally
 

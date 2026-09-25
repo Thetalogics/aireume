@@ -9,6 +9,11 @@ from typing import Any
 
 import httpx
 
+from app.backend.services.external_ai_boundary import (
+    PreparedExternalPrompt,
+    prepare_external_llm_prompt,
+)
+
 logger = logging.getLogger("voice_agent.voice_llm")
 
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
@@ -67,10 +72,10 @@ async def generate_json(
     temperature: float = 0.3,
 ) -> dict[str, Any] | None:
     """Single LLM call returning a parsed JSON object. Falls back Gemini → Ollama."""
+    prepared = prepare_external_llm_prompt(prompt, system=system)
     if use_gemini_for_voice():
         result = await _gemini_json(
-            prompt,
-            system=system,
+            prepared,
             max_output_tokens=max_output_tokens,
             temperature=temperature,
         )
@@ -82,17 +87,15 @@ async def generate_json(
         )
 
     return await _ollama_json(
-        prompt,
-        system=system,
+        prepared,
         max_output_tokens=max_output_tokens,
         temperature=temperature,
     )
 
 
 async def _gemini_json(
-    prompt: str,
+    prepared: PreparedExternalPrompt,
     *,
-    system: str | None,
     max_output_tokens: int,
     temperature: float,
 ) -> dict[str, Any] | None:
@@ -102,7 +105,7 @@ async def _gemini_json(
 
     for use_json_mime in (True, False):
         body: dict[str, Any] = {
-            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+            "contents": [{"role": "user", "parts": [{"text": prepared.prompt}]}],
             "generationConfig": {
                 "temperature": temperature,
                 "maxOutputTokens": max_output_tokens,
@@ -110,8 +113,8 @@ async def _gemini_json(
         }
         if use_json_mime:
             body["generationConfig"]["responseMimeType"] = "application/json"
-        if system:
-            body["systemInstruction"] = {"parts": [{"text": system}]}
+        if prepared.system:
+            body["systemInstruction"] = {"parts": [{"text": prepared.system}]}
 
         client = await _get_client()
         try:
@@ -149,9 +152,8 @@ async def _gemini_json(
 
 
 async def _ollama_json(
-    prompt: str,
+    prepared: PreparedExternalPrompt,
     *,
-    system: str | None,
     max_output_tokens: int,
     temperature: float,
 ) -> dict[str, Any] | None:
@@ -159,9 +161,9 @@ async def _ollama_json(
     if OLLAMA_API_KEY.strip():
         headers["Authorization"] = f"Bearer {OLLAMA_API_KEY.strip()}"
 
-    full_prompt = prompt
-    if system:
-        full_prompt = f"{system}\n\n{prompt}"
+    full_prompt = prepared.prompt
+    if prepared.system:
+        full_prompt = f"{prepared.system}\n\n{prepared.prompt}"
 
     ollama_model = get_voice_llm_model()
     client = await _get_client()

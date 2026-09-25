@@ -486,7 +486,7 @@ export function ScoreBreakdownPanel({ scoreBreakdown, recommendationRationale, r
 
 // ─── Analysis source badge ────────────────────────────────────────────────────
 
-export function AnalysisSourceBadge({ narrativeReady, isPolling, analysisQuality, aiEnhanced }) {
+export function AnalysisSourceBadge({ narrativeReady, isPolling, analysisQuality, aiEnhanced, generationMode }) {
   if (isPolling) {
     return (
       <div className="flex items-center gap-3 p-3 bg-brand-50 ring-1 ring-brand-200 rounded-2xl">
@@ -498,13 +498,13 @@ export function AnalysisSourceBadge({ narrativeReady, isPolling, analysisQuality
     )
   }
 
-  // Only show "AI Enhanced Report" badge for REAL LLM narratives (ai_enhanced === true)
-  if (narrativeReady && aiEnhanced === true) {
+  // Only show "AI Generated Report" badge for real LLM narratives.
+  if (narrativeReady && (generationMode === 'ai' || aiEnhanced === true)) {
     return (
       <div className="flex items-center gap-3 p-3 bg-green-50 ring-1 ring-green-200 rounded-2xl">
         <Sparkles className="w-4 h-4 text-green-600 shrink-0" />
         <p className="text-xs font-semibold text-green-700 flex-1">
-          AI Enhanced Report
+          AI Generated Report
         </p>
         {analysisQuality && (
           <span className={`text-xs font-bold px-2 py-0.5 rounded-full ring-1 shrink-0 ${
@@ -519,13 +519,13 @@ export function AnalysisSourceBadge({ narrativeReady, isPolling, analysisQuality
     )
   }
 
-  // Show "Analysis complete" for fallback narratives (ai_enhanced === false or missing)
-  if (narrativeReady && aiEnhanced === false) {
+  // Show explicit standard mode for deterministic fallbacks.
+  if (narrativeReady && (generationMode === 'deterministic_fallback' || aiEnhanced === false)) {
     return (
-      <div className="flex items-center gap-3 p-3 bg-slate-50 ring-1 ring-slate-200 rounded-2xl">
-        <CheckCircle className="w-4 h-4 text-slate-600 shrink-0" />
-        <p className="text-xs font-semibold text-slate-700 flex-1">
-          Analysis complete
+      <div className="flex items-center gap-3 p-3 bg-amber-50 ring-1 ring-amber-200 rounded-2xl">
+        <CheckCircle className="w-4 h-4 text-amber-600 shrink-0" />
+        <p className="text-xs font-semibold text-amber-800 flex-1">
+          Standard Deterministic Report
         </p>
       </div>
     )

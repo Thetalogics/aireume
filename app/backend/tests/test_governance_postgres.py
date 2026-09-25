@@ -806,7 +806,7 @@ def test_p2c1_p2c2_phase2_schema_appears_only_after_081():
             }
             assert "current_decision_id" in cols
             revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar()
-            assert revision == "082_reliability_closure"
+            assert revision == "085_object_delete_controls"
         probe.dispose()
     finally:
         with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as connection:

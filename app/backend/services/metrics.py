@@ -210,6 +210,11 @@ GDPR_DELETION_RETRY_TOTAL = Counter(
     "GDPR object-deletion retries queued",
 )
 
+GDPR_DELETION_OVERDUE_TOTAL = Counter(
+    "aria_gdpr_deletion_overdue_total",
+    "GDPR object-deletion outbox rows overdue for deletion",
+)
+
 # Custom metrics for batch operations
 DECISION_CREATED_TOTAL = Counter(
     "aria_decision_created_total",

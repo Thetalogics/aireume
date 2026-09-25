@@ -4,7 +4,8 @@ Shared skill matcher — single source of truth for skill matching.
 
 import logging
 import re
-from typing import Dict, List, Any
+from functools import lru_cache
+from typing import Dict, List, Any, Pattern, Tuple
 
 from app.backend.services.constants import SKILL_SYNONYMS, SKILL_HIERARCHY
 
@@ -1626,6 +1627,7 @@ class SkillsRegistry:
         else:
             merged = base
         self._build_processor(merged)
+        _compiled_skill_patterns.cache_clear()
         self._loaded = True
         logger.info("SkillsRegistry loaded %d skills", len(self._skills))
 
@@ -1652,6 +1654,34 @@ JD_CACHE_VERSION: str = "4"
 
 # Module-level singleton
 skills_registry = SkillsRegistry()
+
+
+@lru_cache(maxsize=16)
+def _compiled_skill_patterns(skills_key: Tuple[str, ...]) -> Tuple[Tuple[Pattern[str], str], ...]:
+    """Compile fallback skill regexes once per loaded skills registry state."""
+    variant_map: Dict[str, str] = {}
+    for canonical in skills_key:
+        canonical_lower = canonical.lower()
+        if canonical_lower not in _BANNED_FREETEXT_ALIASES:
+            variant_map[canonical_lower] = canonical_lower
+        for alias in SKILL_ALIASES.get(canonical_lower, []):
+            alias_lower = alias.lower()
+            if alias_lower not in _BANNED_FREETEXT_ALIASES:
+                variant_map[alias_lower] = canonical_lower
+
+    for canonical_lower, aliases in SKILL_ALIASES.items():
+        for alias in aliases:
+            alias_lower = alias.lower()
+            if alias_lower in variant_map and canonical_lower not in variant_map:
+                variant_map[canonical_lower] = variant_map[alias_lower]
+
+    compiled: list[Tuple[Pattern[str], str]] = []
+    for variant, canonical_lower in variant_map.items():
+        if variant in _BANNED_FREETEXT_ALIASES:
+            continue
+        pattern = r'(?:^|[^a-z0-9])' + re.escape(variant) + r'(?:$|[^a-z0-9-])'
+        compiled.append((re.compile(pattern), canonical_lower))
+    return tuple(compiled)
 
 
 def add_user_skills_to_registry(
@@ -1765,30 +1795,11 @@ def _extract_skills_from_text(text: str) -> List[str]:
     result = []
     seen = set()
 
-    # Build a variant -> canonical map from registered skills + SKILL_ALIASES
-    variant_map: Dict[str, str] = {}
-    for canonical in skills_registry.get_all_skills():
-        canonical_lower = canonical.lower()
-        if canonical_lower not in _BANNED_FREETEXT_ALIASES:
-            variant_map[canonical_lower] = canonical_lower
-        for alias in SKILL_ALIASES.get(canonical_lower, []):
-            alias_lower = alias.lower()
-            if alias_lower not in _BANNED_FREETEXT_ALIASES:
-                variant_map[alias_lower] = canonical_lower
-    # Also map any canonical skill that is itself an alias of another canonical
-    for canonical_lower, aliases in SKILL_ALIASES.items():
-        for alias in aliases:
-            alias_lower = alias.lower()
-            if alias_lower in variant_map and canonical_lower not in variant_map:
-                variant_map[canonical_lower] = variant_map[alias_lower]
-
-    for variant, canonical_lower in variant_map.items():
+    skills_key = tuple(skills_registry.get_all_skills())
+    for pattern, canonical_lower in _compiled_skill_patterns(skills_key):
         if canonical_lower in seen:
             continue
-        if variant in _BANNED_FREETEXT_ALIASES:
-            continue
-        pattern = r'(?:^|[^a-z0-9])' + re.escape(variant) + r'(?:$|[^a-z0-9-])'
-        if re.search(pattern, text_lower):
+        if pattern.search(text_lower):
             result.append(canonical_lower)
             seen.add(canonical_lower)
     return list(dict.fromkeys(result))

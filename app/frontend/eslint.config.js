@@ -6,7 +6,7 @@ import globals from 'globals'
 
 /** @type {import('eslint').Linter.Config[]} */
 export default [
-  { ignores: ['dist/**', 'node_modules/**', 'coverage/**'] },
+  { ignores: ['dist/**', 'node_modules/**', 'coverage/**', '.pytest_cache/**', 'playwright-report/**', 'test-results/**'] },
   reactHooks.configs['recommended-latest'],
   jsxA11y.flatConfigs.recommended,
   {

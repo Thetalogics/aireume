@@ -190,10 +190,10 @@ jobs:
       working-directory: app/frontend
       run: npm audit --audit-level=high
 
-  # Browser E2E for the unauthenticated login page. Deterministic and
-  # secret-free: builds the frontend, serves it with `vite preview`, and runs
-  # only the "Auth workflow (login page)" specs in real Chromium. Authenticated
-  # E2E needs the full stack and is run manually/against staging, not here.
+  # Browser E2E for deterministic frontend paths. Secret-free: builds the
+  # frontend, serves it with `vite preview`, and runs login plus mocked
+  # authenticated dashboard specs in real Chromium. Full upload/analyze E2E
+  # needs backend services and is run locally/against staging.
   test-e2e:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
@@ -220,7 +220,7 @@ jobs:
     - name: Install Playwright browser
       run: npx playwright install --with-deps chromium
 
-    - name: Run login-page E2E
+    - name: Run deterministic browser E2E
       run: npx playwright test --config=playwright.ci.config.ts
 
     - name: Upload Playwright report

@@ -114,6 +114,7 @@ class User(Base):
     # Email verification
     email_verified             = Column(Boolean, nullable=False, server_default='false', default=False)
     email_verification_token   = Column(String(255), nullable=True)
+    email_verification_token_hash = Column(String(64), nullable=True, index=True)
     email_verification_sent_at = Column(DateTime(timezone=True), nullable=True)
 
     # Per-user getting-started checklist (JSON object of step -> bool)
@@ -329,6 +330,7 @@ class ScreeningResult(Base):
     narrative_json     = Column(Text, nullable=True)    # LLM narrative (generated asynchronously)
     narrative_status   = Column(String(20), default="pending")  # pending | processing | ready | failed
     narrative_error    = Column(Text, nullable=True)            # error details when failed (null when successful)
+    generation_mode    = Column(String(32), nullable=False, default="pending", server_default="pending")  # pending | ai | deterministic_fallback | failed
     interview_kit_status = Column(String(20), default="pending", server_default="pending")  # pending | processing | ready | fallback | skipped
     interview_kit_error = Column(Text, nullable=True)  # failure reason when interview_kit_status=fallback
     candidate_intelligence_json = Column(Text, nullable=True)
@@ -849,6 +851,7 @@ class PasswordResetToken(Base):
     id         = Column(Integer, primary_key=True, index=True)
     user_id    = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     token      = Column(String(255), unique=True, nullable=False, index=True)
+    token_hash = Column(String(64), unique=True, nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     expires_at = Column(DateTime(timezone=True), nullable=False)
 
@@ -1239,8 +1242,12 @@ class PendingObjectDeletion(Base):
     tenant_id = Column(Integer, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
     storage_key = Column(String(500), nullable=False)
     candidate_id = Column(Integer, nullable=True)
+    status = Column(String(32), nullable=False, default="pending", server_default="pending", index=True)
     attempts = Column(Integer, nullable=False, default=0)
+    next_retry_at = Column(DateTime(timezone=True), nullable=True, index=True)
     last_error = Column(Text, nullable=True)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    dead_lettered_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
