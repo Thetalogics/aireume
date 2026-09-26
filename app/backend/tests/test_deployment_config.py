@@ -85,6 +85,10 @@ def test_ci_has_unmocked_browser_to_database_gate():
     assert "redis:7" in CI
     assert 'E2E_TEST_MODE: "1"' in CI
     assert 'REDIS_REQUIRED: "1"' in CI
+    assert "Generate ephemeral integration secrets" in CI
+    assert "openssl rand -hex 32" in CI
+    assert "ci-integration-jwt-secret" not in CI
+    assert "ci-integration-service-secret" not in CI
     assert "test.skip" not in E2E_INTEGRATION
 
 
