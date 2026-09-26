@@ -1,11 +1,11 @@
 import {
   ThumbsUp, ThumbsDown, AlertTriangle,
   CheckCircle, XCircle, Target, Shield, ClipboardList,
-  Mail, Loader2, Lightbulb, BookOpen, Cpu, UserCheck, Star,
+  Mail, Loader2, Lightbulb, BookOpen, Cpu, UserCheck,
 } from 'lucide-react'
 import { useState, useEffect, useRef, memo } from 'react'
 import StreamingText from './StreamingText'
-import { getNarrative, recordOutcome, recordOutcomeFeedback } from '../lib/api'
+import { getNarrative, updateResultStatus } from '../lib/api'
 import {
   getGenerationMode,
   hasNarrativeContent,
@@ -29,64 +29,21 @@ export default memo(function ResultCard({ result, defaultExpandEducation = false
   const canEmail = usePlanFeature('email_generation', true)
   const [showEmailModal, setShowEmailModal] = useState(false)
 
-  // Outcome feedback state
-  const [outcomeStatus, setOutcomeStatus]       = useState(null) // null | 'hired' | 'rejected' | 'withdrawn'
-  const [outcomeId, setOutcomeId]               = useState(null)
-  const [showStageSelect, setShowStageSelect]   = useState(false)
-  const [selectedStage, setSelectedStage]       = useState('')
-  const [outcomeNotes, setOutcomeNotes]         = useState('')
-  const [savingOutcome, setSavingOutcome]       = useState(false)
-  const [showFeedback, setShowFeedback]         = useState(false)
-  const [feedbackRating, setFeedbackRating]     = useState(0)
-  const [feedbackNotes, setFeedbackNotes]       = useState('')
-  const [savingFeedback, setSavingFeedback]     = useState(false)
-  const [outcomeError, setOutcomeError]         = useState(null)
+  const [screeningDecision, setScreeningDecision] = useState(null)
+  const [decisionSaving, setDecisionSaving] = useState(null)
+  const [decisionError, setDecisionError] = useState(null)
 
-  // Outcome handler
-  const handleOutcome = (decision) => {
-    setOutcomeStatus(decision)
-    setShowStageSelect(true)
-    setOutcomeError(null)
-  }
-
-  const handleConfirmOutcome = async () => {
-    if (!candidate_id) return
-    setSavingOutcome(true)
-    setOutcomeError(null)
+  const handleScreeningDecision = async (status, label) => {
+    if (!result_id) return
+    setDecisionSaving(status)
+    setDecisionError(null)
     try {
-      const data = {
-        screening_result_id: result_id,
-        decision: outcomeStatus,
-      }
-      if (selectedStage) data.stage = selectedStage
-      if (outcomeNotes.trim()) data.notes = outcomeNotes.trim()
-      const result = await recordOutcome(candidate_id, data)
-      setOutcomeId(result.outcome_id || result.id)
-      setShowStageSelect(false)
-      // Show feedback for hired candidates
-      if (outcomeStatus === 'hired') {
-        setShowFeedback(true)
-      }
+      await updateResultStatus(result_id, status)
+      setScreeningDecision(label)
     } catch (err) {
-      setOutcomeError(err.response?.data?.detail || 'Failed to record outcome')
+      setDecisionError(err.response?.data?.detail || 'Could not update screening decision')
     } finally {
-      setSavingOutcome(false)
-    }
-  }
-
-  const handleSubmitFeedback = async () => {
-    if (!outcomeId || feedbackRating === 0) return
-    setSavingFeedback(true)
-    try {
-      await recordOutcomeFeedback(outcomeId, {
-        rating: feedbackRating,
-        notes: feedbackNotes.trim() || undefined,
-      })
-      setShowFeedback(false)
-    } catch (err) {
-      console.error('Failed to submit feedback:', err)
-    } finally {
-      setSavingFeedback(false)
+      setDecisionSaving(null)
     }
   }
   
@@ -565,161 +522,55 @@ export default memo(function ResultCard({ result, defaultExpandEducation = false
           </CollapsibleSection>
         )}
 
-        {/* Outcome Feedback Section */}
+        {/* Recruiter decision section */}
         {!isPending && candidate_id && (
           <div className="ring-1 ring-brand-200 rounded-2xl bg-brand-50/40 overflow-hidden">
             <div className="p-4">
               <div className="flex items-center gap-2 mb-3">
                 <ClipboardList className="w-4 h-4 text-brand-600" />
-                <span className="font-bold text-brand-800 text-sm">Hiring Decision</span>
+                <span className="font-bold text-brand-800 text-sm">Recruiter decision</span>
               </div>
 
-              {/* Outcome Status Badge — shown when outcome is recorded */}
-              {outcomeStatus && !showStageSelect ? (
-                <div className="flex items-center gap-3">
-                  <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold ring-1 ${
-                    outcomeStatus === 'hired'
-                      ? 'bg-green-100 text-green-700 ring-green-200'
-                      : outcomeStatus === 'rejected'
-                      ? 'bg-red-100 text-red-700 ring-red-200'
-                      : 'bg-slate-100 text-slate-600 ring-slate-200'
-                  }`}>
-                    {outcomeStatus === 'hired' && <CheckCircle className="w-3.5 h-3.5" />}
-                    {outcomeStatus === 'rejected' && <XCircle className="w-3.5 h-3.5" />}
-                    {outcomeStatus === 'withdrawn' && <AlertTriangle className="w-3.5 h-3.5" />}
-                    {outcomeStatus.charAt(0).toUpperCase() + outcomeStatus.slice(1)}
-                  </span>
-                  {/* Feedback link for hired candidates */}
-                  {outcomeStatus === 'hired' && outcomeId && !showFeedback && (
-                    <button
-                      onClick={() => setShowFeedback(true)}
-                      className="text-xs font-semibold text-brand-600 hover:text-brand-800 transition-colors"
-                    >
-                      Add feedback
-                    </button>
-                  )}
+              <p className="text-xs text-slate-500 mb-3">
+                ARIA signal is system-generated. These actions update screening status; final hired, rejected-after-process, and withdrawn outcomes belong in the pipeline closure flow.
+              </p>
+
+              {screeningDecision ? (
+                <div className="inline-flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-bold bg-white text-brand-700 ring-1 ring-brand-100">
+                  <CheckCircle className="w-3.5 h-3.5" />
+                  {screeningDecision}
                 </div>
-              ) : !outcomeStatus ? (
-                /* Decision Buttons — shown when no outcome recorded */
+              ) : (
                 <div className="flex items-center gap-2 flex-wrap">
-                  <span className="text-sm text-slate-500">Decision:</span>
                   <button
-                    onClick={() => handleOutcome('hired')}
-                    className="px-3 py-1.5 text-xs rounded-xl font-semibold bg-green-50 text-green-700 ring-1 ring-green-200 hover:bg-green-100 transition-colors"
+                    onClick={() => handleScreeningDecision('shortlisted', 'Advanced to phone screen')}
+                    disabled={Boolean(decisionSaving)}
+                    className="px-3 py-1.5 text-xs rounded-xl font-semibold bg-green-50 text-green-700 ring-1 ring-green-200 hover:bg-green-100 disabled:opacity-60 transition-colors"
                   >
-                    Hired
+                    {decisionSaving === 'shortlisted' && <Loader2 className="inline w-3 h-3 mr-1 animate-spin" />}
+                    Advance to phone screen
                   </button>
                   <button
-                    onClick={() => handleOutcome('rejected')}
-                    className="px-3 py-1.5 text-xs rounded-xl font-semibold bg-red-50 text-red-700 ring-1 ring-red-200 hover:bg-red-100 transition-colors"
+                    onClick={() => handleScreeningDecision('in-review', 'Held for review')}
+                    disabled={Boolean(decisionSaving)}
+                    className="px-3 py-1.5 text-xs rounded-xl font-semibold bg-amber-50 text-amber-700 ring-1 ring-amber-200 hover:bg-amber-100 disabled:opacity-60 transition-colors"
                   >
-                    Rejected
+                    {decisionSaving === 'in-review' && <Loader2 className="inline w-3 h-3 mr-1 animate-spin" />}
+                    Hold for review
                   </button>
                   <button
-                    onClick={() => handleOutcome('withdrawn')}
-                    className="px-3 py-1.5 text-xs rounded-xl font-semibold bg-slate-50 text-slate-600 ring-1 ring-slate-200 hover:bg-slate-100 transition-colors"
+                    onClick={() => handleScreeningDecision('rejected', 'Rejected at screening')}
+                    disabled={Boolean(decisionSaving)}
+                    className="px-3 py-1.5 text-xs rounded-xl font-semibold bg-red-50 text-red-700 ring-1 ring-red-200 hover:bg-red-100 disabled:opacity-60 transition-colors"
                   >
-                    Withdrawn
+                    {decisionSaving === 'rejected' && <Loader2 className="inline w-3 h-3 mr-1 animate-spin" />}
+                    Reject
                   </button>
-                </div>
-              ) : null}
-
-              {/* Stage Selection — shown after clicking a decision button */}
-              {showStageSelect && (
-                <div className="mt-3 space-y-3 p-3 bg-white rounded-xl ring-1 ring-brand-100">
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-semibold text-slate-500">Stage:</span>
-                    <select
-                      value={selectedStage}
-                      onChange={(e) => setSelectedStage(e.target.value)}
-                      className="text-xs bg-slate-50 border border-slate-200 rounded-lg px-2 py-1 focus:outline-none focus:ring-2 focus:ring-brand-300"
-                    >
-                      <option value="">Select stage (optional)</option>
-                      <option value="screening">Screening</option>
-                      <option value="phone_screen">Phone Screen</option>
-                      <option value="interview">Interview</option>
-                      <option value="offer">Offer</option>
-                      <option value="onboarded">Onboarded</option>
-                    </select>
-                  </div>
-                  <textarea
-                    placeholder="Optional notes about this decision..."
-                    value={outcomeNotes}
-                    onChange={(e) => setOutcomeNotes(e.target.value)}
-                    rows={2}
-                    className="w-full text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 resize-none focus:outline-none focus:ring-2 focus:ring-brand-300 placeholder:text-slate-300"
-                  />
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={handleConfirmOutcome}
-                      disabled={savingOutcome}
-                      className="px-4 py-1.5 text-xs font-bold bg-brand-600 text-white rounded-xl hover:bg-brand-700 disabled:opacity-60 transition-colors flex items-center gap-1.5"
-                    >
-                      {savingOutcome && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-                      Confirm
-                    </button>
-                    <button
-                      onClick={() => { setShowStageSelect(false); setOutcomeStatus(null) }}
-                      className="px-3 py-1.5 text-xs font-semibold text-slate-500 hover:text-slate-700 transition-colors"
-                    >
-                      Cancel
-                    </button>
-                  </div>
                 </div>
               )}
 
-              {/* Feedback Rating — shown after marking as "hired" */}
-              {showFeedback && outcomeId && (
-                <div className="mt-3 p-3 bg-white rounded-xl ring-1 ring-brand-100 space-y-3">
-                  <div>
-                    <span className="text-xs font-semibold text-slate-500">Rate this hire:</span>
-                    <div className="flex items-center gap-1 mt-1.5">
-                      {[1, 2, 3, 4, 5].map((star) => (
-                        <button
-                          key={star}
-                          onClick={() => setFeedbackRating(star)}
-                          className="transition-colors"
-                        >
-                          <Star
-                            className={`w-5 h-5 ${
-                              star <= feedbackRating
-                                ? 'text-amber-400 fill-amber-400'
-                                : 'text-slate-300'
-                            }`}
-                          />
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                  <textarea
-                    placeholder="Optional feedback notes..."
-                    value={feedbackNotes}
-                    onChange={(e) => setFeedbackNotes(e.target.value)}
-                    rows={2}
-                    className="w-full text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 resize-none focus:outline-none focus:ring-2 focus:ring-brand-300 placeholder:text-slate-300"
-                  />
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={handleSubmitFeedback}
-                      disabled={savingFeedback || feedbackRating === 0}
-                      className="px-4 py-1.5 text-xs font-bold bg-brand-600 text-white rounded-xl hover:bg-brand-700 disabled:opacity-60 transition-colors flex items-center gap-1.5"
-                    >
-                      {savingFeedback && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-                      Submit Feedback
-                    </button>
-                    <button
-                      onClick={() => setShowFeedback(false)}
-                      className="px-3 py-1.5 text-xs font-semibold text-slate-500 hover:text-slate-700 transition-colors"
-                    >
-                      Skip
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {/* Error message */}
-              {outcomeError && (
-                <p className="mt-2 text-xs text-red-600">{outcomeError}</p>
+              {decisionError && (
+                <p className="mt-2 text-xs text-red-600">{decisionError}</p>
               )}
             </div>
           </div>

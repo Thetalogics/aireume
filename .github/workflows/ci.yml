@@ -36,9 +36,8 @@ jobs:
 
     - name: Install dependencies
       run: |
-        python -m pip install --upgrade pip
-        pip install -r app/backend/requirements.txt
-        pip install pytest pytest-asyncio pytest-cov respx pytest-timeout
+        python -m pip install pip==25.3
+        pip install --require-hashes -r app/backend/requirements.lock
         python -c "import importlib.util; print('langgraph:', importlib.util.find_spec('langgraph'))"
 
     - name: Run backend tests
@@ -91,9 +90,8 @@ jobs:
         sudo apt-get install -y xmlsec1 libxmlsec1-dev libxml2-dev pkg-config
     - name: Install dependencies
       run: |
-        python -m pip install --upgrade pip
-        pip install -r app/backend/requirements.txt
-        pip install pytest pytest-asyncio pytest-cov respx pytest-timeout
+        python -m pip install pip==25.3
+        pip install --require-hashes -r app/backend/requirements.lock
     - name: Migrate
       run: alembic -c alembic.ini upgrade head
     - name: Reliability PostgreSQL tests (fail if skipped)
@@ -143,9 +141,8 @@ jobs:
         sudo apt-get install -y xmlsec1 libxmlsec1-dev libxml2-dev pkg-config
     - name: Install dependencies
       run: |
-        python -m pip install --upgrade pip
-        pip install -r app/backend/requirements.txt
-        pip install pytest pytest-asyncio pytest-timeout redis
+        python -m pip install pip==25.3
+        pip install --require-hashes -r app/backend/requirements.lock
     - name: Redis reliability tests
       run: |
         python -c "import os; assert os.environ.get('REDIS_URL') and os.environ.get('RELIABILITY_REDIS_REQUIRED') == '1'"
@@ -155,6 +152,59 @@ jobs:
           app/backend/tests/test_auth_rate_limit_redis.py \
           app/backend/tests/test_rate_limit_headers_redis.py \
           -v --timeout=30
+
+  gdpr-object-storage:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    env:
+      OBJECT_STORAGE_INTEGRATION_REQUIRED: "1"
+      S3_ENDPOINT: http://127.0.0.1:9000
+      S3_ACCESS_KEY: minioadmin
+      S3_SECRET_KEY: minioadmin
+      S3_BUCKET: aria-gdpr-ci
+      S3_REGION: us-east-1
+      S3_USE_PATH_STYLE: "true"
+      PYTHONPATH: ${{ github.workspace }}
+    steps:
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+    - name: Set up Python
+      uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+      with:
+        python-version: '3.11'
+    - name: Install xmlsec (python3-saml)
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y xmlsec1 libxmlsec1-dev libxml2-dev pkg-config
+    - name: Install dependencies
+      run: |
+        python -m pip install pip==25.3
+        pip install --require-hashes -r app/backend/requirements.lock
+    - name: Start pinned MinIO and create test bucket
+      run: |
+        set -euo pipefail
+        docker run -d --rm --name aria-minio \
+          -p 9000:9000 \
+          -e MINIO_ROOT_USER="$S3_ACCESS_KEY" \
+          -e MINIO_ROOT_PASSWORD="$S3_SECRET_KEY" \
+          docker.io/bitnamilegacy/minio@sha256:953d489a81cc4de7975f90e07202189c4325da39b0b92470b6a13c7ea99e36cd
+        for attempt in $(seq 1 30); do
+          if curl --fail --silent "$S3_ENDPOINT/minio/health/ready"; then
+            break
+          fi
+          if [ "$attempt" = "30" ]; then
+            docker logs aria-minio
+            exit 1
+          fi
+          sleep 1
+        done
+        python -c "import boto3, os; boto3.client('s3', endpoint_url=os.environ['S3_ENDPOINT'], aws_access_key_id=os.environ['S3_ACCESS_KEY'], aws_secret_access_key=os.environ['S3_SECRET_KEY'], region_name=os.environ['S3_REGION']).create_bucket(Bucket=os.environ['S3_BUCKET'])"
+    - name: Run real object-storage GDPR tests
+      run: |
+        python -m pytest app/backend/tests/test_gdpr_object_storage_integration.py \
+          -v --timeout=60 --tb=short
+    - name: Show MinIO logs on failure
+      if: failure()
+      run: docker logs aria-minio
 
   test-frontend:
     if: github.event_name != 'schedule'
@@ -231,6 +281,99 @@ jobs:
         path: playwright-report/
         retention-days: 7
 
+  # Real browser -> API -> PostgreSQL/Redis integration. This job creates a
+  # disposable tenant in isolated service containers and must not use mocks,
+  # provider credentials, or a shared staging account.
+  integration-e2e:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: aria
+          POSTGRES_PASSWORD: aria
+          POSTGRES_DB: aria_e2e
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql+psycopg2://aria:aria@127.0.0.1:5432/aria_e2e
+      REDIS_URL: redis://127.0.0.1:6379/0
+      REDIS_REQUIRED: "1"
+      JWT_SECRET_KEY: ci-integration-jwt-secret-at-least-32-bytes
+      INTERNAL_SERVICE_SECRET: ci-integration-service-secret-at-least-32-bytes
+      CORS_ORIGINS: http://127.0.0.1:5173,http://localhost:5173
+      E2E_TEST_MODE: "1"
+      RUN_BACKGROUND_WORKERS: "0"
+      OLLAMA_BASE_URL: https://ollama.com
+      OLLAMA_MODEL: ci-not-invoked
+      OLLAMA_API_KEY: ci-not-invoked
+      OLLAMA_HEALTH_SENTINEL_ENABLED: "0"
+      PLAYWRIGHT_BASE_URL: http://127.0.0.1:5173
+      PLAYWRIGHT_API_URL: http://127.0.0.1:8000
+      BUILD_ID: ${{ github.sha }}
+      GIT_SHA: ${{ github.sha }}
+      PYTHONPATH: ${{ github.workspace }}
+    steps:
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+    - name: Set up Python
+      uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+      with:
+        python-version: '3.11'
+
+    - name: Set up Node.js
+      uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      with:
+        node-version: '22'
+        cache: 'npm'
+        cache-dependency-path: |
+          package-lock.json
+          app/frontend/package-lock.json
+
+    - name: Install backend system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y xmlsec1 libxmlsec1-dev libxml2-dev pkg-config
+
+    - name: Install locked dependencies
+      run: |
+        python -m pip install pip==25.3
+        pip install --require-hashes -r app/backend/requirements.lock
+        npm ci
+        npm ci --prefix app/frontend
+
+    - name: Migrate isolated E2E database
+      run: alembic -c alembic.ini upgrade head
+
+    - name: Install Playwright browser
+      run: npx playwright install --with-deps chromium
+
+    - name: Run real-backend browser integration
+      run: npx playwright test --config=playwright.integration.config.ts
+
+    - name: Upload real-backend Playwright report
+      if: always()
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: playwright-real-backend-report
+        path: playwright-report/
+        retention-days: 14
+
   # Validate the Alembic migration chain against a real PostgreSQL instance.
   # Catches multiple-heads, broken revisions, and non-idempotent migrations
   # before they reach a deploy (migrations run automatically via the container
@@ -267,9 +410,8 @@ jobs:
 
     - name: Install dependencies
       run: |
-        python -m pip install --upgrade pip
-        pip install -r app/backend/requirements.txt
-        pip install pytest pytest-timeout
+        python -m pip install pip==25.3
+        pip install --require-hashes -r app/backend/requirements.lock
 
     - name: Assert a single Alembic head
       run: |
@@ -351,10 +493,10 @@ jobs:
 
     - name: Python dependency vulnerability audit (pip-audit)
       run: |
-        python -m pip install --upgrade pip pip-audit
+        python -m pip install pip==25.3 pip-audit==2.9.0
         python scripts/check_pip_audit_exceptions.py
         # Exceptions are reviewed in security/pip-audit-exceptions.json.
-        pip-audit -r app/backend/requirements.txt \
+        pip-audit -r app/backend/requirements.lock \
           --ignore-vuln PYSEC-2026-1325 \
           --ignore-vuln PYSEC-2026-1845 \
           --ignore-vuln PYSEC-2026-2263 \
@@ -372,6 +514,12 @@ jobs:
       run: |
         set -euo pipefail
         export RELEASE_SHA=deadbeef
+        export BACKEND_IMAGE=example.invalid/resume-backend@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+        export FRONTEND_IMAGE=example.invalid/resume-frontend@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+        export NGINX_IMAGE=example.invalid/resume-nginx@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+        export LIVEKIT_IMAGE=example.invalid/resume-livekit@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+        export SPEECH_SERVICE_IMAGE=example.invalid/resume-speech-service@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+        export VOICE_AGENT_IMAGE=example.invalid/resume-voice-agent@sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
         export POSTGRES_PASSWORD=x
         export REDIS_PASSWORD=x
         export JWT_SECRET_KEY=x
@@ -381,7 +529,7 @@ jobs:
         export LIVEKIT_API_KEY=x
         export LIVEKIT_API_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
         docker compose -f docker-compose.prod.yml config >/tmp/prod.yml
-        ! grep -E 'revanth2245/resume-[^:]+:latest' /tmp/prod.yml
+        test "$(grep -c 'example.invalid/resume-.*@sha256:' /tmp/prod.yml)" -ge 8
         grep -q 'REDIS_REQUIRED=1' docker-compose.prod.yml
         grep -q 'migrate:' docker-compose.prod.yml
         test "$(grep -c 'service_completed_successfully' docker-compose.prod.yml)" -ge 2

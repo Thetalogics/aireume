@@ -25,7 +25,7 @@ from sqlalchemy import create_engine, inspect, text
 from app.backend.tests.reliability_env import require_postgres
 
 ROOT = Path(__file__).resolve().parents[3]
-HEAD = "085_object_delete_controls"
+HEAD = "086_gdpr_erasure_workflow"
 THROUGH_REVISION = "080_phase1_reliability_closure"
 MANIFEST_PATH = ROOT / "alembic" / "historical_migration_manifest.json"
 VERSIONS_DIR = ROOT / "alembic" / "versions"
@@ -43,6 +43,10 @@ REQUIRED_COLUMNS = {
     "training_examples": {"screening_decision_id"},
     "ai_decision_logs": {"screening_decision_id"},
     "idempotency_keys": {"state", "owner_token", "lease_expires_at"},
+    "pending_object_deletions": {
+        "workflow_type", "workflow_status", "erasure_reason", "finalized_at",
+        "lease_owner", "lease_expires_at",
+    },
 }
 REQUIRED_UNIQUE_CONSTRAINTS = {
     "screening_decisions": {
@@ -50,6 +54,7 @@ REQUIRED_UNIQUE_CONSTRAINTS = {
         "uq_screening_decision_tenant_operation_type",
     },
     "decision_narratives": {"uq_decision_narrative_operation"},
+    "pending_object_deletions": {"uq_pending_object_deletions_tenant_key"},
 }
 REQUIRED_FOREIGN_KEYS = {
     "screening_results": {"fk_screening_results_current_decision"},
@@ -61,6 +66,10 @@ REQUIRED_INDEXES = {
     "screening_results": {"ix_screening_results_current_decision_id"},
     "ai_decision_logs": {"ix_ai_decision_logs_screening_decision_id"},
     "training_examples": {"ix_training_examples_screening_decision_id"},
+    "pending_object_deletions": {
+        "ix_pending_object_deletions_lease_owner",
+        "ix_pending_object_deletions_lease_expires_at",
+    },
 }
 
 
@@ -208,11 +217,13 @@ def test_m5_phase2_revisions_are_not_manifest_members():
     assert "083_generation_mode.py" not in files
     assert "084_auth_token_hashes.py" not in files
     assert "085_pending_object_deletion_controls.py" not in files
+    assert "086_gdpr_erasure_workflow.py" not in files
     assert (VERSIONS_DIR / "081_phase2_screening_decisions.py").is_file()
     assert (VERSIONS_DIR / "082_reliability_closure.py").is_file()
     assert (VERSIONS_DIR / "083_generation_mode.py").is_file()
     assert (VERSIONS_DIR / "084_auth_token_hashes.py").is_file()
     assert (VERSIONS_DIR / "085_pending_object_deletion_controls.py").is_file()
+    assert (VERSIONS_DIR / "086_gdpr_erasure_workflow.py").is_file()
 
 
 def test_m5_tampered_historical_file_fails(tmp_path):

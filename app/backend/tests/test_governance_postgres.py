@@ -23,6 +23,7 @@ from app.backend.models.db_models import (
     AIDecisionLog,
     Candidate,
     DecisionNarrative,
+    PendingObjectDeletion,
     ScreeningDecision,
     ScreeningResult,
     Tenant,
@@ -750,6 +751,86 @@ def test_p2c5_result_deletion_fk_lifecycle(PgSession, pg_case):
         db.close()
 
 
+def test_gdpr_outbox_concurrent_claim_has_one_owner(PgSession, pg_case):
+    from datetime import datetime, timezone
+    from app.backend.services.gdpr_service import _claim_pending_object_deletions
+
+    seed = PgSession()
+    try:
+        row = PendingObjectDeletion(
+            tenant_id=pg_case.tenant_id,
+            storage_key=f"gdpr/concurrent/{uuid.uuid4().hex}.pdf",
+            status="pending",
+        )
+        seed.add(row)
+        seed.commit()
+        row_id = row.id
+    finally:
+        seed.close()
+
+    barrier = threading.Barrier(2)
+    claims = []
+    errors = []
+
+    def worker():
+        db = PgSession()
+        try:
+            barrier.wait(timeout=10)
+            _, ids = _claim_pending_object_deletions(
+                db,
+                limit=1,
+                now=datetime.now(timezone.utc),
+            )
+            claims.append(ids)
+        except Exception as exc:
+            errors.append(exc)
+        finally:
+            db.close()
+
+    threads = [threading.Thread(target=worker), threading.Thread(target=worker)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=20)
+
+    assert not errors, errors
+    assert sorted(len(ids) for ids in claims) == [0, 1]
+    assert [row_id] in claims
+
+
+def test_enrichment_concurrent_enqueue_is_idempotent(PgSession, pg_case):
+    from app.backend.services.background_enrichment import enqueue_enrichment_job
+
+    barrier = threading.Barrier(2)
+    outcomes = []
+    errors = []
+
+    def worker():
+        db = PgSession()
+        try:
+            barrier.wait(timeout=10)
+            outcomes.append(enqueue_enrichment_job(
+                db,
+                job_type="interview_kit",
+                screening_result_id=pg_case.result_id,
+                tenant_id=pg_case.tenant_id,
+                expected_generation=1,
+            ))
+        except Exception as exc:
+            errors.append(exc)
+        finally:
+            db.close()
+
+    threads = [threading.Thread(target=worker), threading.Thread(target=worker)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=20)
+
+    assert not errors, errors
+    assert sorted(outcomes) == [False, True]
+
+
 @pytest.mark.timeout(180)
 def test_p2c1_p2c2_phase2_schema_appears_only_after_081():
     url = _require_governance_postgres()
@@ -806,7 +887,7 @@ def test_p2c1_p2c2_phase2_schema_appears_only_after_081():
             }
             assert "current_decision_id" in cols
             revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar()
-            assert revision == "085_object_delete_controls"
+            assert revision == "086_gdpr_erasure_workflow"
         probe.dispose()
     finally:
         with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as connection:

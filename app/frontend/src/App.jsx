@@ -34,6 +34,7 @@ const ForgotPasswordPage = lazy(() => import('./pages/ForgotPasswordPage'))
 const ResetPasswordPage = lazy(() => import('./pages/ResetPasswordPage'))
 const VerifyEmailPage = lazy(() => import('./pages/VerifyEmailPage'))
 const CheckEmailPage = lazy(() => import('./pages/CheckEmailPage'))
+const LegalPage = lazy(() => import('./pages/LegalPage'))
 const CandidatesPage = lazy(() => import('./pages/CandidatesPage'))
 const CandidateProfilePage = lazy(() => import('./pages/CandidateProfilePage'))
 const RequisitionsPage = lazy(() => import('./pages/RequisitionsPage'))
@@ -122,14 +123,12 @@ function Shell({ children }) {
     <ProtectedRoute>
       <VerifyEmailGate>
       <MFAEnrollGate>
-      <SubscriptionProvider>
         <AppShell>
           <InvitedUserWelcome />
           <ErrorBoundary>
             {children}
           </ErrorBoundary>
         </AppShell>
-      </SubscriptionProvider>
       </MFAEnrollGate>
       </VerifyEmailGate>
     </ProtectedRoute>
@@ -163,6 +162,7 @@ function App() {
   return (
     <MotionConfig reducedMotion="user">
     <AuthProvider>
+      <SubscriptionProvider>
         <BrandingProvider>
         <NotificationProvider>
           <UserPreferencesProvider>
@@ -177,10 +177,11 @@ function App() {
               <Route path="/reset-password/:token" element={<ResetPasswordPage />} />
               <Route path="/verify-email/:token" element={<VerifyEmailPage />} />
               <Route path="/check-email" element={<CheckEmailPage />} />
+              <Route path="/legal/:document" element={<LegalPage />} />
               <Route path="/handoff/:token" element={<Suspense fallback={<PageLoader />}><PublicHandoffPage /></Suspense>} />
               
               {/* Onboarding direct-access route */}
-              <Route path="/onboarding" element={<ProtectedRoute><VerifyEmailGate><OnboardingWizard /></VerifyEmailGate></ProtectedRoute>} />
+              <Route path="/onboarding" element={<ProtectedRoute><VerifyEmailGate><MFAEnrollGate><OnboardingWizard /></MFAEnrollGate></VerifyEmailGate></ProtectedRoute>} />
               
               {/* New routes */}
               <Route path="/"           element={<HomePage />} />
@@ -218,7 +219,8 @@ function App() {
               <Route path="/ai-interviews" element={<Shell><OnboardingGate><RequirePlanFeature feature="ai_interviews"><InterviewPage /></RequirePlanFeature></OnboardingGate></Shell>} />
               <Route path="/ai-interviews/:id" element={<Shell><OnboardingGate><RequirePlanFeature feature="ai_interviews"><InterviewDetailPage /></RequirePlanFeature></OnboardingGate></Shell>} />
               <Route path="/interviews/comparison" element={<Navigate to="/compare" replace />} />
-              <Route path="/settings"   element={<Shell><OnboardingGate><SettingsPage /></OnboardingGate></Shell>} />
+              {/* Security enrollment must remain reachable before onboarding is complete. */}
+              <Route path="/settings"   element={<Shell><SettingsPage /></Shell>} />
               {/* Admin portal - standalone layout (no recruiter nav) */}
               <Route path="/admin" element={<PlatformAdminRoute><MFAEnrollGate><AdminLayout /></MFAEnrollGate></PlatformAdminRoute>}>
                 <Route index element={<AdminOverviewPage />} />
@@ -264,6 +266,7 @@ function App() {
           </UserPreferencesProvider>
         </NotificationProvider>
         </BrandingProvider>
+      </SubscriptionProvider>
     </AuthProvider>
     </MotionConfig>
   )

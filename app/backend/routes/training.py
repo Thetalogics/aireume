@@ -17,6 +17,7 @@ from app.backend.middleware.auth import get_current_user, require_admin
 from app.backend.middleware.rbac import require_recruiter_or_admin
 from app.backend.models.db_models import ScreeningResult, TrainingExample, TrainingRun, User
 from app.backend.models.schemas import LabelRequest, TrainingStatusResponse
+from app.backend.services.external_ai_boundary import prepare_external_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -150,8 +151,8 @@ async def _train_model(tenant_id: int, model_name: str, training_data: list):
         db.close()
 
     examples_text = "\n".join([
-        f"Score {d['fit_score']}/100 → {d['outcome'].upper()}"
-        + (f" ({d['feedback']})" if d['feedback'] else "")
+        f"Score {d['fit_score']}/100 -> {d['outcome'].upper()}"
+        + (f" ({prepare_external_prompt(d['feedback'])})" if d['feedback'] else "")
         for d in training_data[:50]
     ])
 

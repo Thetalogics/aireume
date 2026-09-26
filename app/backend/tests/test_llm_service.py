@@ -256,6 +256,24 @@ class TestLLMService:
             
             assert result == '{"fit_score": 85}'
 
+    @pytest.mark.asyncio
+    async def test_call_ollama_redacts_pii_at_provider_boundary(self):
+        service = LLMService()
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"response": '{"fit_score": 85}'}
+        mock_response.raise_for_status = MagicMock()
+
+        with patch('httpx.AsyncClient') as mock_client_class:
+            mock_client = AsyncMock()
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+            mock_client.post.return_value = mock_response
+
+            await service._call_ollama("Contact candidate at jane.audit@example.com")
+
+            payload = mock_client.post.await_args.kwargs["json"]
+            assert "jane.audit@example.com" not in payload["prompt"].lower()
+
     def test_parse_json_response_plain_json(self):
         """Test _parse_json_response handles plain JSON."""
         service = LLMService()

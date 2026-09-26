@@ -28,8 +28,10 @@ def _run(cmd, **kwargs):
 def _pg_bin(tool: str) -> list[str] | None:
     if _run([tool, "--version"]).returncode == 0:
         return [tool]
-    if _run(["docker", "exec", "aria-phase2-postgres", tool, "--version"]).returncode == 0:
-        return ["docker", "exec", "-e", "PGPASSWORD=aria_test", "aria-phase2-postgres", tool]
+    container = os.getenv("POSTGRES_TEST_CONTAINER", "aria-phase2-postgres")
+    password = os.getenv("POSTGRES_TEST_PASSWORD", "aria_test")
+    if _run(["docker", "exec", container, tool, "--version"]).returncode == 0:
+        return ["docker", "exec", "-e", f"PGPASSWORD={password}", container, tool]
     return None
 
 
@@ -50,15 +52,18 @@ def test_f7_dump_and_restore_known_row():
     if dump_tool is None or restore_tool is None:
         pytest.fail("pg_dump/pg_restore required for backup restore proof")
     parsed = url.replace("postgresql+psycopg2://", "postgresql://")
+    test_user = os.getenv("POSTGRES_TEST_USER", "aria_test")
+    test_database = os.getenv("POSTGRES_TEST_DATABASE", "aria_phase2_head")
     dump = Path(tempfile.gettempdir()) / "aria_backup_probe.dump"
     if dump_tool[0] == "docker":
         remote = "/tmp/aria_backup_probe.dump"
-        _run(dump_tool + ["-U", "aria_test", "-d", "aria_phase2_head", "-Fc", "-f", remote, "-t", "backup_probe"], check=True)
-        _run(["docker", "cp", f"aria-phase2-postgres:{remote}", str(dump)], check=True)
+        container = os.getenv("POSTGRES_TEST_CONTAINER", "aria-phase2-postgres")
+        _run(dump_tool + ["-U", test_user, "-d", test_database, "-Fc", "-f", remote, "-t", "backup_probe"], check=True)
+        _run(["docker", "cp", f"{container}:{remote}", str(dump)], check=True)
         _run(restore_tool + ["--list", remote], check=True)
         with source.begin() as conn:
             conn.execute(text("DELETE FROM backup_probe"))
-        _run(restore_tool + ["--data-only", "-U", "aria_test", "-d", "aria_phase2_head", "-t", "backup_probe", remote], check=True)
+        _run(restore_tool + ["--data-only", "-U", test_user, "-d", test_database, "-t", "backup_probe", remote], check=True)
     else:
         _run(dump_tool + ["--dbname", parsed, "-Fc", "-f", str(dump), "-t", "backup_probe"], check=True)
         assert dump.stat().st_size > 0

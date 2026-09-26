@@ -6,6 +6,7 @@ This product is **not** independently certified as enterprise-ready, FCRA/GDPR/S
 
 - Tenant-scoped screening, merge, GDPR export/erasure **workflows**
 - Automated backend/frontend tests and CI jobs (see `.github/workflows/ci.yml`)
+- Real browser-to-backend CI coverage using disposable PostgreSQL and Redis
 - Alembic migrations with a single head
 - Prometheus metrics and suggested alerts (`docs/SLO_AND_ALERTING.md`)
 - SHA-tagged container builds and digest output (`docs/DEPLOYMENT_PROMOTION.md`)
@@ -43,4 +44,9 @@ PostgreSQL backups and object-storage versioning are operational requirements, n
 
 ## Staging E2E
 
-`.github/workflows/e2e-staging.yml` needs `E2E_WORKSPACE`, `E2E_EMAIL`, `E2E_PASSWORD`, optional `E2E_BASE_URL`. A skip because secrets are missing is **not** a successful authenticated E2E run.
+`.github/workflows/e2e-staging.yml` requires `E2E_BASE_URL`, `E2E_WORKSPACE`,
+`E2E_RECRUITER_EMAIL`, and `E2E_RECRUITER_PASSWORD` in the `staging-e2e`
+GitHub environment. CD passes the candidate SHA, and the workflow must prove
+that both the deployed frontend and backend are that build before running the
+authenticated critical flow. Missing configuration, an older deployment, and
+test failures fail the gate rather than skipping it.

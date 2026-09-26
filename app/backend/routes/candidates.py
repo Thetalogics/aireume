@@ -201,13 +201,12 @@ def list_candidates(
     # Filter by narrative_status (e.g., processing) — separate from status
     if narrative_status:
         candidate_ids_with_narrative = (
-            db.query(ScreeningResult.candidate_id)
-            .filter(
+            select(ScreeningResult.candidate_id)
+            .where(
                 ScreeningResult.tenant_id == current_user.tenant_id,
                 ScreeningResult.narrative_status == narrative_status,
             )
             .distinct()
-            .subquery()
         )
         query = query.filter(Candidate.id.in_(candidate_ids_with_narrative))
 
@@ -226,13 +225,12 @@ def list_candidates(
         skill_token = (skill or "").strip().replace('"', "")
         skill_like = f'%"{skill_token}"%'
         candidate_ids_with_skill = (
-            db.query(ScreeningResult.candidate_id)
-            .filter(
+            select(ScreeningResult.candidate_id)
+            .where(
                 ScreeningResult.tenant_id == current_user.tenant_id,
                 ScreeningResult.analysis_result.ilike(skill_like),
             )
             .distinct()
-            .subquery()
         )
         query = query.filter(Candidate.id.in_(candidate_ids_with_skill))
 

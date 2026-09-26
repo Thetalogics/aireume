@@ -28,6 +28,7 @@ export default function RegisterPage() {
       sessionStorage.setItem('aria_pending_verify_email', email)
       if (data?.tenant?.slug) {
         sessionStorage.setItem('aria_workspace_slug', data.tenant.slug)
+        localStorage.setItem('aria_last_workspace_slug', data.tenant.slug)
       }
       navigate('/check-email')
     } catch (err) {
@@ -137,6 +138,13 @@ export default function RegisterPage() {
                 <>Create Workspace <ArrowRight className="w-4 h-4" /></>
               )}
             </button>
+            <p className="text-[11px] leading-relaxed text-slate-500 text-center">
+              By creating a workspace, you agree to ARIA&apos;s{' '}
+              <a href="/legal/terms" className="font-semibold text-brand-600 hover:text-brand-700">Terms</a>
+              {' '}and{' '}
+              <a href="/legal/privacy" className="font-semibold text-brand-600 hover:text-brand-700">Privacy Notice</a>.
+              Candidate data is processed for your tenant workspace and is not used to train public models.
+            </p>
           </form>
 
           <div className="mt-6">
@@ -154,6 +162,13 @@ export default function RegisterPage() {
         <p className="text-center text-xs text-slate-400 mt-6">
           {TRUST.authFooter}
         </p>
+        <div className="mt-3 flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-xs text-slate-400">
+          {TRUST.legalLinks.map((link) => (
+            <a key={link.label} href={link.href} className="hover:text-brand-600">
+              {link.label}
+            </a>
+          ))}
+        </div>
       </div>
     </div>
   )

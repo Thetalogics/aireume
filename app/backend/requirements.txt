@@ -21,6 +21,9 @@ python3-saml==1.16.0
 # HTTP Client
 httpx==0.28.1
 
+# S3-compatible object storage (AWS S3 / MinIO)
+boto3==1.43.103
+
 # Antivirus scanning (optional; only used when CLAMAV_HOST is configured)
 clamd==1.0.2
 

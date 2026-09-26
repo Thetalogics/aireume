@@ -1183,8 +1183,8 @@ export default function ReportPage() {
         {/* Training label */}
         {result.result_id && canWrite && (
           <div className="bg-white/90 backdrop-blur-md rounded-2xl ring-1 ring-brand-100 shadow-brand-sm p-4">
-            <p className="text-xs font-bold text-brand-900 mb-0.5">Help ARIA Learn</p>
-            <p className="text-xs text-slate-400 mb-3">Label this outcome to improve accuracy.</p>
+            <p className="text-xs font-bold text-brand-900 mb-0.5">Improve scoring for this workspace</p>
+            <p className="text-xs text-slate-400 mb-3">Labels tune recommendations for your tenant only.</p>
             {labelDone ? (
               <div className={`flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-bold ring-1 justify-center ${
                 labelStatus === 'hired'

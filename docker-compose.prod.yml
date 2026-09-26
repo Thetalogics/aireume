@@ -1,7 +1,6 @@
-version: '3.8'
-
 # ─── PRODUCTION ENVIRONMENT ─────────────────────────────────────────────────
-# Image tag: ${RELEASE_SHA} immutable digest/tag. Never deploy application :latest.
+# ARIA application images are supplied by the approved release-manifest.env and
+# must use repository@sha256:digest references. Never deploy application tags.
 # Portainer: deploy this as stack — project name MUST stay "aria" to preserve
 # existing volumes (aria_postgres_data, aria_ollama_data, etc.)
 # Staging stack: see docker-compose.staging.yml (separate project, tag: staging)
@@ -62,7 +61,7 @@ services:
           memory: 512M
 
   migrate:
-    image: revanth2245/resume-backend:${RELEASE_SHA:?RELEASE_SHA must be set}
+    image: ${BACKEND_IMAGE:?BACKEND_IMAGE digest must be set}
     container_name: resume-screener-migrate
     command: python -m app.backend.services.migration_owner
     restart: "no"
@@ -98,7 +97,7 @@ services:
     restart: "no"
 
   worker:
-    image: revanth2245/resume-backend:${RELEASE_SHA:?RELEASE_SHA must be set}
+    image: ${BACKEND_IMAGE:?BACKEND_IMAGE digest must be set}
     container_name: resume-screener-worker
     command: python -m app.backend.worker
     environment:
@@ -188,7 +187,7 @@ services:
   # Rebuild/push the backend image from app/backend/Dockerfile so ENTRYPOINT includes
   # wait_for_ollama.py (Ollama healthy + model warm before uvicorn).
   backend:
-    image: revanth2245/resume-backend:${RELEASE_SHA:?RELEASE_SHA must be set}
+    image: ${BACKEND_IMAGE:?BACKEND_IMAGE digest must be set}
     container_name: resume-screener-backend
     # 4 workers: backend is I/O-bound (waits on Ollama/DB), so multiple workers
     # serve concurrent users without starving Ollama of CPU cores.
@@ -279,7 +278,7 @@ services:
       start_period: 30s
 
   frontend:
-    image: revanth2245/resume-frontend:${RELEASE_SHA:?RELEASE_SHA must be set}
+    image: ${FRONTEND_IMAGE:?FRONTEND_IMAGE digest must be set}
     container_name: resume-screener-frontend
     depends_on:
       - backend
@@ -291,7 +290,7 @@ services:
     restart: unless-stopped
 
   nginx:
-    image: revanth2245/resume-nginx:${RELEASE_SHA:?RELEASE_SHA must be set}
+    image: ${NGINX_IMAGE:?NGINX_IMAGE digest must be set}
     container_name: resume-screener-nginx
     ports:
       - "80:80"
@@ -408,7 +407,7 @@ services:
   # LiveKit Server — WebRTC SFU + SIP trunking for voice calls.
   # ~1 GB RAM. Handles outbound PSTN calls and inbound call routing.
   livekit:
-    image: revanth2245/resume-livekit:${RELEASE_SHA:?RELEASE_SHA must be set}
+    image: ${LIVEKIT_IMAGE:?LIVEKIT_IMAGE digest must be set}
     container_name: resume-screener-livekit
     command: >
       --config /etc/livekit.yaml
@@ -441,7 +440,7 @@ services:
   # Speech Service — Parakeet TDT (STT) + Kokoro 82M (TTS) + Silero VAD.
   # ~4 GB RAM. CPU-only inference.
   speech-service:
-    image: revanth2245/resume-speech-service:${RELEASE_SHA:?RELEASE_SHA must be set}
+    image: ${SPEECH_SERVICE_IMAGE:?SPEECH_SERVICE_IMAGE digest must be set}
     container_name: resume-screener-speech-service
     deploy:
       resources:
@@ -453,7 +452,7 @@ services:
   # Voice Agent — LiveKit Agents process for conversation orchestration.
   # ~2 GB RAM. Connects to LiveKit + Speech Service + Ollama Cloud.
   voice-agent:
-    image: revanth2245/resume-voice-agent:${RELEASE_SHA:?RELEASE_SHA must be set}
+    image: ${VOICE_AGENT_IMAGE:?VOICE_AGENT_IMAGE digest must be set}
     container_name: resume-screener-voice-agent
     environment:
       - SPEECH_SERVICE_URL=http://speech-service:8001

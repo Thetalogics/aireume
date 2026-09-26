@@ -1243,12 +1243,22 @@ class PendingObjectDeletion(Base):
     storage_key = Column(String(500), nullable=False)
     candidate_id = Column(Integer, nullable=True)
     status = Column(String(32), nullable=False, default="pending", server_default="pending", index=True)
+    workflow_type = Column(String(32), nullable=False, default="object_delete", server_default="object_delete", index=True)
+    workflow_status = Column(String(32), nullable=False, default="object_pending", server_default="object_pending", index=True)
     attempts = Column(Integer, nullable=False, default=0)
     next_retry_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    lease_owner = Column(String(64), nullable=True, index=True)
+    lease_expires_at = Column(DateTime(timezone=True), nullable=True, index=True)
     last_error = Column(Text, nullable=True)
+    erasure_reason = Column(Text, nullable=True)
     completed_at = Column(DateTime(timezone=True), nullable=True)
+    finalized_at = Column(DateTime(timezone=True), nullable=True)
     dead_lettered_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        Index("uq_pending_object_deletions_tenant_key", "tenant_id", "storage_key", unique=True),
+    )
 
 
 # ─── Historical learning system ────────────────────────────────────────────────

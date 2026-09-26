@@ -619,7 +619,7 @@ describe('useUsageCheck', () => {
     expect(checkResult.message).toContain('only have 1 analyses remaining')
   })
 
-  it.skip('should fallback to server check when local check passes', async () => {
+  it('should use the authoritative server check when the local check passes', async () => {
     api.checkUsage.mockResolvedValue({ allowed: true, current_usage: 25, limit: 100 })
 
     const wrapper = ({ children }) => (
@@ -630,7 +630,7 @@ describe('useUsageCheck', () => {
     const { result } = renderHook(() => useUsageCheck(), { wrapper })
 
     await waitFor(() => {
-      expect(result.current).toBeDefined()
+      expect(result.current.getRemainingAnalyses()).toBe(75)
     })
 
     let checkResult

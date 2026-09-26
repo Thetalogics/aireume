@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom'
 import { Lock } from 'lucide-react'
 import { useSubscription } from '../hooks/useSubscription'
+import { getUpgradeRoute } from '../lib/routes'
 
 const FEATURE_LABELS = {
   requisitions: 'Requisitions',
@@ -37,7 +38,7 @@ export function PlanUpgradePrompt({ feature }) {
         Upgrade your subscription to unlock this feature for your workspace.
       </p>
       <Link
-        to="/settings?tab=billing"
+        to={getUpgradeRoute(feature)}
         className="inline-flex items-center justify-center px-5 py-2.5 rounded-xl bg-brand-600 text-white text-sm font-semibold hover:bg-brand-700 transition-colors"
       >
         View plans & upgrade

@@ -682,6 +682,17 @@ export default function SettingsPage() {
                     </li>
                   ))}
                 </ul>
+                <div className="mt-5 flex flex-wrap gap-2">
+                  {TRUST.legalLinks.map((link) => (
+                    <a
+                      key={link.label}
+                      href={link.href}
+                      className="px-3 py-1.5 rounded-lg bg-slate-50 text-xs font-semibold text-slate-600 ring-1 ring-slate-200 hover:bg-slate-100"
+                    >
+                      {link.label}
+                    </a>
+                  ))}
+                </div>
               </Section>
 
               <Section

@@ -6,6 +6,9 @@ import { ThemeProvider } from './contexts/ThemeContext'
 import './index.css'
 import App from './App.jsx'
 
+const buildId = typeof __APP_BUILD_ID__ !== 'undefined' ? __APP_BUILD_ID__ : 'dev'
+document.documentElement.dataset.buildId = buildId
+
 const sentryDsn = import.meta.env.VITE_SENTRY_DSN
 if (sentryDsn) {
   Sentry.init({

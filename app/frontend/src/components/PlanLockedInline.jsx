@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom'
 import { Lock, Sparkles } from 'lucide-react'
 import { useSubscription } from '../hooks/useSubscription'
+import { getUpgradeRoute } from '../lib/routes'
 
 const FEATURE_HINTS = {
   requisitions: { label: 'Requisitions', tier: 'Growth' },
@@ -22,7 +23,7 @@ export function PlanLockedButton({ feature, children, className = '' }) {
   const hint = FEATURE_HINTS[feature] || { label: feature, tier: 'a higher plan' }
   return (
     <Link
-      to="/settings?tab=subscription"
+      to={getUpgradeRoute(feature)}
       title={`${hint.label} is on ${hint.tier}+`}
       className={`inline-flex items-center justify-center gap-2 px-4 py-2.5 border border-slate-200 bg-slate-50 text-slate-500 rounded-lg text-sm font-medium cursor-pointer hover:bg-slate-100 transition-colors ${className}`}
     >
@@ -45,7 +46,7 @@ export function PlanUpgradeCard({ feature, title, description, icon: Icon = Spar
         {description || `Upgrade to ${hint.tier} or higher to unlock this feature for your workspace.`}
       </p>
       <Link
-        to="/settings?tab=subscription"
+        to={getUpgradeRoute(feature)}
         className="inline-flex items-center gap-2 px-4 py-2 bg-brand-600 text-white rounded-xl text-sm font-semibold hover:bg-brand-700 transition-colors"
       >
         View plans

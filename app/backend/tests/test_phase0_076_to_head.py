@@ -22,7 +22,7 @@ pytestmark = [
 
 ROOT = Path(__file__).resolve().parents[3]
 START = "076_candidate_merge"
-HEAD = "085_object_delete_controls"
+HEAD = "086_gdpr_erasure_workflow"
 
 
 def _engine():

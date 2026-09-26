@@ -42,13 +42,19 @@ def recover_stale_jobs():
 
 
 def gdpr_cleanup_job():
-    from app.backend.services.gdpr_service import cleanup_expired_data, process_pending_object_deletions
+    from app.backend.services.gdpr_service import cleanup_expired_data_for_all_tenants, process_pending_object_deletions
     db = SessionLocal()
     try:
         retry_result = process_pending_object_deletions(db)
         if retry_result.get("processed"):
             logger.info("GDPR object deletion retry complete: %s", retry_result)
-        result = cleanup_expired_data(db)
+        if retry_result.get("overdue") or retry_result.get("dead_lettered"):
+            logger.error(
+                "GDPR object deletion requires operator attention: overdue=%s dead_lettered=%s",
+                retry_result.get("overdue", 0),
+                retry_result.get("dead_lettered", 0),
+            )
+        result = cleanup_expired_data_for_all_tenants(db)
         logger.info("GDPR cleanup complete: %s", result)
         try:
             from app.backend.services.metrics import GDPR_PURGE_TOTAL

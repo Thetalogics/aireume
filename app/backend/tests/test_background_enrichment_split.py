@@ -120,6 +120,85 @@ class TestNarrativeKitSplit:
         assert called["kwargs"]["expected_generation"] == 1
 
     @pytest.mark.asyncio
+    async def test_expired_lease_cannot_commit_enrichment_completion(
+        self, db, seed_subscription_plans, monkeypatch
+    ):
+        tenant = Tenant(name="enrichment-expired", slug=f"enrich-exp-{uuid.uuid4().hex[:10]}")
+        db.add(tenant)
+        db.flush()
+        result = ScreeningResult(
+            tenant_id=tenant.id,
+            resume_text="resume",
+            jd_text="job",
+            parsed_data="{}",
+            analysis_result=json.dumps({"fit_score": 72}),
+            narrative_status="ready",
+            analysis_generation=1,
+        )
+        db.add(result)
+        db.flush()
+        job = AnalysisJob(
+            tenant_id=tenant.id,
+            job_type="interview_kit",
+            resume_hash="r" * 64,
+            jd_hash="j" * 64,
+            input_hash=f"ih-{uuid.uuid4().hex}",
+            status="processing",
+            worker_id="worker-expired",
+            leased_until=datetime.now(timezone.utc) + timedelta(minutes=5),
+            job_config={
+                "screening_result_id": result.id,
+                "expected_generation": 1,
+                "llm_context": {},
+                "python_result": {},
+            },
+        )
+        db.add(job)
+        db.commit()
+
+        async def _expire_while_running(*_args, **_kwargs):
+            current = db.get(AnalysisJob, job.id)
+            current.leased_until = datetime.now(timezone.utc) - timedelta(seconds=1)
+            db.commit()
+
+        monkeypatch.setattr(
+            "app.backend.services.background_enrichment.background_interview_kit",
+            _expire_while_running,
+        )
+
+        assert await complete_enrichment_job(
+            job, db, expected_worker_id="worker-expired"
+        ) is False
+        db.expire_all()
+        current = db.get(AnalysisJob, job.id)
+        assert current.status == "processing"
+        assert current.completed_at is None
+
+    def test_stale_generation_is_not_enqueued(self, db, seed_subscription_plans):
+        tenant = Tenant(name="enrichment-stale", slug=f"enrich-stale-{uuid.uuid4().hex[:10]}")
+        db.add(tenant)
+        db.flush()
+        result = ScreeningResult(
+            tenant_id=tenant.id,
+            resume_text="resume",
+            jd_text="job",
+            parsed_data="{}",
+            analysis_result="{}",
+            analysis_generation=2,
+        )
+        db.add(result)
+        db.commit()
+
+        assert enqueue_enrichment_job(
+            db,
+            job_type="interview_kit",
+            screening_result_id=result.id,
+            tenant_id=tenant.id,
+            expected_generation=1,
+        ) is False
+        assert db.query(AnalysisJob).filter_by(tenant_id=tenant.id).count() == 0
+
+    @pytest.mark.asyncio
     async def test_llm_narrative_is_durable_and_worker_dispatched(
         self, db, seed_subscription_plans, monkeypatch
     ):

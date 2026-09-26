@@ -57,10 +57,13 @@ Multipart routes are not fully buffered by global middleware.
 
 ## Images
 
-Production application images use `${RELEASE_SHA}`. Rollback:
+CD publishes a `release-manifest-<sha>` artifact containing a digest reference
+for every ARIA application image. Production Compose rejects missing image
+variables. Deploy and roll back with an approved manifest:
 
 ```
-RELEASE_SHA=<previous> docker compose -f docker-compose.prod.yml up -d
+docker compose --env-file release-manifest.env -f docker-compose.prod.yml pull
+docker compose --env-file release-manifest.env -f docker-compose.prod.yml up -d
 ```
 
 ## Ollama
@@ -74,9 +77,19 @@ PITR/WAL archiving is not implemented.
 
 ## Authenticated E2E
 
-Requires GitHub environment `staging-e2e` secrets (`E2E_BASE_URL`, `E2E_WORKSPACE`, `E2E_RECRUITER_EMAIL`, `E2E_RECRUITER_PASSWORD`) for a dedicated non-privileged recruiter whose MFA is disabled **only on that test account**. Production MFA policy is unchanged. Missing secrets fail the workflow; they do not skip silently.
+CI first runs `playwright.integration.config.ts` against the checked-out frontend and
+backend with disposable PostgreSQL and Redis services. That suite performs real
+registration, email verification, TOTP enrollment, login, onboarding, session
+reload, and logout without mocking browser-to-API traffic.
 
-This is a **manually approved environment gate**, not an automatic production promotion blocker. Workflow: `.github/workflows/e2e-staging.yml`.
+CD then calls `.github/workflows/e2e-staging.yml` after publishing the candidate
+images. The workflow requires GitHub environment `staging-e2e` secrets
+(`E2E_BASE_URL`, `E2E_WORKSPACE`, `E2E_RECRUITER_EMAIL`,
+`E2E_RECRUITER_PASSWORD`) for a dedicated non-privileged account. It waits for
+both `/ready` and `/api/version`, requires the deployed backend and frontend to
+report the candidate SHA, and runs the authenticated critical flow. Missing
+secrets, deployment drift, and test failures all block release-manifest creation;
+none are converted to skips.
 
 ## Internal header
 

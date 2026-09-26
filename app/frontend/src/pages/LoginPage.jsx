@@ -16,7 +16,9 @@ export default function LoginPage() {
   const { login } = useAuth()
   const [email, setEmail]       = useState('')
   const [password, setPassword] = useState('')
-  const [tenantSlug, setTenantSlug] = useState(searchParams.get('workspace') || '')
+  const [tenantSlug, setTenantSlug] = useState(
+    searchParams.get('workspace') || localStorage.getItem('aria_last_workspace_slug') || '',
+  )
   const [showPw, setShowPw]     = useState(false)
   const [loading, setLoading]   = useState(false)
   const [error, setError]       = useState('')
@@ -51,6 +53,9 @@ export default function LoginPage() {
     setLoading(true)
     try {
       const data = await login(email, password, tenantSlug.trim() || undefined, mfaCode.trim() || undefined)
+      if (data.tenant?.slug) {
+        localStorage.setItem('aria_last_workspace_slug', data.tenant.slug)
+      }
       const isAdmin = data.user?.is_platform_admin === true || !!data.user?.platform_role
       if (isAdmin) {
         navigate('/admin')
@@ -256,6 +261,13 @@ export default function LoginPage() {
         <p className="text-center text-xs text-slate-400 mt-6">
           {TRUST.authFooter}
         </p>
+        <div className="mt-3 flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-xs text-slate-400">
+          {TRUST.legalLinks.map((link) => (
+            <a key={link.label} href={link.href} className="hover:text-brand-600">
+              {link.label}
+            </a>
+          ))}
+        </div>
       </div>
     </div>
   )

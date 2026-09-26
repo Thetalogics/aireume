@@ -1,4 +1,5 @@
 import { expect, type Page } from '@playwright/test';
+import { generateTotp } from './totp';
 
 /** Authenticated home/dashboard route (there is no `/home` route). */
 export async function gotoDashboard(page: Page) {
@@ -119,13 +120,27 @@ export function apiBaseUrl(): string {
   ).replace(/\/$/, '');
 }
 
-export async function isE2eTestApiAvailable(request: import('@playwright/test').APIRequestContext): Promise<boolean> {
-  try {
-    const resp = await request.post(`${apiBaseUrl()}/api/auth/test/verify-email`, {
-      data: { email: 'e2e-probe@example.com' },
-    });
-    return resp.status() !== 404;
-  } catch {
-    return false;
-  }
+export async function enrollRequiredMfa(page: Page) {
+  await expect(page).toHaveURL(/\/settings\?tab=security/, { timeout: 20_000 });
+  await expect(page.getByText(/MFA is required for admin and platform roles/i)).toBeVisible();
+  await page.getByRole('switch', { name: 'Off' }).click();
+  const secret = (await page.locator('code').first().textContent())?.trim() || '';
+  expect(secret, 'MFA setup did not expose a TOTP secret').not.toBe('');
+  await page.getByLabel('Authenticator code').fill(generateTotp(secret));
+  await page.getByRole('button', { name: /verify and enable/i }).click();
+  await expect(page.getByRole('switch', { name: 'Enabled' })).toBeVisible({ timeout: 15_000 });
+}
+
+export async function completeOnboardingWithoutSeedData(page: Page) {
+  await page.goto('/onboarding');
+  await expect(page.getByText(/welcome to aria/i)).toBeVisible({ timeout: 20_000 });
+  await page.getByRole('button', { name: /skip for now/i }).click();
+  await expect(page.getByText('Step 2 of 4', { exact: true }).first()).toBeVisible();
+  await page.getByRole('checkbox', { name: /candidate and job data are processed by AI providers/i }).check();
+  await page.getByRole('button', { name: /^next$/i }).click();
+  await expect(page.getByText('Step 3 of 4', { exact: true }).first()).toBeVisible();
+  await page.getByRole('button', { name: /skip for now/i }).click();
+  await expect(page.getByText(/you.re all set/i)).toBeVisible();
+  await page.getByRole('button', { name: /not now, go to dashboard/i }).click();
+  await expect(page.locator('nav, header').first()).toBeVisible({ timeout: 20_000 });
 }

@@ -176,7 +176,7 @@ function StepOrganization({ onNext, onSkip, initialName }) {
 
 /* ─── Step 2: Choose Plan ──────────────────────────────────────── */
 
-function StepChoosePlan({ onNext, onBack, onSkip }) {
+function StepChoosePlan({ onNext, onBack }) {
   const [plans, setPlans] = useState([])
   const [selectedPlan, setSelectedPlan] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -335,12 +335,6 @@ function StepChoosePlan({ onNext, onBack, onSkip }) {
           )}
         </button>
 
-        <button
-          onClick={onSkip}
-          className="mt-3 text-sm text-slate-400 hover:text-slate-600 transition-colors"
-        >
-          Skip for now
-        </button>
       </div>
     </motion.div>
   )
@@ -500,17 +494,29 @@ function StepGetStarted({ onComplete, onExploreSample, onUploadFirst }) {
 
   const handleComplete = async () => {
     setLoading(true)
-    await onComplete()
+    try {
+      await onComplete()
+    } finally {
+      setLoading(false)
+    }
   }
 
   const handleSample = async () => {
     setSampleLoading(true)
-    await onExploreSample()
+    try {
+      await onExploreSample()
+    } finally {
+      setSampleLoading(false)
+    }
   }
 
   const handleUpload = async () => {
     setLoading(true)
-    await onUploadFirst()
+    try {
+      await onUploadFirst()
+    } finally {
+      setLoading(false)
+    }
   }
 
   return (
@@ -577,7 +583,7 @@ function StepGetStarted({ onComplete, onExploreSample, onUploadFirst }) {
             Setting up...
           </span>
         ) : (
-          <>Go to Dashboard <ArrowRight className="w-4 h-4" /></>
+          <>Not now, go to Dashboard <ArrowRight className="w-4 h-4" /></>
         )}
       </button>
     </motion.div>
@@ -611,6 +617,12 @@ export default function OnboardingWizard() {
     }
   }
 
+  const handleStepNotNow = () => {
+    setError(null)
+    trackOnboardingEvent('wizard_step_deferred', { step })
+    setStep((current) => Math.min(current + 1, TOTAL_STEPS))
+  }
+
   const finishOnboarding = async (redirectTo = '/') => {
     await markOnboardingComplete()
     trackOnboardingEvent('wizard_completed')
@@ -632,8 +644,10 @@ export default function OnboardingWizard() {
         await seedSampleData()
         setSampleSeeded(true)
         trackOnboardingEvent('sample_data_loaded')
-      } catch {
-        // Continue anyway — user can still use the app
+      } catch (err) {
+        setError(err?.response?.data?.detail || 'Sample data could not be created. Retry, or start with your own JD.')
+        trackOnboardingEvent('sample_data_failed')
+        return
       }
     }
     setError(null)
@@ -654,8 +668,8 @@ export default function OnboardingWizard() {
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-gradient-to-br from-white via-slate-50 to-brand-50/30">
-      <div className="w-full max-w-lg px-6 py-10">
+    <div className="fixed inset-0 z-50 overflow-y-auto bg-gradient-to-br from-white via-slate-50 to-brand-50/30">
+      <div className="min-h-full w-full max-w-lg mx-auto px-6 py-10 flex flex-col justify-center">
         {error && (
           <div className="mb-4 px-4 py-3 rounded-xl bg-red-50 border border-red-100 text-sm text-red-700">
             {error}
@@ -669,7 +683,7 @@ export default function OnboardingWizard() {
               key="org"
               initialName={tenant?.name || ''}
               onNext={() => setStep(2)}
-              onSkip={handleSkip}
+              onSkip={handleStepNotNow}
             />
           )}
 
@@ -678,7 +692,6 @@ export default function OnboardingWizard() {
               key="plan"
               onNext={() => setStep(3)}
               onBack={() => setStep(1)}
-              onSkip={handleSkip}
             />
           )}
 
@@ -687,7 +700,7 @@ export default function OnboardingWizard() {
               key="team"
               onNext={() => setStep(4)}
               onBack={() => setStep(2)}
-              onSkip={handleSkip}
+              onSkip={handleStepNotNow}
             />
           )}
 

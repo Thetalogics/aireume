@@ -16,6 +16,7 @@ from app.backend.services.reliability.timeouts import (
     OLLAMA_READ,
     httpx_timeout,
 )
+from app.backend.services.external_ai_boundary import prepare_external_llm_prompt, prepare_external_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -734,9 +735,13 @@ class LLMService:
                     logger.info("JD profile extracted via Ollama cloud")
                 return parsed
             if provider_name == "gemini" and use_gemini_for_analysis():
-                response = await gemini_generate_content(
+                prepared = prepare_external_llm_prompt(
                     prompt,
                     system="Return ONLY a valid JSON object. No markdown, no code fences.",
+                )
+                response = await gemini_generate_content(
+                    prepared.prompt,
+                    system=prepared.system,
                     max_output_tokens=2000,
                     temperature=0.1,
                 )
@@ -896,34 +901,15 @@ JSON:"""
         matches = re.findall(r'"([^"]+)"', response)
         return matches if matches else []
 
-    async def _call_ollama(self, prompt: str, timeout: Optional[float] = None) -> str:
-        url = f"{self.base_url}/api/generate"
-
-        payload = {
-            "model": self.model,
-            "prompt": prompt,
-            "stream": False,
-            "format": "json",
-        }
-
-        headers = get_ollama_headers(self.base_url)
-        _timeout = timeout or OLLAMA_READ
-        async with httpx.AsyncClient(
-            timeout=httpx_timeout(OLLAMA_CONNECT, _timeout),
-        ) as client:
-            response = await client.post(url, json=payload, headers=headers)
-            response.raise_for_status()
-            data = response.json()
-            return data.get("response", "")
-
     async def _call_ollama_local(self, prompt: str, timeout: Optional[float] = None) -> str:
         """Use local model for fast skill extraction (JD profile + resume skills)."""
         url = f"{self._local_base_url}/api/generate"
         logger.info(f"[LLM] Calling local Ollama: {url} with model {self._local_model}")
+        prepared_prompt = prepare_external_prompt(prompt)
 
         payload = {
             "model": self._local_model,
-            "prompt": prompt,
+            "prompt": prepared_prompt,
             "stream": False,
             "format": "json",
         }
@@ -1028,10 +1014,11 @@ JSON:"""
 
     async def _call_ollama(self, prompt: str, timeout: Optional[float] = None) -> str:
         url = f"{self.base_url}/api/generate"
+        prepared_prompt = prepare_external_prompt(prompt)
 
         payload = {
             "model": self.model,
-            "prompt": prompt,
+            "prompt": prepared_prompt,
             "stream": False,
             "format": "json",
         }

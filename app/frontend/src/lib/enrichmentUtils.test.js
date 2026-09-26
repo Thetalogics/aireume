@@ -70,6 +70,19 @@ describe('enrichmentUtils', () => {
     expect(getGenerationMode({ narrative_status: 'fallback' })).toBe('deterministic_fallback')
   })
 
+  it('does not let legacy ai_enhanced override persisted generation_mode during merge', () => {
+    const merged = mergeNarrativePollResult(
+      { generation_mode: 'deterministic_fallback' },
+      {
+        status: 'ready',
+        narrative: { ai_enhanced: true, fit_summary: 'Rule-based summary.' },
+      },
+    )
+
+    expect(merged.generation_mode).toBe('deterministic_fallback')
+    expect(merged.ai_enhanced).toBe(false)
+  })
+
   it('detects missing narrative hydration when status is ready but body empty', () => {
     expect(needsNarrativeHydration({ narrative_status: 'ready', strengths: [] })).toBe(true)
     expect(needsNarrativeHydration({

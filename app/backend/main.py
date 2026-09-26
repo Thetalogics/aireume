@@ -146,6 +146,18 @@ def _validate_environment() -> None:
 _validate_environment()
 
 
+def _background_workers_enabled() -> bool:
+    worker_setting = os.getenv("RUN_BACKGROUND_WORKERS")
+    if worker_setting is None:
+        return os.getenv("ENVIRONMENT", "development") != "production"
+    return worker_setting.strip().lower() in ("1", "true", "yes")
+
+
+def _ollama_sentinel_enabled() -> bool:
+    value = os.getenv("OLLAMA_HEALTH_SENTINEL_ENABLED", "1")
+    return value.strip().lower() not in ("0", "false", "no")
+
+
 class RequestIdMiddleware(BaseHTTPMiddleware):
     """Middleware that generates/propagates a correlation ID per request."""
     async def dispatch(self, request, call_next):
@@ -466,11 +478,11 @@ async def lifespan(app: FastAPI):
 
     # Start Ollama health sentinel only when local/cloud Ollama is used for analysis
     try:
-        if llm_service.should_run_ollama_sentinel():
+        if _ollama_sentinel_enabled() and llm_service.should_run_ollama_sentinel():
             llm_service._sentinel = llm_service.OllamaHealthSentinel()
             await llm_service._sentinel.start()
         else:
-            log.info("Ollama health sentinel skipped — analysis uses Google Gemini")
+            log.info("Ollama health sentinel skipped")
     except Exception as e:
         log.exception("Failed to start Ollama health sentinel: %s", e)
 
@@ -481,10 +493,8 @@ async def lifespan(app: FastAPI):
     jd_cache_cleanup_task = asyncio.create_task(_cleanup_jd_cache())
 
     # Start background workers only in the dedicated worker process (or single-process dev).
-    run_workers = os.getenv("RUN_BACKGROUND_WORKERS", "").strip().lower() in ("1", "true", "yes")
-    if not run_workers and os.getenv("ENVIRONMENT", "development") != "production":
-        # Default on for local/dev/test so existing workflows keep working.
-        run_workers = True
+    # Explicit false values are honored in every environment, including CI.
+    run_workers = _background_workers_enabled()
     if os.getenv("TESTING", "").lower() in ("1", "true"):
         run_workers = False
 

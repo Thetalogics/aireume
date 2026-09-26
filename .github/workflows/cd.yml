@@ -5,7 +5,8 @@ on:
     workflows: [CI - Test on Pull Request]
     types: [completed]
     branches: [main, production]
-  # Re-run build & push from GitHub → Actions → "CD - Build & Push Images" → Run workflow
+  # Manual dispatch is limited to staging rebuilds. Production images are built
+  # only from a successful CI workflow_run and promoted by immutable digest.
   workflow_dispatch:
     inputs:
       environment:
@@ -14,7 +15,6 @@ on:
         type: choice
         options:
           - staging
-          - production
         default: staging
 
 concurrency:
@@ -48,6 +48,10 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             ENV="${{ github.event.inputs.environment }}"
+            if [ "$ENV" = "production" ]; then
+              echo "Manual production CD is disabled. Production requires successful CI workflow_run evidence." >&2
+              exit 1
+            fi
             RELEASE_SHA="${{ github.sha }}"
             RELEASE_BRANCH="${{ github.ref_name }}"
           else
@@ -77,6 +81,11 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       backend_digest: ${{ steps.backend.outputs.digest }}
+      frontend_digest: ${{ steps.frontend.outputs.digest }}
+      nginx_digest: ${{ steps.nginx.outputs.digest }}
+      livekit_digest: ${{ steps.livekit.outputs.digest }}
+      speech_service_digest: ${{ steps.speech-service.outputs.digest }}
+      voice_agent_digest: ${{ steps.voice-agent.outputs.digest }}
     env:
       IMAGE_TAG: ${{ needs.resolve-tag.outputs.image_tag }}
       RELEASE_SHA: ${{ needs.resolve-tag.outputs.release_sha }}
@@ -115,6 +124,7 @@ jobs:
         provenance: true
 
     - name: Build and push frontend
+      id: frontend
       uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5.4.0
       with:
         context: ./app/frontend
@@ -130,6 +140,7 @@ jobs:
         provenance: false
 
     - name: Build and push nginx
+      id: nginx
       uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5.4.0
       with:
         context: ./nginx
@@ -142,6 +153,7 @@ jobs:
         provenance: false
 
     - name: Build and push livekit
+      id: livekit
       uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5.4.0
       with:
         context: .
@@ -155,6 +167,7 @@ jobs:
         provenance: false
 
     - name: Build and push speech-service
+      id: speech-service
       uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5.4.0
       with:
         context: .
@@ -168,6 +181,7 @@ jobs:
         provenance: false
 
     - name: Build and push voice-agent
+      id: voice-agent
       uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5.4.0
       with:
         context: .
@@ -180,11 +194,54 @@ jobs:
         cache-to: type=gha,mode=max
         provenance: false
 
+  # Main builds are exercised after staging picks up the immutable SHA. For a
+  # production promotion, staging must already report that exact SHA. This is
+  # the deployment-environment gate; CI separately runs hermetic real-backend
+  # E2E for every pull request and protected-branch push.
+  authenticated-staging-e2e:
+    needs: [resolve-tag, build-and-push]
+    uses: ./.github/workflows/e2e-staging.yml
+    with:
+      expected_sha: ${{ needs.resolve-tag.outputs.release_sha }}
+    secrets: inherit
+
   # ─── Summary ────────────────────────────────────────────────────────────
   deploy-summary:
-    needs: [resolve-tag, build-and-push]
+    needs: [resolve-tag, build-and-push, authenticated-staging-e2e]
     runs-on: ubuntu-latest
     steps:
+      - name: Create immutable release manifest
+        env:
+          DH_USER: ${{ secrets.DOCKERHUB_USERNAME }}
+          RELEASE_SHA: ${{ needs.resolve-tag.outputs.release_sha }}
+          BACKEND_DIGEST: ${{ needs.build-and-push.outputs.backend_digest }}
+          FRONTEND_DIGEST: ${{ needs.build-and-push.outputs.frontend_digest }}
+          NGINX_DIGEST: ${{ needs.build-and-push.outputs.nginx_digest }}
+          LIVEKIT_DIGEST: ${{ needs.build-and-push.outputs.livekit_digest }}
+          SPEECH_SERVICE_DIGEST: ${{ needs.build-and-push.outputs.speech_service_digest }}
+          VOICE_AGENT_DIGEST: ${{ needs.build-and-push.outputs.voice_agent_digest }}
+        run: |
+          set -euo pipefail
+          for digest in "$BACKEND_DIGEST" "$FRONTEND_DIGEST" "$NGINX_DIGEST" "$LIVEKIT_DIGEST" "$SPEECH_SERVICE_DIGEST" "$VOICE_AGENT_DIGEST"; do
+            case "$digest" in sha256:*) ;; *) echo "Invalid image digest: $digest" >&2; exit 1 ;; esac
+          done
+          {
+            echo "RELEASE_SHA=$RELEASE_SHA"
+            echo "BACKEND_IMAGE=$DH_USER/resume-backend@$BACKEND_DIGEST"
+            echo "FRONTEND_IMAGE=$DH_USER/resume-frontend@$FRONTEND_DIGEST"
+            echo "NGINX_IMAGE=$DH_USER/resume-nginx@$NGINX_DIGEST"
+            echo "LIVEKIT_IMAGE=$DH_USER/resume-livekit@$LIVEKIT_DIGEST"
+            echo "SPEECH_SERVICE_IMAGE=$DH_USER/resume-speech-service@$SPEECH_SERVICE_DIGEST"
+            echo "VOICE_AGENT_IMAGE=$DH_USER/resume-voice-agent@$VOICE_AGENT_DIGEST"
+          } > release-manifest.env
+
+      - name: Upload immutable release manifest
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-manifest-${{ needs.resolve-tag.outputs.release_sha }}
+          path: release-manifest.env
+          retention-days: 90
+
       - name: Deployment summary
         run: |
           echo "=== Deployment Complete ==="
@@ -193,11 +250,9 @@ jobs:
           echo ""
           echo "Staging: Watchtower auto-pulls updated images within ~60 seconds (tag: staging)."
           echo "Production: Watchtower is MONITOR-ONLY by default (approval gate)."
-          echo "  Promote a production release manually on the VPS using the immutable SHA:"
-          echo "    export RELEASE_SHA=${{ needs.resolve-tag.outputs.release_sha }}"
-          echo "    export BACKEND_IMAGE=${{ secrets.DOCKERHUB_USERNAME }}/resume-backend@${{ needs.build-and-push.outputs.backend_digest }}"
-          echo "    docker compose -f docker-compose.prod.yml pull"
-          echo "    docker compose -f docker-compose.prod.yml up -d"
-          echo "  Rollback: RELEASE_SHA=<previous known-good SHA> docker compose -f docker-compose.prod.yml up -d"
+          echo "  Download the release-manifest-${{ needs.resolve-tag.outputs.release_sha }} artifact after approval."
+          echo "    docker compose --env-file release-manifest.env -f docker-compose.prod.yml pull"
+          echo "    docker compose --env-file release-manifest.env -f docker-compose.prod.yml up -d"
+          echo "  Rollback: deploy the previous known-good release-manifest.env artifact."
           echo "Never deploy application :latest. Do not rebuild production after approval."
-          echo "Backend image digest: ${{ needs.build-and-push.outputs.backend_digest }}"
+          echo "All ARIA application images are pinned by digest in the release manifest."

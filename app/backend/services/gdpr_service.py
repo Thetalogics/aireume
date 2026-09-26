@@ -11,10 +11,12 @@ Provides:
 import logging
 import json
 import hashlib
+import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, List, Any
 from sqlalchemy.orm import Session
-from sqlalchemy import text
+from sqlalchemy import and_, or_, text
+from sqlalchemy.exc import IntegrityError
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +39,7 @@ PII_FIELDS_TO_ANONYMIZE = [
 
 OBJECT_DELETION_MAX_ATTEMPTS = 10
 OBJECT_DELETION_OVERDUE_HOURS = 24
+OBJECT_DELETION_LEASE_MINUTES = 15
 
 
 def get_retention_config(tenant_id: Optional[int] = None, db: Optional[Session] = None) -> Dict[str, int]:
@@ -81,6 +84,8 @@ def _delete_or_queue_object_keys(
     tenant_id: int,
     candidate_id: int,
     keys: List[str | None],
+    workflow_type: str = "object_delete",
+    erasure_reason: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Delete object-storage keys or create retry rows for failed deletes."""
     from app.backend.models.db_models import PendingObjectDeletion
@@ -118,24 +123,288 @@ def _delete_or_queue_object_keys(
             .first()
         )
         if pending:
-            pending.candidate_id = pending.candidate_id or candidate_id
+            pending.candidate_id = candidate_id
             pending.attempts = (pending.attempts or 0) + 1
             pending.status = "pending"
+            pending.workflow_type = workflow_type
+            pending.workflow_status = "object_pending"
             pending.next_retry_at = _next_object_delete_retry(pending.attempts)
             pending.last_error = _sanitize_delete_error(last_error)
+            pending.erasure_reason = erasure_reason or pending.erasure_reason
+            pending.completed_at = None
+            pending.finalized_at = None
+            pending.dead_lettered_at = None
+            pending.lease_owner = None
+            pending.lease_expires_at = None
         else:
             attempts = 1
-            db.add(PendingObjectDeletion(
-                tenant_id=tenant_id,
-                storage_key=key,
-                candidate_id=candidate_id,
-                status="pending",
-                attempts=attempts,
-                next_retry_at=_next_object_delete_retry(attempts),
-                last_error=_sanitize_delete_error(last_error),
-            ))
+            try:
+                with db.begin_nested():
+                    db.add(PendingObjectDeletion(
+                        tenant_id=tenant_id,
+                        storage_key=key,
+                        candidate_id=candidate_id,
+                        status="pending",
+                        workflow_type=workflow_type,
+                        workflow_status="object_pending",
+                        attempts=attempts,
+                        next_retry_at=_next_object_delete_retry(attempts),
+                        last_error=_sanitize_delete_error(last_error),
+                        erasure_reason=erasure_reason,
+                    ))
+                    db.flush()
+            except IntegrityError:
+                # A concurrent erasure request queued the same object key.
+                pending = db.query(PendingObjectDeletion).filter(
+                    PendingObjectDeletion.tenant_id == tenant_id,
+                    PendingObjectDeletion.storage_key == key,
+                ).one()
+                pending.candidate_id = candidate_id
+                pending.status = "pending"
+                pending.workflow_type = workflow_type
+                pending.workflow_status = "object_pending"
+                pending.erasure_reason = erasure_reason or pending.erasure_reason
+                pending.completed_at = None
+                pending.finalized_at = None
+                pending.dead_lettered_at = None
 
     return summary
+
+
+def _delete_candidate_database_records(
+    db: Session,
+    *,
+    candidate_id: int,
+    tenant_id: int,
+    reason: str,
+    delete_objects: bool,
+    commit: bool,
+) -> Dict[str, Any]:
+    from app.backend.models.db_models import (
+        AuditLog, Candidate, CandidateNote, Comment, FieldAuditLog,
+        HiringOutcome, InterviewEvaluation, OverallAssessment, ScreeningResult,
+        TrainingExample, TranscriptAnalysis, VoiceScreeningSession,
+    )
+
+    deleted = {
+        "candidate": False,
+        "screening_results": 0,
+        "voice_sessions": 0,
+        "candidate_notes": 0,
+        "transcripts": 0,
+        "hiring_outcomes": 0,
+        "resume_text": False,
+    }
+    candidate = db.query(Candidate).filter(
+        Candidate.id == candidate_id,
+        Candidate.tenant_id == tenant_id,
+    ).first()
+
+    if not candidate:
+        return {"error": "Candidate not found", **deleted}
+
+    candidate_hash = hashlib.sha256(f"{candidate.email}|{candidate_id}".encode()).hexdigest()[:16]
+
+    if delete_objects and (candidate.resume_file_key or candidate.resume_pdf_key):
+        storage = _delete_or_queue_object_keys(
+            db,
+            tenant_id=tenant_id,
+            candidate_id=candidate_id,
+            keys=[candidate.resume_file_key, candidate.resume_pdf_key],
+            workflow_type="hard_delete",
+            erasure_reason=reason,
+        )
+        deleted.update(storage)
+        if not storage["object_storage_complete"]:
+            try:
+                from app.backend.services.metrics import GDPR_DELETION_FAILURE_TOTAL, GDPR_DELETION_RETRY_TOTAL
+                GDPR_DELETION_FAILURE_TOTAL.labels(reason="object_storage").inc()
+                GDPR_DELETION_RETRY_TOTAL.inc()
+            except Exception:
+                pass
+            if commit:
+                db.commit()
+            return {
+                "error": "object_storage_delete_incomplete",
+                "deleted": False,
+                **deleted,
+            }
+
+    results = db.query(ScreeningResult).filter(
+        ScreeningResult.candidate_id == candidate_id,
+        ScreeningResult.tenant_id == tenant_id,
+    ).all()
+    result_ids = [r.id for r in results]
+    if result_ids:
+        deleted["hiring_outcomes"] += db.query(HiringOutcome).filter(
+            HiringOutcome.screening_result_id.in_(result_ids)
+        ).delete(synchronize_session=False)
+        db.query(Comment).filter(
+            Comment.result_id.in_(result_ids)
+        ).delete(synchronize_session=False)
+        db.query(InterviewEvaluation).filter(
+            InterviewEvaluation.result_id.in_(result_ids)
+        ).delete(synchronize_session=False)
+        db.query(OverallAssessment).filter(
+            OverallAssessment.result_id.in_(result_ids)
+        ).delete(synchronize_session=False)
+        db.query(TrainingExample).filter(
+            TrainingExample.screening_result_id.in_(result_ids)
+        ).delete(synchronize_session=False)
+        db.query(FieldAuditLog).filter(
+            FieldAuditLog.tenant_id == tenant_id,
+            FieldAuditLog.entity_type == "screening_result",
+            FieldAuditLog.entity_id.in_(result_ids),
+        ).delete(synchronize_session=False)
+    for result in results:
+        db.delete(result)
+        deleted["screening_results"] += 1
+
+    deleted["hiring_outcomes"] += db.query(HiringOutcome).filter(
+        HiringOutcome.tenant_id == tenant_id,
+        HiringOutcome.candidate_id == candidate_id,
+    ).delete(synchronize_session=False)
+    deleted["candidate_notes"] = db.query(CandidateNote).filter(
+        CandidateNote.tenant_id == tenant_id,
+        CandidateNote.candidate_id == candidate_id,
+    ).delete(synchronize_session=False)
+    deleted["transcripts"] = db.query(TranscriptAnalysis).filter(
+        TranscriptAnalysis.tenant_id == tenant_id,
+        TranscriptAnalysis.candidate_id == candidate_id,
+    ).delete(synchronize_session=False)
+    db.query(FieldAuditLog).filter(
+        FieldAuditLog.tenant_id == tenant_id,
+        FieldAuditLog.entity_type == "candidate",
+        FieldAuditLog.entity_id == candidate_id,
+    ).delete(synchronize_session=False)
+    db.query(AuditLog).filter(
+        AuditLog.tenant_id == tenant_id,
+        or_(
+            and_(AuditLog.resource_type == "candidate", AuditLog.resource_id == candidate_id),
+            and_(AuditLog.resource_type == "screening_result", AuditLog.resource_id.in_(result_ids)),
+        ),
+    ).update(
+        {AuditLog.resource_id: None, AuditLog.details: json.dumps({"redacted": True, "reason": "gdpr_erasure"})},
+        synchronize_session=False,
+    )
+    db.query(Candidate).filter(
+        Candidate.tenant_id == tenant_id,
+        Candidate.merged_into_id == candidate_id,
+    ).update({Candidate.merged_into_id: None}, synchronize_session=False)
+
+    sessions = db.query(VoiceScreeningSession).filter(
+        VoiceScreeningSession.candidate_id == candidate_id
+    ).all()
+    for session in sessions:
+        db.delete(session)
+        deleted["voice_sessions"] += 1
+
+    db.delete(candidate)
+    deleted["candidate"] = True
+    deleted["resume_text"] = True
+
+    audit = AuditLog(
+        actor_user_id=None,
+        actor_email="system",
+        tenant_id=tenant_id,
+        action="gdpr.right_to_be_forgotten",
+        resource_type="candidate",
+        resource_id=None,
+        details=json.dumps({
+            "reason": reason,
+            "candidate_hash": candidate_hash,
+            "deleted": deleted,
+        }),
+    )
+    db.add(audit)
+    if commit:
+        db.commit()
+    return deleted
+
+
+def _finalize_completed_hard_delete_workflows(db: Session) -> int:
+    from app.backend.models.db_models import Candidate, PendingObjectDeletion
+
+    candidates = (
+        db.query(PendingObjectDeletion.tenant_id, PendingObjectDeletion.candidate_id)
+        .filter(
+            PendingObjectDeletion.workflow_type == "hard_delete",
+            PendingObjectDeletion.workflow_status == "database_pending",
+            PendingObjectDeletion.candidate_id.isnot(None),
+        )
+        .distinct()
+        .all()
+    )
+    finalized = 0
+    for tenant_id, candidate_id in candidates:
+        candidate = db.query(Candidate).filter(
+            Candidate.tenant_id == tenant_id,
+            Candidate.id == candidate_id,
+        ).with_for_update(skip_locked=True).first()
+        if candidate is None:
+            still_exists = db.query(Candidate.id).filter(
+                Candidate.tenant_id == tenant_id,
+                Candidate.id == candidate_id,
+            ).scalar()
+            if still_exists is not None:
+                continue
+        rows = db.query(PendingObjectDeletion).filter(
+            PendingObjectDeletion.tenant_id == tenant_id,
+            PendingObjectDeletion.candidate_id == candidate_id,
+            PendingObjectDeletion.workflow_type == "hard_delete",
+        ).all()
+        if any(row.status == "pending" for row in rows):
+            continue
+        if any(row.status == "dead_letter" for row in rows):
+            for row in rows:
+                if row.workflow_status != "completed":
+                    row.workflow_status = "dead_letter"
+            continue
+
+        reason = next((row.erasure_reason for row in rows if row.erasure_reason), "gdpr_request")
+        result = _delete_candidate_database_records(
+            db,
+            candidate_id=candidate_id,
+            tenant_id=tenant_id,
+            reason=reason,
+            delete_objects=False,
+            commit=False,
+        )
+        now = datetime.now(timezone.utc)
+        if result.get("error") and result["error"] != "Candidate not found":
+            for row in rows:
+                row.last_error = _sanitize_delete_error(result["error"])
+            continue
+        for row in rows:
+            row.workflow_status = "completed"
+            row.finalized_at = now
+        finalized += 1
+    return finalized
+
+
+def _claim_pending_object_deletions(db: Session, *, limit: int, now: datetime) -> tuple[str, List[int]]:
+    """Atomically lease due outbox rows so only one replica performs a retry."""
+    from app.backend.models.db_models import PendingObjectDeletion
+
+    owner = uuid.uuid4().hex
+    lease_until = now + timedelta(minutes=OBJECT_DELETION_LEASE_MINUTES)
+    rows = (
+        db.query(PendingObjectDeletion)
+        .filter(
+            PendingObjectDeletion.status == "pending",
+            (PendingObjectDeletion.next_retry_at.is_(None) | (PendingObjectDeletion.next_retry_at <= now)),
+            (PendingObjectDeletion.lease_expires_at.is_(None) | (PendingObjectDeletion.lease_expires_at <= now)),
+        )
+        .order_by(PendingObjectDeletion.next_retry_at.asc(), PendingObjectDeletion.created_at.asc(), PendingObjectDeletion.id.asc())
+        .with_for_update(skip_locked=True)
+        .limit(limit)
+        .all()
+    )
+    for row in rows:
+        row.lease_owner = owner
+        row.lease_expires_at = lease_until
+    db.commit()
+    return owner, [row.id for row in rows]
 
 
 def process_pending_object_deletions(db: Session, *, limit: int = 100) -> Dict[str, int]:
@@ -151,41 +420,51 @@ def process_pending_object_deletions(db: Session, *, limit: int = 100) -> Dict[s
         "errors": 0,
         "dead_lettered": 0,
         "overdue": 0,
+        "finalized": 0,
     }
     overdue_cutoff = now - timedelta(hours=OBJECT_DELETION_OVERDUE_HOURS)
     summary["overdue"] = db.query(PendingObjectDeletion).filter(
         PendingObjectDeletion.status == "pending",
         PendingObjectDeletion.created_at < overdue_cutoff,
     ).count()
-    if summary["overdue"]:
-        try:
-            from app.backend.services.metrics import GDPR_DELETION_OVERDUE_TOTAL
+    try:
+        from app.backend.services.metrics import GDPR_DELETION_DEAD_LETTER, GDPR_DELETION_OVERDUE
 
-            GDPR_DELETION_OVERDUE_TOTAL.inc(summary["overdue"])
-        except Exception:
-            pass
+        GDPR_DELETION_OVERDUE.set(summary["overdue"])
+        dead_letter_count = db.query(PendingObjectDeletion).filter(
+            PendingObjectDeletion.status == "dead_letter",
+        ).count()
+        GDPR_DELETION_DEAD_LETTER.set(dead_letter_count)
+    except Exception:
+        pass
 
     if not ObjectStorageService.is_available():
         summary["remaining"] = db.query(PendingObjectDeletion).filter(
             PendingObjectDeletion.status == "pending",
         ).count()
+        summary["finalized"] = _finalize_completed_hard_delete_workflows(db)
+        db.commit()
         return summary
 
-    rows = (
-        db.query(PendingObjectDeletion)
-        .filter(
+    owner, row_ids = _claim_pending_object_deletions(db, limit=limit, now=now)
+    for row_id in row_ids:
+        row = db.query(PendingObjectDeletion).filter(
+            PendingObjectDeletion.id == row_id,
             PendingObjectDeletion.status == "pending",
-            (PendingObjectDeletion.next_retry_at.is_(None) | (PendingObjectDeletion.next_retry_at <= now)),
-        )
-        .order_by(PendingObjectDeletion.next_retry_at.asc(), PendingObjectDeletion.created_at.asc(), PendingObjectDeletion.id.asc())
-        .limit(limit)
-        .all()
-    )
-    for row in rows:
+            PendingObjectDeletion.lease_owner == owner,
+        ).first()
+        if row is None:
+            continue
         summary["processed"] += 1
         try:
-            if ObjectStorageService.delete(row.storage_key):
+            deleted_ok = ObjectStorageService.delete(row.storage_key)
+            db.refresh(row)
+            if row.lease_owner != owner:
+                continue
+            if deleted_ok:
                 row.status = "completed"
+                if row.workflow_type == "hard_delete":
+                    row.workflow_status = "database_pending"
                 row.completed_at = datetime.now(timezone.utc)
                 summary["deleted"] += 1
             else:
@@ -193,23 +472,34 @@ def process_pending_object_deletions(db: Session, *, limit: int = 100) -> Dict[s
                 row.last_error = "delete_failed"
                 if row.attempts >= OBJECT_DELETION_MAX_ATTEMPTS:
                     row.status = "dead_letter"
+                    row.workflow_status = "dead_letter"
                     row.dead_lettered_at = datetime.now(timezone.utc)
                     summary["dead_lettered"] += 1
                 else:
                     row.next_retry_at = _next_object_delete_retry(row.attempts)
                     summary["remaining"] += 1
         except Exception as exc:
+            db.refresh(row)
+            if row.lease_owner != owner:
+                continue
             row.attempts = (row.attempts or 0) + 1
             row.last_error = _sanitize_delete_error(exc)
             summary["errors"] += 1
             if row.attempts >= OBJECT_DELETION_MAX_ATTEMPTS:
                 row.status = "dead_letter"
+                row.workflow_status = "dead_letter"
                 row.dead_lettered_at = datetime.now(timezone.utc)
                 summary["dead_lettered"] += 1
             else:
                 row.next_retry_at = _next_object_delete_retry(row.attempts)
                 summary["remaining"] += 1
+        finally:
+            if row.lease_owner == owner:
+                row.lease_owner = None
+                row.lease_expires_at = None
+            db.commit()
 
+    summary["finalized"] = _finalize_completed_hard_delete_workflows(db)
     db.commit()
     return summary
 
@@ -222,92 +512,15 @@ def hard_delete_candidate(db: Session, candidate_id: int, tenant_id: int, reason
 
     Returns summary of deleted records.
     """
-    from app.backend.models.db_models import (
-        Candidate, ScreeningResult, VoiceScreeningSession,
-        FieldAuditLog, AuditLog, TrainingExample,
-    )
-
-    deleted = {"candidate": False, "screening_results": 0, "voice_sessions": 0, "resume_text": False}
-
     try:
-        # Get candidate for audit info (before deletion)
-        candidate = db.query(Candidate).filter(
-            Candidate.id == candidate_id,
-            Candidate.tenant_id == tenant_id,
-        ).first()
-
-        if not candidate:
-            return {"error": "Candidate not found", **deleted}
-
-        # Store anonymized audit info
-        candidate_hash = hashlib.sha256(f"{candidate.email}|{candidate_id}".encode()).hexdigest()[:16]
-
-        if candidate.resume_file_key or candidate.resume_pdf_key:
-            storage = _delete_or_queue_object_keys(
-                db,
-                tenant_id=tenant_id,
-                candidate_id=candidate_id,
-                keys=[candidate.resume_file_key, candidate.resume_pdf_key],
-            )
-            deleted.update(storage)
-            if not storage["object_storage_complete"]:
-                try:
-                    from app.backend.services.metrics import GDPR_DELETION_FAILURE_TOTAL, GDPR_DELETION_RETRY_TOTAL
-                    GDPR_DELETION_FAILURE_TOTAL.labels(reason="object_storage").inc()
-                    GDPR_DELETION_RETRY_TOTAL.inc()
-                except Exception:
-                    pass
-                db.commit()
-                return {
-                    "error": "object_storage_delete_incomplete",
-                    "deleted": False,
-                    **deleted,
-                }
-
-        # TrainingExample.screening_result_id has no ON DELETE CASCADE.
-        # Remove those rows first so result deletion can CASCADE the ledger.
-        results = db.query(ScreeningResult).filter(
-            ScreeningResult.candidate_id == candidate_id
-        ).all()
-        result_ids = [r.id for r in results]
-        if result_ids:
-            db.query(TrainingExample).filter(
-                TrainingExample.screening_result_id.in_(result_ids)
-            ).delete(synchronize_session=False)
-        for r in results:
-            db.delete(r)
-            deleted["screening_results"] += 1
-
-        # Delete voice screening sessions
-        sessions = db.query(VoiceScreeningSession).filter(
-            VoiceScreeningSession.candidate_id == candidate_id
-        ).all()
-        for s in sessions:
-            db.delete(s)
-            deleted["voice_sessions"] += 1
-
-        # Delete candidate record (cascade should handle remaining)
-        db.delete(candidate)
-        deleted["candidate"] = True
-        deleted["resume_text"] = True
-
-        # Create audit log entry (no PII)
-        audit = AuditLog(
-            actor_user_id=None,
-            actor_email="system",
+        deleted = _delete_candidate_database_records(
+            db,
+            candidate_id=candidate_id,
             tenant_id=tenant_id,
-            action="gdpr.right_to_be_forgotten",
-            resource_type="candidate",
-            resource_id=candidate_id,
-            details=json.dumps({
-                "reason": reason,
-                "candidate_hash": candidate_hash,
-                "deleted": deleted,
-            }),
+            reason=reason,
+            delete_objects=True,
+            commit=True,
         )
-        db.add(audit)
-        db.commit()
-
         logger.info("GDPR hard delete completed for candidate %d (tenant %d): %s",
                      candidate_id, tenant_id, deleted)
         return deleted
@@ -315,7 +528,16 @@ def hard_delete_candidate(db: Session, candidate_id: int, tenant_id: int, reason
     except Exception as e:
         db.rollback()
         logger.error("GDPR hard delete failed for candidate %d: %s", candidate_id, e)
-        return {"error": str(e), **deleted}
+        return {
+            "error": str(e),
+            "candidate": False,
+            "screening_results": 0,
+            "voice_sessions": 0,
+            "candidate_notes": 0,
+            "transcripts": 0,
+            "hiring_outcomes": 0,
+            "resume_text": False,
+        }
 
 
 def anonymize_candidate(db: Session, candidate_id: int, tenant_id: int, reason: str = "retention_expiry") -> Dict[str, Any]:
@@ -442,13 +664,11 @@ def cleanup_expired_data(db: Session, tenant_id: Optional[int] = None) -> Dict[s
     summary = {"anonymized": 0, "deleted": 0, "errors": 0, "object_deletes_retried": 0}
 
     try:
-        pending_result = process_pending_object_deletions(db)
-        summary["object_deletes_retried"] = pending_result["processed"]
-
         query = db.query(Candidate).filter(
             Candidate.created_at < cutoff,
-            Candidate.status != "anonymized",
         )
+        if hasattr(Candidate, "status"):
+            query = query.filter(Candidate.status != "anonymized")
         if tenant_id:
             query = query.filter(Candidate.tenant_id == tenant_id)
 
@@ -472,6 +692,41 @@ def cleanup_expired_data(db: Session, tenant_id: Optional[int] = None) -> Dict[s
     except Exception as e:
         logger.error("Retention cleanup failed: %s", e)
         return {"error": str(e), **summary}
+
+
+def cleanup_expired_data_for_all_tenants(db: Session) -> Dict[str, int]:
+    """Run retention cleanup using each tenant's persisted retention policy."""
+    from app.backend.models.db_models import DataRetentionPolicy, Tenant
+
+    summary = {
+        "tenants_processed": 0,
+        "anonymized": 0,
+        "deleted": 0,
+        "errors": 0,
+        "object_deletes_retried": 0,
+    }
+    try:
+        tenant_ids = [
+            row[0]
+            for row in db.query(Tenant.id)
+            .filter(Tenant.deleted_at.is_(None))
+            .all()
+        ]
+        for policy_tenant_id, in db.query(DataRetentionPolicy.tenant_id).all():
+            if policy_tenant_id not in tenant_ids:
+                tenant_ids.append(policy_tenant_id)
+
+        for tenant_id in tenant_ids:
+            result = cleanup_expired_data(db, tenant_id=tenant_id)
+            summary["tenants_processed"] += 1
+            for key in ("anonymized", "deleted", "errors", "object_deletes_retried"):
+                summary[key] += int(result.get(key, 0) or 0)
+            if result.get("error"):
+                summary["errors"] += 1
+        return summary
+    except Exception as exc:
+        logger.error("Tenant retention cleanup failed: %s", exc)
+        return {"error": str(exc), **summary}
 
 
 def export_candidate_data(db: Session, candidate_id: int, tenant_id: int) -> Dict[str, Any]:

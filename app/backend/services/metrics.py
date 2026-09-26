@@ -210,9 +210,14 @@ GDPR_DELETION_RETRY_TOTAL = Counter(
     "GDPR object-deletion retries queued",
 )
 
-GDPR_DELETION_OVERDUE_TOTAL = Counter(
-    "aria_gdpr_deletion_overdue_total",
-    "GDPR object-deletion outbox rows overdue for deletion",
+GDPR_DELETION_OVERDUE = Gauge(
+    "aria_gdpr_deletion_overdue",
+    "Current GDPR object-deletion outbox rows overdue for deletion",
+)
+
+GDPR_DELETION_DEAD_LETTER = Gauge(
+    "aria_gdpr_deletion_dead_letter",
+    "Current GDPR object-deletion outbox rows in terminal dead-letter state",
 )
 
 # Custom metrics for batch operations

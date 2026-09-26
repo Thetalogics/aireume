@@ -163,6 +163,12 @@ export function mergeNarrativePollResult(prev, data) {
   const narrative = data.narrative || {}
   const narrativeDone = data.status === 'ready' || data.status === 'fallback' || data.status === 'failed'
   const interviewQuestions = resolveInterviewQuestions(narrative, prev)
+  const generationMode = data.generation_mode ?? prev?.generation_mode ?? (
+    data.status === 'ready' && narrative.ai_enhanced === true ? 'ai' :
+    data.status === 'failed' ? 'failed' :
+    narrativeDone ? 'deterministic_fallback' :
+    'pending'
+  )
 
   return {
     ...narrative,
@@ -173,13 +179,8 @@ export function mergeNarrativePollResult(prev, data) {
     interview_kit_error: data.interview_kit_error ?? prev?.interview_kit_error,
     voice_strategy_status: voice ?? prev?.voice_strategy_status,
     narrative_error: data.error ?? prev?.narrative_error,
-    generation_mode: data.generation_mode ?? prev?.generation_mode ?? (
-      data.status === 'ready' && narrative.ai_enhanced === true ? 'ai' :
-      data.status === 'failed' ? 'failed' :
-      narrativeDone ? 'deterministic_fallback' :
-      'pending'
-    ),
-    ai_enhanced: (data.generation_mode ?? prev?.generation_mode) === 'ai' || narrative.ai_enhanced === true,
+    generation_mode: generationMode,
+    ai_enhanced: generationMode === 'ai',
     call_fit_score: data.call_fit_score ?? prev?.call_fit_score,
     call_source: data.call_source ?? prev?.call_source,
     consolidated_recommendation: data.consolidated_recommendation ?? prev?.consolidated_recommendation,

@@ -8,8 +8,6 @@ import {
   prepareAnalyzeJob,
 } from './helpers';
 
-const configured = Boolean(process.env.E2E_EMAIL && process.env.E2E_PASSWORD && process.env.E2E_WORKSPACE);
-
 const STABLE_JD = [
   'We are hiring a Senior Backend Engineer to design and operate Python FastAPI services.',
   'The role requires production experience with PostgreSQL, REST APIs, SQLAlchemy, and Redis.',
@@ -33,8 +31,6 @@ function writeUniqueResume(runId: string, candidateName: string, email: string):
 }
 
 test.describe('Authenticated staging critical flow', () => {
-  test.skip(!configured, 'E2E_WORKSPACE/E2E_EMAIL/E2E_PASSWORD not configured');
-
   test.use({ storageState: path.join(__dirname, '.auth/user.json') });
 
   test('dashboard, requisition, screening result, tenant candidate, logout', async ({ page }) => {
@@ -47,6 +43,14 @@ test.describe('Authenticated staging critical flow', () => {
     await page.goto('/');
     await expect(page.locator('nav, header').first()).toBeVisible({ timeout: 20000 });
     await expect(page).not.toHaveURL(/\/login/i);
+
+    const expectedSha = process.env.E2E_EXPECTED_SHA?.trim();
+    if (expectedSha) {
+      await expect(page.locator('html')).toHaveAttribute('data-build-id', expectedSha);
+      const version = await page.request.get('/api/version');
+      expect(version.ok(), `GET /api/version failed with HTTP ${version.status()}`).toBeTruthy();
+      expect((await version.json()).build_id).toBe(expectedSha);
+    }
 
     const mode = await prepareAnalyzeJob(page);
     if (mode === 'ad-hoc') {

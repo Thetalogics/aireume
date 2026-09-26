@@ -13,7 +13,9 @@ const E2E_MFA_SECRET = process.env.E2E_MFA_SECRET || '';
 const SCREENING_ROLES = new Set(['admin', 'recruiter', 'hiring_manager']);
 
 setup('authenticate', async ({ page }) => {
-  setup.skip(!E2E_EMAIL || !E2E_PASSWORD || !E2E_WORKSPACE, 'E2E credentials not configured');
+  if (!E2E_EMAIL || !E2E_PASSWORD || !E2E_WORKSPACE) {
+    throw new Error('Authenticated E2E credentials are required; refusing to skip authentication');
+  }
 
   let loginStatus: number | null = null;
   page.on('response', (res) => {

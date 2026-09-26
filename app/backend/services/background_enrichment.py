@@ -1047,6 +1047,8 @@ def enqueue_enrichment_job(
     """Create a durable enrichment job unless one already exists."""
     if job_type not in ENRICHMENT_JOB_TYPES:
         raise ValueError(f"Unsupported enrichment job type: {job_type}")
+    from sqlalchemy.exc import IntegrityError
+
     from app.backend.models.db_models import AnalysisJob, ScreeningResult
 
     input_hash = _enrichment_input_hash(
@@ -1076,6 +1078,14 @@ def enqueue_enrichment_job(
         )
         .first()
     )
+    if row is None:
+        log.info(
+            "Skipping stale %s enrichment enqueue for screening_result_id=%s generation=%s",
+            job_type,
+            screening_result_id,
+            expected_generation,
+        )
+        return False
     digest = hashlib.sha256(input_hash.encode("utf-8")).hexdigest()
     job = AnalysisJob(
         id=uuid.uuid4(),
@@ -1097,8 +1107,15 @@ def enqueue_enrichment_job(
             "screening_decision_id": screening_decision_id,
         },
     )
-    db.add(job)
-    db.commit()
+    try:
+        with db.begin_nested():
+            db.add(job)
+            db.flush()
+        db.commit()
+    except IntegrityError:
+        # A concurrent delivery inserted the same deterministic input hash.
+        db.rollback()
+        return False
     log.info(
         "Enqueued durable %s enrichment job id=%s screening_result_id=%s generation=%s",
         job_type,
@@ -1177,7 +1194,14 @@ async def complete_enrichment_job(job, db, *, expected_worker_id: str) -> bool:
         .populate_existing()
         .one()
     )
-    if locked.status != "processing" or locked.worker_id != expected_worker_id:
+    lease = locked.leased_until
+    if lease is not None and lease.tzinfo is None:
+        lease = lease.replace(tzinfo=timezone.utc)
+    if (
+        locked.status != "processing"
+        or locked.worker_id != expected_worker_id
+        or (lease is not None and lease < datetime.now(timezone.utc))
+    ):
         db.rollback()
         log.warning("lease_lost after enrichment job body job_id=%s", job.id)
         return False

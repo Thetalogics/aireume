@@ -2,9 +2,20 @@ name: Authenticated staging E2E
 
 on:
   workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Optional deployed commit SHA to require
+        required: false
+        type: string
   workflow_call:
+    inputs:
+      expected_sha:
+        description: Deployed commit SHA that staging must report
+        required: false
+        type: string
 
-# Manual/environment gate — not an automatic production promotion blocker.
+# Deployment-environment gate. CD requires this workflow before emitting an
+# approved immutable release manifest; it can also be dispatched manually.
 # Requires GitHub environment `staging-e2e` secrets:
 #   E2E_BASE_URL
 #   E2E_RECRUITER_EMAIL
@@ -34,6 +45,26 @@ jobs:
             echo "Use a dedicated non-privileged recruiter with MFA disabled only on that account."
             exit 1
           fi
+      - name: Wait for healthy staging deployment at the expected SHA
+        env:
+          E2E_BASE_URL: ${{ secrets.E2E_BASE_URL }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          set -euo pipefail
+          BASE_URL="${E2E_BASE_URL%/}"
+          for attempt in $(seq 1 36); do
+            READY="$(curl --fail --silent --show-error "$BASE_URL/ready" 2>/dev/null || true)"
+            VERSION="$(curl --fail --silent --show-error "$BASE_URL/api/version" 2>/dev/null || true)"
+            ACTUAL_SHA="$(printf '%s' "$VERSION" | jq -r '.build_id // empty' 2>/dev/null || true)"
+            if [ -n "$READY" ] && { [ -z "$EXPECTED_SHA" ] || [ "$ACTUAL_SHA" = "$EXPECTED_SHA" ]; }; then
+              echo "Staging is ready at build ${ACTUAL_SHA:-unversioned}."
+              exit 0
+            fi
+            echo "Waiting for staging build ${EXPECTED_SHA:-any}; currently ${ACTUAL_SHA:-unavailable} (attempt $attempt/36)."
+            sleep 10
+          done
+          echo "Staging did not become ready at expected build '$EXPECTED_SHA'." >&2
+          exit 1
       - name: Install Playwright
         run: npm ci && npx playwright install --with-deps chromium
       - name: Run authenticated staging specs
@@ -43,6 +74,7 @@ jobs:
           E2E_EMAIL: ${{ secrets.E2E_RECRUITER_EMAIL }}
           E2E_PASSWORD: ${{ secrets.E2E_RECRUITER_PASSWORD }}
           E2E_WORKSPACE: ${{ secrets.E2E_WORKSPACE }}
+          E2E_EXPECTED_SHA: ${{ inputs.expected_sha }}
         run: npx playwright test --config=playwright.staging.config.ts
       - name: Upload Playwright report
         if: always()

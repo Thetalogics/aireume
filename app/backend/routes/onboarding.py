@@ -49,9 +49,11 @@ class OnboardingEventRequest(BaseModel):
 
 ALLOWED_FUNNEL_EVENTS = {
     "wizard_step_completed",
+    "wizard_step_deferred",
     "wizard_skipped",
     "wizard_completed",
     "sample_data_loaded",
+    "sample_data_failed",
     "checklist_item_completed",
     "checklist_dismissed",
     "readiness_completed",

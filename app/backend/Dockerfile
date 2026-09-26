@@ -27,9 +27,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     poppler-utils \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements first for better caching
-COPY app/backend/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Install the reviewed transitive dependency graph with artifact hashes.
+COPY app/backend/requirements.lock .
+RUN pip install --no-cache-dir --require-hashes -r requirements.lock
 
 # Download spaCy model for NER name extraction (~12MB)
 RUN python -m spacy download en_core_web_sm

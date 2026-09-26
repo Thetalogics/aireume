@@ -233,13 +233,19 @@ export const PIPELINE = {
 
 /** Trust & compliance copy — cloud SaaS positioning */
 export const TRUST = {
-  authFooter: 'Multi-tenant security · Encrypted in transit · GDPR-ready controls',
+  authFooter: 'Tenant-isolated workspaces · Encrypted in transit · GDPR deletion and export controls',
   aiProcessingTitle: 'AI & data processing',
   aiProcessingBody:
     'Resume, job description, and interview content are processed by secure AI providers to generate screening scores, narratives, and interview plans. Data is stored in your tenant workspace and never used to train public models.',
   aiProcessingAck:
     'I understand that candidate and job data are processed by AI providers to deliver screening analysis.',
   aiSubprocessors: ['Ollama Cloud', 'Google Gemini (when configured)', 'LiveKit (voice screening)'],
+  legalLinks: [
+    { label: 'Terms', href: '/legal/terms' },
+    { label: 'Privacy', href: '/legal/privacy' },
+    { label: 'Subprocessors', href: '/legal/subprocessors' },
+    { label: 'Support', href: 'mailto:support@thetalogics.com' },
+  ],
 }
 
 export const ANALYTICS = {

@@ -1,9 +1,15 @@
 """Static production/deployment contract tests."""
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 PROD = (ROOT / "docker-compose.prod.yml").read_text(encoding="utf-8")
 ENTRY = (ROOT / "app" / "backend" / "scripts" / "docker-entrypoint.sh").read_text(encoding="utf-8")
+CD = (ROOT / ".github" / "workflows" / "cd.yml").read_text(encoding="utf-8")
+CI = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+DOCKERFILE = (ROOT / "app" / "backend" / "Dockerfile").read_text(encoding="utf-8")
+E2E_STAGING = (ROOT / ".github" / "workflows" / "e2e-staging.yml").read_text(encoding="utf-8")
+E2E_INTEGRATION = (ROOT / "e2e" / "ci-real-backend.spec.ts").read_text(encoding="utf-8")
 
 
 def test_entrypoint_does_not_auto_migrate():
@@ -46,11 +52,73 @@ def test_prod_compose_has_single_migration_owner():
 
 
 def test_prod_application_images_are_not_latest():
-    for line in PROD.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("image:") and "revanth2245/resume-" in stripped:
-            assert ":latest" not in stripped
-            assert "RELEASE_SHA" in stripped
+    required = {
+        "BACKEND_IMAGE", "FRONTEND_IMAGE", "NGINX_IMAGE", "LIVEKIT_IMAGE",
+        "SPEECH_SERVICE_IMAGE", "VOICE_AGENT_IMAGE",
+    }
+    for variable in required:
+        assert f"${{{variable}:?" in PROD
+    assert "revanth2245/resume-backend:${RELEASE_SHA" not in PROD
+
+
+def test_cd_emits_digest_manifest_for_every_application_image():
+    for output in (
+        "backend_digest", "frontend_digest", "nginx_digest", "livekit_digest",
+        "speech_service_digest", "voice_agent_digest",
+    ):
+        assert output in CD
+    assert "release-manifest.env" in CD
+    assert "--env-file release-manifest.env" in CD
+
+
+def test_ci_proves_gdpr_deletion_against_pinned_object_storage():
+    assert "gdpr-object-storage:" in CI
+    assert 'OBJECT_STORAGE_INTEGRATION_REQUIRED: "1"' in CI
+    assert "docker.io/bitnamilegacy/minio@sha256:" in CI
+    assert "test_gdpr_object_storage_integration.py" in CI
+
+
+def test_ci_has_unmocked_browser_to_database_gate():
+    assert "integration-e2e:" in CI
+    assert "playwright.integration.config.ts" in CI
+    assert "postgres:16" in CI
+    assert "redis:7" in CI
+    assert 'E2E_TEST_MODE: "1"' in CI
+    assert 'REDIS_REQUIRED: "1"' in CI
+    assert "test.skip" not in E2E_INTEGRATION
+
+
+def test_release_manifest_requires_exact_sha_staging_e2e():
+    assert "authenticated-staging-e2e:" in CD
+    assert "expected_sha: ${{ needs.resolve-tag.outputs.release_sha }}" in CD
+    assert "needs: [resolve-tag, build-and-push, authenticated-staging-e2e]" in CD
+    assert "Wait for healthy staging deployment at the expected SHA" in E2E_STAGING
+    assert "E2E_EXPECTED_SHA" in E2E_STAGING
+
+
+def test_backend_dependencies_are_hash_locked_and_used_everywhere():
+    source = (ROOT / "app" / "backend" / "requirements.txt").read_text(encoding="utf-8")
+    lock = (ROOT / "app" / "backend" / "requirements.lock").read_text(encoding="utf-8")
+    for raw in source.splitlines():
+        requirement = raw.split("#", 1)[0].strip()
+        if not requirement:
+            continue
+        name, version = requirement.split("==", 1)
+        normalized_name = re.sub(r"[-_.]+", "-", name.split("[", 1)[0].lower())
+        assert f"{normalized_name}=={version}" in lock.lower()
+    assert "--hash=sha256:" in lock
+    assert "--require-hashes -r app/backend/requirements.lock" in CI
+    assert "--require-hashes -r requirements.lock" in DOCKERFILE
+    assert "pip install -r app/backend/requirements.txt" not in CI
+
+
+def test_cd_production_requires_successful_ci_workflow_run():
+    assert "github.event.workflow_run.head_sha" in CD
+    assert "SOURCE_CONCLUSION" in CD
+    assert 'test "$SOURCE_CONCLUSION" = "success"' in CD
+    assert "SOURCE_REPOSITORY" in CD
+    assert "Manual production CD is disabled" in CD
+    assert "- production" not in CD.split("workflow_dispatch:", 1)[1].split("concurrency:", 1)[0]
 
 
 def test_pool_budget_under_safety_fraction():

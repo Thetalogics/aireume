@@ -1,5 +1,6 @@
 """AUD-001 residual GETDEL, scoring, proxy signals, CSV, identity, adverse-action."""
 import io
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 import threading
 
@@ -350,6 +351,294 @@ def test_pending_object_deletion_dead_letters_after_repeated_failures(db, monkey
     assert row.dead_lettered_at is not None
 
 
+def test_pending_hard_delete_finalizes_database_erasure_after_object_retry(db, monkeypatch, seed_subscription_plans):
+    from app.backend.models.db_models import Candidate, PendingObjectDeletion, ScreeningResult, Tenant
+    from app.backend.services import gdpr_service
+
+    calls = []
+    available = {"value": False}
+    monkeypatch.setattr(
+        "app.backend.services.object_storage.ObjectStorageService.is_available",
+        staticmethod(lambda: available["value"]),
+    )
+    monkeypatch.setattr(
+        "app.backend.services.object_storage.ObjectStorageService.delete",
+        staticmethod(lambda key: calls.append(key) or True),
+    )
+    tenant = Tenant(name="Hard Delete Retry", slug="hard-delete-retry")
+    db.add(tenant)
+    db.commit()
+    db.refresh(tenant)
+    cand = Candidate(
+        tenant_id=tenant.id,
+        name="Erase Me",
+        email="erase@example.com",
+        resume_file_key="tenant/hard/resume.pdf",
+    )
+    db.add(cand)
+    db.commit()
+    db.refresh(cand)
+    db.add(ScreeningResult(
+        tenant_id=tenant.id,
+        candidate_id=cand.id,
+        resume_text="PII resume",
+        jd_text="jd",
+        parsed_data="{}",
+        analysis_result="{}",
+    ))
+    db.commit()
+
+    out = gdpr_service.hard_delete_candidate(db, cand.id, tenant.id)
+    assert out["error"] == "object_storage_delete_incomplete"
+    assert db.query(Candidate).filter_by(id=cand.id).first() is not None
+    row = db.query(PendingObjectDeletion).filter_by(storage_key="tenant/hard/resume.pdf").one()
+    assert row.workflow_type == "hard_delete"
+    assert row.workflow_status == "object_pending"
+
+    available["value"] = True
+    row.next_retry_at = None
+    db.commit()
+    retry = gdpr_service.process_pending_object_deletions(db)
+    assert retry["deleted"] == 1
+    assert retry["finalized"] == 1
+    assert calls == ["tenant/hard/resume.pdf"]
+    assert db.query(Candidate).filter_by(id=cand.id).first() is None
+    assert db.query(ScreeningResult).filter_by(candidate_id=cand.id).first() is None
+    db.refresh(row)
+    assert row.status == "completed"
+    assert row.workflow_status == "completed"
+    assert row.finalized_at is not None
+
+
+def test_hard_delete_removes_restrictive_candidate_dependencies(db, seed_subscription_plans):
+    from app.backend.models.db_models import (
+        AuditLog, Candidate, CandidateNote, Comment, FieldAuditLog, HiringOutcome,
+        ScreeningResult, Tenant, TranscriptAnalysis, User,
+    )
+    from app.backend.services import gdpr_service
+
+    tenant = Tenant(name="Erasure Graph", slug="erasure-graph")
+    db.add(tenant)
+    db.commit()
+    user = User(
+        tenant_id=tenant.id,
+        email="erasure-owner@example.com",
+        hashed_password="not-used",
+        role="admin",
+    )
+    candidate = Candidate(tenant_id=tenant.id, name="Erase All", email="erase-all@example.com")
+    db.add_all([user, candidate])
+    db.commit()
+    result = ScreeningResult(
+        tenant_id=tenant.id,
+        candidate_id=candidate.id,
+        resume_text="candidate pii",
+        jd_text="role",
+        parsed_data="{}",
+        analysis_result="{}",
+    )
+    merged_child = Candidate(
+        tenant_id=tenant.id,
+        name="Merged Child",
+        email="merged-child@example.com",
+        merged_into_id=candidate.id,
+    )
+    db.add_all([result, merged_child])
+    db.commit()
+    db.add_all([
+        CandidateNote(candidate_id=candidate.id, user_id=user.id, tenant_id=tenant.id, text="private note"),
+        TranscriptAnalysis(
+            tenant_id=tenant.id,
+            candidate_id=candidate.id,
+            transcript_text="private transcript",
+            analysis_result="{}",
+        ),
+        Comment(result_id=result.id, user_id=user.id, text="private comment"),
+        HiringOutcome(
+            tenant_id=tenant.id,
+            screening_result_id=result.id,
+            candidate_id=candidate.id,
+            decision="hired",
+        ),
+        FieldAuditLog(
+            tenant_id=tenant.id,
+            entity_type="candidate",
+            entity_id=candidate.id,
+            field_name="email",
+            old_value="old@example.com",
+            new_value="erase-all@example.com",
+            changed_by=user.id,
+        ),
+        AuditLog(
+            actor_user_id=user.id,
+            actor_email=user.email,
+            tenant_id=tenant.id,
+            action="candidate.update",
+            resource_type="candidate",
+            resource_id=candidate.id,
+            details='{"email":"erase-all@example.com"}',
+        ),
+    ])
+    db.commit()
+
+    outcome = gdpr_service.hard_delete_candidate(db, candidate.id, tenant.id)
+
+    assert outcome.get("error") is None
+    assert outcome["candidate_notes"] == 1
+    assert outcome["transcripts"] == 1
+    assert outcome["hiring_outcomes"] == 1
+    assert db.get(Candidate, candidate.id) is None
+    db.refresh(merged_child)
+    assert merged_child.merged_into_id is None
+    assert db.query(Comment).filter_by(result_id=result.id).count() == 0
+    assert db.query(FieldAuditLog).filter_by(entity_type="candidate", entity_id=candidate.id).count() == 0
+    retained_audit = db.query(AuditLog).filter_by(action="candidate.update").one()
+    assert retained_audit.resource_id is None
+    assert "erase-all@example.com" not in retained_audit.details
+
+
+def test_pending_object_deletion_respects_active_lease_and_reclaims_expired_lease(
+    db, monkeypatch, seed_subscription_plans
+):
+    from app.backend.models.db_models import PendingObjectDeletion, Tenant
+    from app.backend.services import gdpr_service
+
+    monkeypatch.setattr(
+        "app.backend.services.object_storage.ObjectStorageService.is_available",
+        staticmethod(lambda: True),
+    )
+    calls = []
+    monkeypatch.setattr(
+        "app.backend.services.object_storage.ObjectStorageService.delete",
+        staticmethod(lambda key: calls.append(key) or True),
+    )
+    tenant = Tenant(name="Lease Tenant", slug="lease-tenant")
+    db.add(tenant)
+    db.commit()
+    active = PendingObjectDeletion(
+        tenant_id=tenant.id,
+        storage_key="tenant/lease/active.pdf",
+        status="pending",
+        lease_owner="active-worker",
+        lease_expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
+    )
+    expired = PendingObjectDeletion(
+        tenant_id=tenant.id,
+        storage_key="tenant/lease/expired.pdf",
+        status="pending",
+        lease_owner="dead-worker",
+        lease_expires_at=datetime.now(timezone.utc) - timedelta(minutes=1),
+    )
+    db.add_all([active, expired])
+    db.commit()
+
+    summary = gdpr_service.process_pending_object_deletions(db)
+
+    assert summary["processed"] == 1
+    assert calls == ["tenant/lease/expired.pdf"]
+    db.refresh(active)
+    db.refresh(expired)
+    assert active.status == "pending"
+    assert active.lease_owner == "active-worker"
+    assert expired.status == "completed"
+    assert expired.lease_owner is None
+    assert expired.lease_expires_at is None
+
+
+def test_reused_object_key_resets_terminal_outbox_state(
+    db, monkeypatch, seed_subscription_plans
+):
+    from app.backend.models.db_models import Candidate, PendingObjectDeletion, Tenant
+    from app.backend.services import gdpr_service
+
+    monkeypatch.setattr(
+        "app.backend.services.object_storage.ObjectStorageService.is_available",
+        staticmethod(lambda: False),
+    )
+    tenant = Tenant(name="Reused Key", slug="reused-object-key")
+    db.add(tenant)
+    db.commit()
+    old_candidate = Candidate(tenant_id=tenant.id, name="Old", email="old-key@example.com")
+    new_candidate = Candidate(
+        tenant_id=tenant.id,
+        name="New",
+        email="new-key@example.com",
+        resume_file_key="tenant/reused/resume.pdf",
+    )
+    db.add_all([old_candidate, new_candidate])
+    db.commit()
+    terminal_time = datetime.now(timezone.utc) - timedelta(days=1)
+    row = PendingObjectDeletion(
+        tenant_id=tenant.id,
+        candidate_id=old_candidate.id,
+        storage_key="tenant/reused/resume.pdf",
+        status="completed",
+        workflow_type="hard_delete",
+        workflow_status="completed",
+        attempts=2,
+        completed_at=terminal_time,
+        finalized_at=terminal_time,
+        dead_lettered_at=terminal_time,
+        lease_owner="old-worker",
+        lease_expires_at=terminal_time,
+    )
+    db.add(row)
+    db.commit()
+
+    outcome = gdpr_service.hard_delete_candidate(db, new_candidate.id, tenant.id)
+
+    assert outcome["error"] == "object_storage_delete_incomplete"
+    db.refresh(row)
+    assert row.candidate_id == new_candidate.id
+    assert row.status == "pending"
+    assert row.workflow_status == "object_pending"
+    assert row.completed_at is None
+    assert row.finalized_at is None
+    assert row.dead_lettered_at is None
+    assert row.lease_owner is None
+    assert row.lease_expires_at is None
+
+
+def test_retention_cleanup_uses_each_tenant_policy(db, seed_subscription_plans):
+    from app.backend.models.db_models import Candidate, DataRetentionPolicy, Tenant
+    from app.backend.services import gdpr_service
+
+    now = datetime.now(timezone.utc)
+    short_tenant = Tenant(name="Short Retention", slug="short-retention")
+    long_tenant = Tenant(name="Long Retention", slug="long-retention")
+    db.add_all([short_tenant, long_tenant])
+    db.commit()
+    db.refresh(short_tenant)
+    db.refresh(long_tenant)
+    db.add_all([
+        DataRetentionPolicy(tenant_id=short_tenant.id, candidate_retention_days=30),
+        DataRetentionPolicy(tenant_id=long_tenant.id, candidate_retention_days=365),
+    ])
+    short_candidate = Candidate(
+        tenant_id=short_tenant.id,
+        name="Short Window",
+        email="short@example.com",
+        created_at=now - timedelta(days=60),
+    )
+    long_candidate = Candidate(
+        tenant_id=long_tenant.id,
+        name="Long Window",
+        email="long@example.com",
+        created_at=now - timedelta(days=60),
+    )
+    db.add_all([short_candidate, long_candidate])
+    db.commit()
+
+    result = gdpr_service.cleanup_expired_data_for_all_tenants(db)
+    assert result["tenants_processed"] >= 2
+    assert result["anonymized"] == 1
+
+    db.refresh(short_candidate)
+    db.refresh(long_candidate)
+    assert short_candidate.name.startswith("[ANONYMIZED_")
+    assert long_candidate.name == "Long Window"
+
+
 def test_anonymize_removes_pii_marker(db, seed_subscription_plans):
     from app.backend.models.db_models import Candidate, ScreeningResult, Tenant
     from app.backend.services import gdpr_service
@@ -457,6 +746,40 @@ async def test_voice_llm_uses_external_ai_boundary(monkeypatch):
     assert result == {"ok": True}
     assert "jane.audit@example.com" not in captured["prompt"]
     assert "[EMAIL]" in captured["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_training_modelfile_redacts_feedback_before_provider(monkeypatch):
+    from app.backend.routes import training
+    from app.backend.db import database
+
+    captured = {}
+
+    class FakeDb:
+        def close(self):
+            return None
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def post(self, _url, *, json):
+            captured["modelfile"] = json["modelfile"]
+
+    monkeypatch.setattr(database, "SessionLocal", lambda: FakeDb())
+    monkeypatch.setattr(training, "_upsert_run", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(training.httpx, "AsyncClient", lambda *args, **kwargs: FakeClient())
+
+    await training._train_model(
+        123,
+        "aria-123",
+        [{"fit_score": 91, "outcome": "hired", "feedback": "Email jane.audit@example.com"}],
+    )
+
+    assert "jane.audit@example.com" not in captured["modelfile"].lower()
 
 
 def test_direct_ai_provider_calls_are_confined_to_adapter_modules():

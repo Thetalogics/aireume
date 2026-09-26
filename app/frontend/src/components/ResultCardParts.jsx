@@ -487,6 +487,8 @@ export function ScoreBreakdownPanel({ scoreBreakdown, recommendationRationale, r
 // ─── Analysis source badge ────────────────────────────────────────────────────
 
 export function AnalysisSourceBadge({ narrativeReady, isPolling, analysisQuality, aiEnhanced, generationMode }) {
+  const resolvedGenerationMode = generationMode ?? (aiEnhanced === true ? 'ai' : aiEnhanced === false ? 'deterministic_fallback' : null)
+
   if (isPolling) {
     return (
       <div className="flex items-center gap-3 p-3 bg-brand-50 ring-1 ring-brand-200 rounded-2xl">
@@ -499,7 +501,7 @@ export function AnalysisSourceBadge({ narrativeReady, isPolling, analysisQuality
   }
 
   // Only show "AI Generated Report" badge for real LLM narratives.
-  if (narrativeReady && (generationMode === 'ai' || aiEnhanced === true)) {
+  if (narrativeReady && resolvedGenerationMode === 'ai') {
     return (
       <div className="flex items-center gap-3 p-3 bg-green-50 ring-1 ring-green-200 rounded-2xl">
         <Sparkles className="w-4 h-4 text-green-600 shrink-0" />
@@ -520,7 +522,7 @@ export function AnalysisSourceBadge({ narrativeReady, isPolling, analysisQuality
   }
 
   // Show explicit standard mode for deterministic fallbacks.
-  if (narrativeReady && (generationMode === 'deterministic_fallback' || aiEnhanced === false)) {
+  if (narrativeReady && resolvedGenerationMode === 'deterministic_fallback') {
     return (
       <div className="flex items-center gap-3 p-3 bg-amber-50 ring-1 ring-amber-200 rounded-2xl">
         <CheckCircle className="w-4 h-4 text-amber-600 shrink-0" />
