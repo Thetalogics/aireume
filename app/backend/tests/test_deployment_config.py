@@ -98,6 +98,10 @@ def test_release_manifest_requires_exact_sha_staging_e2e():
     assert "needs: [resolve-tag, build-and-push, authenticated-staging-e2e]" in CD
     assert "Wait for healthy staging deployment at the expected SHA" in E2E_STAGING
     assert "E2E_EXPECTED_SHA" in E2E_STAGING
+    assert "vars.E2E_BASE_URL" in E2E_STAGING
+    assert "secrets.E2E_EMAIL" in E2E_STAGING
+    assert "secrets.E2E_PASSWORD" in E2E_STAGING
+    assert "E2E_RECRUITER_EMAIL" not in E2E_STAGING
 
 
 def test_backend_dependencies_are_hash_locked_and_used_everywhere():

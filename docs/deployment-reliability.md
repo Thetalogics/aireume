@@ -83,9 +83,9 @@ registration, email verification, TOTP enrollment, login, onboarding, session
 reload, and logout without mocking browser-to-API traffic.
 
 CD then calls `.github/workflows/e2e-staging.yml` after publishing the candidate
-images. The workflow requires GitHub environment `staging-e2e` secrets
-(`E2E_BASE_URL`, `E2E_WORKSPACE`, `E2E_RECRUITER_EMAIL`,
-`E2E_RECRUITER_PASSWORD`) for a dedicated non-privileged account. It waits for
+images. The workflow requires GitHub environment `staging-e2e` variable
+`E2E_BASE_URL` plus `E2E_WORKSPACE`, `E2E_EMAIL`, and `E2E_PASSWORD` secrets for
+a dedicated non-privileged account. It waits for
 both `/ready` and `/api/version`, requires the deployed backend and frontend to
 report the candidate SHA, and runs the authenticated critical flow. Missing
 secrets, deployment drift, and test failures all block release-manifest creation;

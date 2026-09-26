@@ -44,9 +44,9 @@ PostgreSQL backups and object-storage versioning are operational requirements, n
 
 ## Staging E2E
 
-`.github/workflows/e2e-staging.yml` requires `E2E_BASE_URL`, `E2E_WORKSPACE`,
-`E2E_RECRUITER_EMAIL`, and `E2E_RECRUITER_PASSWORD` in the `staging-e2e`
-GitHub environment. CD passes the candidate SHA, and the workflow must prove
+`.github/workflows/e2e-staging.yml` requires the `E2E_BASE_URL` variable and
+`E2E_WORKSPACE`, `E2E_EMAIL`, and `E2E_PASSWORD` secrets in the `staging-e2e`
+GitHub environment or repository. CD passes the candidate SHA, and the workflow must prove
 that both the deployed frontend and backend are that build before running the
 authenticated critical flow. Missing configuration, an older deployment, and
 test failures fail the gate rather than skipping it.

@@ -16,10 +16,8 @@ on:
 
 # Deployment-environment gate. CD requires this workflow before emitting an
 # approved immutable release manifest; it can also be dispatched manually.
-# Requires GitHub environment `staging-e2e` secrets:
-#   E2E_BASE_URL
-#   E2E_RECRUITER_EMAIL
-#   E2E_RECRUITER_PASSWORD
+# Requires GitHub environment `staging-e2e` variable `E2E_BASE_URL` and
+# repository/environment secrets `E2E_EMAIL`, `E2E_PASSWORD`, `E2E_WORKSPACE`.
 # MFA must be disabled only on this dedicated non-privileged test account.
 # Application MFA policy is not changed by this workflow.
 
@@ -34,20 +32,20 @@ jobs:
           node-version: "22"
       - name: Require dedicated test-account secrets
         env:
-          E2E_BASE_URL: ${{ secrets.E2E_BASE_URL }}
-          E2E_RECRUITER_EMAIL: ${{ secrets.E2E_RECRUITER_EMAIL }}
-          E2E_RECRUITER_PASSWORD: ${{ secrets.E2E_RECRUITER_PASSWORD }}
+          E2E_BASE_URL: ${{ vars.E2E_BASE_URL }}
+          E2E_EMAIL: ${{ secrets.E2E_EMAIL }}
+          E2E_PASSWORD: ${{ secrets.E2E_PASSWORD }}
           E2E_WORKSPACE: ${{ secrets.E2E_WORKSPACE }}
         run: |
           set -euo pipefail
-          if [ -z "${E2E_BASE_URL}" ] || [ -z "${E2E_RECRUITER_EMAIL}" ] || [ -z "${E2E_RECRUITER_PASSWORD}" ] || [ -z "${E2E_WORKSPACE}" ]; then
-            echo "Missing staging-e2e secrets. Configure E2E_BASE_URL, E2E_WORKSPACE, E2E_RECRUITER_EMAIL, E2E_RECRUITER_PASSWORD."
+          if [ -z "${E2E_BASE_URL}" ] || [ -z "${E2E_EMAIL}" ] || [ -z "${E2E_PASSWORD}" ] || [ -z "${E2E_WORKSPACE}" ]; then
+            echo "Missing staging E2E configuration. Set environment variable E2E_BASE_URL and secrets E2E_WORKSPACE, E2E_EMAIL, E2E_PASSWORD."
             echo "Use a dedicated non-privileged recruiter with MFA disabled only on that account."
             exit 1
           fi
       - name: Wait for healthy staging deployment at the expected SHA
         env:
-          E2E_BASE_URL: ${{ secrets.E2E_BASE_URL }}
+          E2E_BASE_URL: ${{ vars.E2E_BASE_URL }}
           EXPECTED_SHA: ${{ inputs.expected_sha }}
         run: |
           set -euo pipefail
@@ -69,10 +67,10 @@ jobs:
         run: npm ci && npx playwright install --with-deps chromium
       - name: Run authenticated staging specs
         env:
-          E2E_BASE_URL: ${{ secrets.E2E_BASE_URL }}
-          PLAYWRIGHT_BASE_URL: ${{ secrets.E2E_BASE_URL }}
-          E2E_EMAIL: ${{ secrets.E2E_RECRUITER_EMAIL }}
-          E2E_PASSWORD: ${{ secrets.E2E_RECRUITER_PASSWORD }}
+          E2E_BASE_URL: ${{ vars.E2E_BASE_URL }}
+          PLAYWRIGHT_BASE_URL: ${{ vars.E2E_BASE_URL }}
+          E2E_EMAIL: ${{ secrets.E2E_EMAIL }}
+          E2E_PASSWORD: ${{ secrets.E2E_PASSWORD }}
           E2E_WORKSPACE: ${{ secrets.E2E_WORKSPACE }}
           E2E_EXPECTED_SHA: ${{ inputs.expected_sha }}
         run: npx playwright test --config=playwright.staging.config.ts
