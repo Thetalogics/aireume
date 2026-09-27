@@ -9,6 +9,9 @@ CD = (ROOT / ".github" / "workflows" / "cd.yml").read_text(encoding="utf-8")
 CI = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
 DOCKERFILE = (ROOT / "app" / "backend" / "Dockerfile").read_text(encoding="utf-8")
 E2E_STAGING = (ROOT / ".github" / "workflows" / "e2e-staging.yml").read_text(encoding="utf-8")
+DEPLOY_STAGING = (ROOT / ".github" / "workflows" / "deploy-staging.yml").read_text(
+    encoding="utf-8"
+)
 E2E_INTEGRATION = (ROOT / "e2e" / "ci-real-backend.spec.ts").read_text(encoding="utf-8")
 
 
@@ -93,15 +96,31 @@ def test_ci_has_unmocked_browser_to_database_gate():
 
 
 def test_release_manifest_requires_exact_sha_staging_e2e():
+    assert "deploy-staging:" in CD
+    assert "uses: ./.github/workflows/deploy-staging.yml" in CD
+    assert "needs: [resolve-tag, build-and-push, deploy-staging]" in CD
     assert "authenticated-staging-e2e:" in CD
     assert "expected_sha: ${{ needs.resolve-tag.outputs.release_sha }}" in CD
-    assert "needs: [resolve-tag, build-and-push, authenticated-staging-e2e]" in CD
+    assert (
+        "needs: [resolve-tag, build-and-push, deploy-staging, authenticated-staging-e2e]"
+        in CD
+    )
     assert "Wait for healthy staging deployment at the expected SHA" in E2E_STAGING
     assert "E2E_EXPECTED_SHA" in E2E_STAGING
     assert "vars.E2E_BASE_URL" in E2E_STAGING
     assert "secrets.E2E_EMAIL" in E2E_STAGING
     assert "secrets.E2E_PASSWORD" in E2E_STAGING
     assert "E2E_RECRUITER_EMAIL" not in E2E_STAGING
+
+
+def test_staging_deploy_is_explicit_and_fail_closed():
+    assert "workflow_call:" in DEPLOY_STAGING
+    assert "VPS_SSH_KEY" in DEPLOY_STAGING
+    assert "docker login --username" in DEPLOY_STAGING
+    assert "docker pull" in DEPLOY_STAGING
+    assert "--run-once --cleanup --rolling-restart" in DEPLOY_STAGING
+    assert "staging-backend staging-frontend staging-nginx" in DEPLOY_STAGING
+    assert "|| echo" not in DEPLOY_STAGING
 
 
 def test_backend_dependencies_are_hash_locked_and_used_everywhere():

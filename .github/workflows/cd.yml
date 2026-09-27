@@ -194,12 +194,19 @@ jobs:
         cache-to: type=gha,mode=max
         provenance: false
 
-  # Main builds are exercised after staging picks up the immutable SHA. For a
-  # production promotion, staging must already report that exact SHA. This is
-  # the deployment-environment gate; CI separately runs hermetic real-backend
-  # E2E for every pull request and protected-branch push.
-  authenticated-staging-e2e:
+  deploy-staging:
     needs: [resolve-tag, build-and-push]
+    uses: ./.github/workflows/deploy-staging.yml
+    with:
+      target_environment: ${{ needs.resolve-tag.outputs.environment }}
+      expected_sha: ${{ needs.resolve-tag.outputs.release_sha }}
+    secrets: inherit
+
+  # Main builds are exercised only after explicit staging reconciliation. For
+  # production promotion, staging must already report that exact SHA. CI also
+  # runs hermetic real-backend E2E for every protected-branch push.
+  authenticated-staging-e2e:
+    needs: [resolve-tag, build-and-push, deploy-staging]
     uses: ./.github/workflows/e2e-staging.yml
     with:
       expected_sha: ${{ needs.resolve-tag.outputs.release_sha }}
@@ -207,7 +214,7 @@ jobs:
 
   # ─── Summary ────────────────────────────────────────────────────────────
   deploy-summary:
-    needs: [resolve-tag, build-and-push, authenticated-staging-e2e]
+    needs: [resolve-tag, build-and-push, deploy-staging, authenticated-staging-e2e]
     runs-on: ubuntu-latest
     steps:
       - name: Create immutable release manifest
@@ -248,7 +255,7 @@ jobs:
           echo "Environment: ${{ needs.resolve-tag.outputs.environment }}"
           echo "Image tag:   ${{ needs.resolve-tag.outputs.image_tag }}"
           echo ""
-          echo "Staging: Watchtower auto-pulls updated images within ~60 seconds (tag: staging)."
+          echo "Staging: CD reconciled the web containers with the published staging images."
           echo "Production: Watchtower is MONITOR-ONLY by default (approval gate)."
           echo "  Download the release-manifest-${{ needs.resolve-tag.outputs.release_sha }} artifact after approval."
           echo "    docker compose --env-file release-manifest.env -f docker-compose.prod.yml pull"

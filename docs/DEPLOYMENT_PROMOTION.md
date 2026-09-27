@@ -34,9 +34,10 @@ Prefer digest pin when the registry digest is known:
 image: <user>/resume-backend@sha256:<digest>
 ```
 
-The `staging-e2e` GitHub environment must target a deployment mechanism that
-updates staging from the `:staging` alias on `main`. The release gate waits up to
-six minutes for the candidate SHA and fails if staging remains on an older build.
+CD explicitly reconciles the three staging web containers from the `:staging`
+images through `.github/workflows/deploy-staging.yml`; persistent Watchtower is
+only a secondary recovery mechanism. The release gate then waits up to six
+minutes for the candidate SHA and fails if staging remains on an older build.
 
 ## Production promotion
 
