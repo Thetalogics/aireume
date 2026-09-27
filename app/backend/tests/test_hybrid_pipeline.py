@@ -682,6 +682,23 @@ class TestMergeLlmIntoResult:
         merged = _merge_llm_into_result(python_result, fallback_result)
         assert merged.get("ai_enhanced") is False
 
+    def test_ai_merge_clears_stale_fallback_markers(self):
+        python_result = {
+            "fit_score": 75,
+            "narrative_fallback": True,
+            "recommendation_rationale": "Automated narrative unavailable — manual review recommended.",
+        }
+        llm_result = {
+            "ai_enhanced": True,
+            "fit_summary": "Evidence-based AI summary",
+            "recommendation_rationale": "Automated narrative unavailable — manual review recommended.",
+        }
+
+        merged = _merge_llm_into_result(python_result, llm_result)
+
+        assert merged["narrative_fallback"] is False
+        assert merged["recommendation_rationale"] == ""
+
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

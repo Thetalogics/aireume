@@ -102,6 +102,14 @@ mary@example.com
 """
         assert parser._extract_name(text) == "Mary-Jane Smith"
 
+    def test_extract_name_rejects_doubled_pdf_glyph_noise(self):
+        from app.backend.services.parser_service import ResumeParser
+
+        parser = ResumeParser()
+        text = "PPRRIICCIINNGG OOFF PPRROODDUUCCTTSS\nSenior Financial Analyst"
+
+        assert parser._extract_name(text) == ""
+
     def test_extract_name_pipe_before_phone(self):
         parser = ResumeParser()
         text = """

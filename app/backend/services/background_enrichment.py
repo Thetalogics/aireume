@@ -575,6 +575,10 @@ def _normalize_interview_kit(data: dict) -> dict:
         or iq.get("conversation_threads")
         or iq.get("interview_threads")
     )
+    if not threads and any(key in iq for key in ("steps", "questions", "items")):
+        # Some providers return one valid thread as the root object instead of
+        # wrapping it in {"threads": [...]}. Preserve that usable structure.
+        threads = _coerce_kit_threads([iq])
 
     normalized = {
         "kit_version": iq.get("kit_version", 3),
@@ -957,6 +961,8 @@ async def background_voice_strategy(
 
     log.info("Voice strategy pre-build started for screening_result_id=%s", screening_result_id)
 
+    context = None
+    config_hash = voice_strategy_config_hash(DEFAULT_VOICE_STRATEGY_CONFIG)
     db = SessionLocal()
     try:
         row = db.query(ScreeningResult).filter(
@@ -979,45 +985,48 @@ async def background_voice_strategy(
         db.commit()
 
         context_engine = InterviewContextEngine()
-        agent = InterviewStrategyAgent()
         context = context_engine.build_context(
             db,
             candidate_id=row.candidate_id,
             screening_result_id=screening_result_id,
             jd_id=jd_id,
         )
-        config_hash = voice_strategy_config_hash(DEFAULT_VOICE_STRATEGY_CONFIG)
+    finally:
+        db.close()
 
-        try:
-            strategy = await asyncio.wait_for(
-                agent.generate_strategy(context, DEFAULT_VOICE_STRATEGY_CONFIG),
-                timeout=VOICE_STRATEGY_TIMEOUT,
-            )
-            db.refresh(row, with_for_update=True)
-            if row.analysis_generation != expected_generation:
-                db.rollback()
-                return
-            row.voice_strategy_json = json.dumps(strategy, default=str)
-            row.voice_strategy_status = "ready"
-            row.voice_strategy_config_hash = config_hash
-            db.commit()
-            log.info("Voice strategy pre-built for screening_result_id=%s", screening_result_id)
-        except Exception as err:
-            log.warning(
-                "Voice strategy pre-build failed for screening_result_id=%s: %s: %s",
-                screening_result_id,
-                type(err).__name__,
-                str(err)[:200],
-            )
-            fallback = agent._build_fallback_strategy(context, DEFAULT_VOICE_STRATEGY_CONFIG)
-            db.refresh(row, with_for_update=True)
-            if row.analysis_generation != expected_generation:
-                db.rollback()
-                return
-            row.voice_strategy_json = json.dumps(fallback, default=str)
-            row.voice_strategy_status = "fallback"
-            row.voice_strategy_config_hash = config_hash
-            db.commit()
+    # Never hold a database connection while waiting on an external provider.
+    agent = InterviewStrategyAgent()
+    strategy_status = "ready"
+    try:
+        strategy = await asyncio.wait_for(
+            agent.generate_strategy(context, DEFAULT_VOICE_STRATEGY_CONFIG),
+            timeout=VOICE_STRATEGY_TIMEOUT,
+        )
+    except Exception as err:
+        log.warning(
+            "Voice strategy pre-build failed for screening_result_id=%s: %s: %s",
+            screening_result_id,
+            type(err).__name__,
+            str(err)[:200],
+        )
+        strategy = agent._build_fallback_strategy(context, DEFAULT_VOICE_STRATEGY_CONFIG)
+        strategy_status = "fallback"
+
+    db = SessionLocal()
+    try:
+        row = db.query(ScreeningResult).filter(
+            ScreeningResult.id == screening_result_id,
+            ScreeningResult.tenant_id == tenant_id,
+            ScreeningResult.analysis_generation == expected_generation,
+        ).with_for_update().first()
+        if row is None:
+            db.rollback()
+            return
+        row.voice_strategy_json = json.dumps(strategy, default=str)
+        row.voice_strategy_status = strategy_status
+        row.voice_strategy_config_hash = config_hash
+        db.commit()
+        log.info("Voice strategy pre-built for screening_result_id=%s", screening_result_id)
     finally:
         db.close()
 
@@ -1151,7 +1160,9 @@ async def complete_enrichment_job(job, db, *, expected_worker_id: str) -> bool:
         log.warning("lease_lost before enrichment job commit job_id=%s", job.id)
         return False
 
-    cfg = locked.job_config or {}
+    job_id = locked.id
+    job_type = locked.job_type
+    cfg = dict(locked.job_config or {})
     screening_result_id = int(cfg["screening_result_id"])
     expected_generation = int(cfg["expected_generation"])
     tenant_id = locked.tenant_id
@@ -1159,7 +1170,7 @@ async def complete_enrichment_job(job, db, *, expected_worker_id: str) -> bool:
     locked.progress_percent = 40
     db.commit()
 
-    if locked.job_type == "llm_narrative":
+    if job_type == "llm_narrative":
         from app.backend.services.hybrid_pipeline import _background_llm_narrative
 
         await _background_llm_narrative(
@@ -1170,7 +1181,7 @@ async def complete_enrichment_job(job, db, *, expected_worker_id: str) -> bool:
             expected_analysis_generation=expected_generation,
             screening_decision_id=cfg.get("screening_decision_id"),
         )
-    elif locked.job_type == "interview_kit":
+    elif job_type == "interview_kit":
         await background_interview_kit(
             screening_result_id,
             tenant_id,
@@ -1178,18 +1189,18 @@ async def complete_enrichment_job(job, db, *, expected_worker_id: str) -> bool:
             cfg.get("python_result") or {},
             expected_generation=expected_generation,
         )
-    elif locked.job_type == "voice_strategy":
+    elif job_type == "voice_strategy":
         await background_voice_strategy(
             screening_result_id,
             tenant_id,
             expected_generation=expected_generation,
         )
     else:
-        raise ValueError(f"Unsupported enrichment job type: {locked.job_type}")
+        raise ValueError(f"Unsupported enrichment job type: {job_type}")
 
     locked = (
         db.query(AnalysisJob)
-        .filter(AnalysisJob.id == job.id)
+        .filter(AnalysisJob.id == job_id)
         .with_for_update()
         .populate_existing()
         .one()
@@ -1203,7 +1214,7 @@ async def complete_enrichment_job(job, db, *, expected_worker_id: str) -> bool:
         or (lease is not None and lease < datetime.now(timezone.utc))
     ):
         db.rollback()
-        log.warning("lease_lost after enrichment job body job_id=%s", job.id)
+        log.warning("lease_lost after enrichment job body job_id=%s", job_id)
         return False
     locked.status = "completed"
     locked.completed_at = datetime.now(timezone.utc)

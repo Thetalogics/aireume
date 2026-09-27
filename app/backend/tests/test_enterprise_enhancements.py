@@ -187,6 +187,37 @@ def test_pii_does_not_download_large_spacy_model(monkeypatch):
     assert "candidate@example.com" not in result.redacted_text
 
 
+def test_presidio_uses_operator_configs_and_regex_covers_unsupported_entities():
+    from types import SimpleNamespace
+
+    from app.backend.services.pii_redaction_service import PIIRedactionService
+
+    class Analyzer:
+        def analyze(self, *, text, entities, language):
+            assert "ORGANIZATION" in entities
+            assert "UK_NINO" not in entities
+            return [SimpleNamespace(entity_type="PERSON", start=0, end=8, score=0.99)]
+
+    class Anonymizer:
+        def anonymize(self, *, text, analyzer_results, operators):
+            assert all(hasattr(config, "operator_name") for config in operators.values())
+            return SimpleNamespace(text=text.replace("Jane Doe", "CANDIDATE"))
+
+    service = PIIRedactionService.__new__(PIIRedactionService)
+    service.use_presidio = True
+    service.analyzer = Analyzer()
+    service.anonymizer = Anonymizer()
+    service.supported_entities = {"PERSON", "ORGANIZATION"}
+
+    result = service._redact_with_presidio("Jane Doe has NINO AB123456C")
+
+    assert "Jane Doe" not in result.redacted_text
+    assert "AB123456C" not in result.redacted_text
+    assert result.redaction_count == 2
+    assert result.redaction_map["PERSON"] == ["Jane Doe"]
+    assert result.redaction_map["UK_NINO"] == ["AB123456C"]
+
+
 class TestInternationalPII:
     def test_uk_nino_redaction(self):
         from app.backend.services.pii_redaction_service import PIIRedactionService

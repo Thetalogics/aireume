@@ -39,6 +39,20 @@ class TestNormalizeInterviewKit:
         assert len(out["threads"]) >= 1
         assert sum(len(t.get("steps") or []) for t in out["threads"]) >= 2
 
+    def test_wraps_single_thread_returned_as_root_object(self):
+        raw = {
+            "id": "ownership",
+            "kind": "ownership",
+            "title": "Ownership",
+            "steps": [{"text": f"Question {i}?"} for i in range(MIN_USABLE_KIT_QUESTIONS)],
+        }
+
+        out = _normalize_interview_kit(raw)
+
+        assert len(out["threads"]) == 1
+        assert len(out["threads"][0]["steps"]) == MIN_USABLE_KIT_QUESTIONS
+        assert _kit_meets_minimum(raw) is True
+
     def test_rejects_string_interview_questions(self):
         raw = {"interview_questions": "not an object"}
         out = _normalize_interview_kit(raw)

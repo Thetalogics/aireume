@@ -485,3 +485,88 @@ async def test_transient_db_write_failure_never_marks_queue_job_succeeded(
     current = db.get(AnalysisJob, job_id)
     assert current.status == "retrying"
     assert current.status != "completed"
+
+
+def test_queue_default_concurrency_tracks_worker_pool(monkeypatch):
+    from app.backend.services.queue_manager import QueueManager
+
+    monkeypatch.delenv("QUEUE_MAX_CONCURRENT", raising=False)
+    monkeypatch.setenv("WORKER_DATABASE_POOL_SIZE", "4")
+
+    assert QueueManager().max_concurrent_jobs == 4
+
+
+@pytest.mark.asyncio
+async def test_voice_strategy_closes_read_session_before_provider_wait(monkeypatch):
+    from types import SimpleNamespace
+
+    from app.backend.services.background_enrichment import background_voice_strategy
+
+    read_row = SimpleNamespace(
+        candidate_id=10,
+        role_template_id=20,
+        requisition_id=None,
+        voice_strategy_status="pending",
+    )
+    write_row = SimpleNamespace(
+        voice_strategy_json=None,
+        voice_strategy_status="processing",
+        voice_strategy_config_hash=None,
+    )
+
+    class Query:
+        def __init__(self, row):
+            self.row = row
+
+        def filter(self, *_args):
+            return self
+
+        def with_for_update(self):
+            return self
+
+        def first(self):
+            return self.row
+
+    class Session:
+        def __init__(self, row):
+            self.row = row
+            self.closed = False
+
+        def query(self, *_args):
+            return Query(self.row)
+
+        def commit(self):
+            return None
+
+        def rollback(self):
+            return None
+
+        def close(self):
+            self.closed = True
+
+    sessions = [Session(read_row), Session(write_row)]
+    monkeypatch.setattr(
+        "app.backend.db.database.SessionLocal",
+        lambda: sessions.pop(0),
+    )
+    monkeypatch.setattr(
+        "app.backend.services.recruiter.context_engine.InterviewContextEngine.build_context",
+        lambda *_args, **_kwargs: {"candidate": {}, "role": {}, "probe_areas": []},
+    )
+
+    read_session = sessions[0]
+
+    async def generate(_self, _context, _config):
+        assert read_session.closed is True
+        return {"questions": []}
+
+    monkeypatch.setattr(
+        "app.backend.services.recruiter.strategy_agent.InterviewStrategyAgent.generate_strategy",
+        generate,
+    )
+
+    await background_voice_strategy(30, 40, expected_generation=1)
+
+    assert read_session.closed is True
+    assert write_row.voice_strategy_status == "ready"
+    assert write_row.voice_strategy_json == '{"questions": []}'

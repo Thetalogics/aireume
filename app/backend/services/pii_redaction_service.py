@@ -35,6 +35,7 @@ class PIIRedactionService:
         self.use_presidio = False
         self.analyzer = None
         self.anonymizer = None
+        self.supported_entities = set()
         
         try:
             import spacy
@@ -52,6 +53,7 @@ class PIIRedactionService:
             }).create_engine()
             self.analyzer = AnalyzerEngine(nlp_engine=nlp_engine, supported_languages=["en"])
             self.anonymizer = AnonymizerEngine()
+            self.supported_entities = set(self.analyzer.get_supported_entities(language="en"))
             self.use_presidio = True
             logger.info("Presidio PII redaction initialized with en_core_web_sm")
         except Exception as exc:
@@ -75,36 +77,22 @@ class PIIRedactionService:
     def _redact_with_presidio(self, text: str) -> RedactionResult:
         """Redact using Presidio (enterprise-grade)."""
         try:
+            from presidio_anonymizer.entities import OperatorConfig
+
+            requested_entities = {
+                "PERSON", "EMAIL_ADDRESS", "PHONE_NUMBER", "LOCATION",
+                "ORGANIZATION", "URL", "US_SSN", "CREDIT_CARD",
+                "UK_NHS_NUMBER", "UK_NINO", "ES_NIF", "ES_NIE", "FR_CNI",
+                "IT_FISCAL_CODE", "IT_VAT_CODE", "DE_VAT", "SG_NRIC_FIN",
+                "IN_AADHAAR", "IN_PAN", "AU_ABN", "AU_TFN", "IBAN_CODE",
+                "IP_ADDRESS", "DATE_TIME",
+            }
+            entities = sorted(requested_entities.intersection(self.supported_entities))
+
             # Analyze text for PII entities
             results = self.analyzer.analyze(
                 text=text,
-                entities=[
-                    "PERSON",
-                    "EMAIL_ADDRESS", 
-                    "PHONE_NUMBER",
-                    "LOCATION",
-                    "ORG",
-                    "URL",
-                    "US_SSN",
-                    "CREDIT_CARD",
-                    # International PII entities
-                    "UK_NHS_NUMBER",
-                    "UK_NINO",         # UK National Insurance Number
-                    "ES_NIF",          # Spain NIF
-                    "ES_NIE",          # Spain NIE
-                    "FR_CNI",          # France National ID
-                    "IT_FISCAL_CODE",  # Italy Codice Fiscale
-                    "IT_VAT_CODE",     # Italy VAT
-                    "DE_VAT",          # Germany VAT
-                    "SG_NRIC_FIN",     # Singapore NRIC/FIN
-                    "IN_AADHAAR",      # India Aadhaar
-                    "IN_PAN",          # India PAN
-                    "AU_ABN",          # Australia ABN
-                    "AU_TFN",          # Australia Tax File Number
-                    "IBAN_CODE",       # International Bank Account Number
-                    "IP_ADDRESS",      # IP addresses
-                    "DATE_TIME",       # Dates that could be DOB
-                ],
+                entities=entities,
                 language="en"
             )
             
@@ -128,14 +116,15 @@ class PIIRedactionService:
                 text=text,
                 analyzer_results=results,
                 operators={
-                    "PERSON": {"type": "replace", "new_value": "CANDIDATE"},
-                    "EMAIL_ADDRESS": {"type": "replace", "new_value": "EMAIL"},
-                    "PHONE_NUMBER": {"type": "replace", "new_value": "PHONE"},
-                    "LOCATION": {"type": "replace", "new_value": "LOCATION"},
-                    "ORG": {"type": "replace", "new_value": "ORGANIZATION"},
-                    "URL": {"type": "replace", "new_value": "URL"},
-                    "US_SSN": {"type": "replace", "new_value": "SSN"},
-                    "CREDIT_CARD": {"type": "replace", "new_value": "CARD"},
+                    "PERSON": OperatorConfig("replace", {"new_value": "CANDIDATE"}),
+                    "EMAIL_ADDRESS": OperatorConfig("replace", {"new_value": "EMAIL"}),
+                    "PHONE_NUMBER": OperatorConfig("replace", {"new_value": "PHONE"}),
+                    "LOCATION": OperatorConfig("replace", {"new_value": "LOCATION"}),
+                    "ORGANIZATION": OperatorConfig("replace", {"new_value": "ORGANIZATION"}),
+                    "URL": OperatorConfig("replace", {"new_value": "URL"}),
+                    "US_SSN": OperatorConfig("replace", {"new_value": "SSN"}),
+                    "CREDIT_CARD": OperatorConfig("replace", {"new_value": "CARD"}),
+                    "DEFAULT": OperatorConfig("replace", {"new_value": "REDACTED"}),
                 }
             )
             
@@ -146,10 +135,17 @@ class PIIRedactionService:
                 if scores
             }
             
+            # Presidio installations vary by recognizer bundle. Run the deterministic
+            # international patterns as a second pass so an unsupported recognizer can
+            # never create a privacy gap.
+            regex_result = self._redact_with_regex(anonymized.text)
+            for entity, values in regex_result.redaction_map.items():
+                redaction_map.setdefault(entity, []).extend(values)
+
             return RedactionResult(
-                redacted_text=anonymized.text,
+                redacted_text=regex_result.redacted_text,
                 redaction_map=redaction_map,
-                redaction_count=len(results),
+                redaction_count=len(results) + regex_result.redaction_count,
                 confidence_scores=avg_confidence
             )
             

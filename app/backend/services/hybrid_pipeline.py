@@ -2477,14 +2477,21 @@ def _merge_llm_into_result(
     ):
         llm_result.pop(key, None)
 
+    ai_enhanced = llm_result.get("ai_enhanced") is True
+    recommendation_rationale = llm_result.get("recommendation_rationale", "")
+    if ai_enhanced and "automated narrative unavailable" in recommendation_rationale.lower():
+        log.warning("Discarding contradictory fallback rationale from AI narrative")
+        recommendation_rationale = ""
+
     merged.update({
-        "ai_enhanced":            llm_result.get("ai_enhanced", False),  # True for LLM, False for fallback
+        "ai_enhanced":            ai_enhanced,
+        "narrative_fallback":     not ai_enhanced,
         "candidate_profile_summary": llm_result.get("candidate_profile_summary"),
         "fit_summary":            llm_result.get("fit_summary", ""),
         "strengths":              llm_result.get("strengths", []),
         "concerns":               final_concerns,
         "weaknesses":             final_weaknesses,
-        "recommendation_rationale": llm_result.get("recommendation_rationale", ""),
+        "recommendation_rationale": recommendation_rationale,
         "explainability":         llm_result.get("explainability", {}),
         "education_analysis":     llm_result.get("education_analysis", "") or llm_result.get("explainability", {}).get("education_rationale", ""),
     })

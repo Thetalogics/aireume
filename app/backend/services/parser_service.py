@@ -1600,6 +1600,12 @@ class ResumeParser:
             seg = seg.strip()
             if not seg or len(seg) < 2:
                 continue
+            # Some PDFs expose every glyph twice ("JJOOHHNN DDOOEE"). Such a
+            # line is extraction noise, not a trustworthy candidate identity.
+            compact = re.sub(r'\s+', '', seg)
+            paired = compact[::2] == compact[1::2] if len(compact) % 2 == 0 else False
+            if paired and len(compact) >= 8:
+                continue
             if '@' in seg or re.search(r'linkedin\.com/', seg, re.IGNORECASE):
                 continue
             if sum(1 for c in seg if c.isdigit()) > 2:

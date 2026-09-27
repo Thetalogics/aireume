@@ -91,7 +91,11 @@ class QueueManager:
         self.current_job_id: Optional[uuid.UUID] = None
         
         # Configuration
-        self.max_concurrent_jobs = max(1, min(32, int(os.getenv("QUEUE_MAX_CONCURRENT", "10"))))
+        # A job may need one primary connection plus a short-lived heartbeat or
+        # domain-write connection. Keep the default within the worker pool rather
+        # than oversubscribing a five-connection process by 2x.
+        default_concurrency = os.getenv("WORKER_DATABASE_POOL_SIZE", "3")
+        self.max_concurrent_jobs = max(1, min(32, int(os.getenv("QUEUE_MAX_CONCURRENT", default_concurrency))))
         self._job_semaphore = asyncio.Semaphore(self.max_concurrent_jobs)
         self.poll_interval_seconds = int(os.getenv("QUEUE_POLL_INTERVAL", "2"))
         self.heartbeat_interval_seconds = float(os.getenv("QUEUE_HEARTBEAT_INTERVAL", "30"))
