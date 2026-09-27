@@ -52,9 +52,19 @@ jobs:
         run: |
           set -euo pipefail
           install -m 700 -d "$HOME/.ssh"
-          printf '%s\n' "$VPS_SSH_KEY" | tr -d '\r' > "$HOME/.ssh/aria_deploy"
-          chmod 600 "$HOME/.ssh/aria_deploy"
-          ssh-keygen -y -f "$HOME/.ssh/aria_deploy" >/dev/null
+          key_path="$HOME/.ssh/aria_deploy"
+          if [[ "$VPS_SSH_KEY" == *'\n'* ]]; then
+            printf '%b\n' "$VPS_SSH_KEY" | tr -d '\r' > "$key_path"
+          else
+            printf '%s\n' "$VPS_SSH_KEY" | tr -d '\r' > "$key_path"
+          fi
+          chmod 600 "$key_path"
+          if ! ssh-keygen -y -f "$key_path" >/dev/null 2>&1; then
+            printf '%s' "$VPS_SSH_KEY" | base64 --decode > "$key_path.decoded"
+            mv "$key_path.decoded" "$key_path"
+            chmod 600 "$key_path"
+          fi
+          ssh-keygen -y -f "$key_path" >/dev/null
           ssh-keyscan -T 15 -H "$VPS_HOST" > "$HOME/.ssh/known_hosts"
           test -s "$HOME/.ssh/known_hosts"
           chmod 600 "$HOME/.ssh/known_hosts"

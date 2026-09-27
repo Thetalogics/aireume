@@ -116,6 +116,9 @@ def test_release_manifest_requires_exact_sha_staging_e2e():
 def test_staging_deploy_is_explicit_and_fail_closed():
     assert "workflow_call:" in DEPLOY_STAGING
     assert "VPS_SSH_KEY" in DEPLOY_STAGING
+    assert "printf '%b" in DEPLOY_STAGING
+    assert "base64 --decode" in DEPLOY_STAGING
+    assert "ssh-keygen -y" in DEPLOY_STAGING
     assert "docker login --username" in DEPLOY_STAGING
     assert "docker pull" in DEPLOY_STAGING
     assert "--run-once --cleanup --rolling-restart" in DEPLOY_STAGING
