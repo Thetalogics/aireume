@@ -43,6 +43,8 @@ jobs:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USERNAME: ${{ inputs.ssh_username || secrets.VPS_USERNAME }}
           VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_SSH_KNOWN_HOSTS: ${{ secrets.VPS_SSH_KNOWN_HOSTS }}
+          VPS_SSH_KEY_FINGERPRINT: ${{ vars.VPS_SSH_KEY_FINGERPRINT }}
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
@@ -53,7 +55,7 @@ jobs:
             exit 0
           fi
 
-          for name in VPS_HOST VPS_USERNAME VPS_SSH_KEY DOCKERHUB_USERNAME DOCKERHUB_TOKEN; do
+          for name in VPS_HOST VPS_USERNAME VPS_SSH_KEY VPS_SSH_KNOWN_HOSTS VPS_SSH_KEY_FINGERPRINT DOCKERHUB_USERNAME DOCKERHUB_TOKEN; do
             if [ -z "${!name:-}" ]; then
               echo "No Portainer webhook is configured and SSH deployment secret $name is missing." >&2
               exit 1
@@ -80,6 +82,8 @@ jobs:
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_SSH_KNOWN_HOSTS: ${{ secrets.VPS_SSH_KNOWN_HOSTS }}
+          VPS_SSH_KEY_FINGERPRINT: ${{ vars.VPS_SSH_KEY_FINGERPRINT }}
         run: |
           set -euo pipefail
           install -m 700 -d "$HOME/.ssh"
@@ -95,81 +99,39 @@ jobs:
             mv "$key_path.decoded" "$key_path"
             chmod 600 "$key_path"
           fi
-          ssh-keygen -y -f "$key_path" >/dev/null
-          ssh-keyscan -T 15 -H "$VPS_HOST" > "$HOME/.ssh/known_hosts"
+          ssh-keygen -y -f "$key_path" > "$key_path.pub"
+          actual_fingerprint="$(ssh-keygen -lf "$key_path.pub" -E sha256 | awk '{print $2}')"
+          if [ "$actual_fingerprint" != "$VPS_SSH_KEY_FINGERPRINT" ]; then
+            echo "VPS_SSH_KEY fingerprint does not match VPS_SSH_KEY_FINGERPRINT." >&2
+            exit 1
+          fi
+          printf '%s\n' "$VPS_SSH_KNOWN_HOSTS" | tr -d '\r' > "$HOME/.ssh/known_hosts"
           test -s "$HOME/.ssh/known_hosts"
+          ssh-keygen -F "$VPS_HOST" -f "$HOME/.ssh/known_hosts" >/dev/null
           chmod 600 "$HOME/.ssh/known_hosts"
 
-      - name: Authenticate staging host to Docker Hub
+      - name: Authenticate and reconcile staging containers
         if: ${{ inputs.target_environment != 'production' && steps.transport.outputs.transport == 'ssh' }}
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USERNAME: ${{ inputs.ssh_username || secrets.VPS_USERNAME }}
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
         run: |
           set -euo pipefail
           {
             printf '%s\n' "$DOCKERHUB_USERNAME"
             printf '%s\n' "$DOCKERHUB_TOKEN"
-          } | ssh -i "$HOME/.ssh/aria_deploy" "$VPS_USERNAME@$VPS_HOST" '
-            set -e
-            IFS= read -r registry_user
-            IFS= read -r registry_token
-            printf "%s" "$registry_token" | docker login --username "$registry_user" --password-stdin
-          '
-
-      - name: Reconcile staging containers with published images
-        if: ${{ inputs.target_environment != 'production' && steps.transport.outputs.transport == 'ssh' }}
-        env:
-          VPS_HOST: ${{ secrets.VPS_HOST }}
-          VPS_USERNAME: ${{ inputs.ssh_username || secrets.VPS_USERNAME }}
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-          EXPECTED_SHA: ${{ inputs.expected_sha }}
-        run: |
-          set -euo pipefail
-          ssh -i "$HOME/.ssh/aria_deploy" "$VPS_USERNAME@$VPS_HOST" bash -s -- "$DOCKERHUB_USERNAME" "$EXPECTED_SHA" <<'REMOTE'
-          set -euo pipefail
-          registry_user="$1"
-          expected_sha="$2"
-          services="staging-backend staging-frontend staging-nginx"
-
-          for container in $services staging-watchtower; do
-            docker inspect "$container" >/dev/null
-          done
-
-          for image in \
-            "$registry_user/resume-backend:staging" \
-            "$registry_user/resume-frontend:staging" \
-            "$registry_user/resume-nginx:staging"; do
-            docker pull "$image"
-          done
-
-          watchtower_image="$(docker inspect staging-watchtower --format '{{.Image}}')"
-          docker_config="$HOME/.docker/config.json"
-          test -s "$docker_config"
-
-          restore_monitor() {
-            docker start staging-watchtower >/dev/null 2>&1 || true
-            docker logout >/dev/null 2>&1 || true
-          }
-          trap restore_monitor EXIT
-
-          docker stop staging-watchtower >/dev/null
-          docker rm -f aria-staging-release >/dev/null 2>&1 || true
-          docker run --rm \
-            --name aria-staging-release \
-            -v /var/run/docker.sock:/var/run/docker.sock \
-            -v "$docker_config:/config.json:ro" \
-            "$watchtower_image" \
-            --run-once --cleanup --rolling-restart \
-            $services
-
-          restore_monitor
-          trap - EXIT
-          echo "Staging containers reconciled for candidate $expected_sha."
-          REMOTE
+            printf '%s\n' "$EXPECTED_SHA"
+          } | ssh \
+            -i "$HOME/.ssh/aria_deploy" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+            "$VPS_USERNAME@$VPS_HOST" deploy-staging
 
       - name: Remove SSH material
         if: ${{ always() && inputs.target_environment != 'production' && steps.transport.outputs.transport == 'ssh' }}
-        run: rm -f "$HOME/.ssh/aria_deploy" "$HOME/.ssh/known_hosts"
+        run: rm -f "$HOME/.ssh/aria_deploy" "$HOME/.ssh/aria_deploy.pub" "$HOME/.ssh/known_hosts"

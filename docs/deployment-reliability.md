@@ -85,7 +85,18 @@ reload, and logout without mocking browser-to-API traffic.
 CD calls `.github/workflows/deploy-staging.yml` after publishing the candidate
 images, then calls `.github/workflows/e2e-staging.yml`. Deployment requires
 either `PORTAINER_WEBHOOK_URL`, or the SSH fallback set `VPS_HOST`,
-`VPS_USERNAME`, `VPS_SSH_KEY`, `DOCKERHUB_USERNAME`, and `DOCKERHUB_TOKEN`.
+`VPS_USERNAME`, `VPS_SSH_KEY`, `VPS_SSH_KNOWN_HOSTS`,
+`VPS_SSH_KEY_FINGERPRINT`, `DOCKERHUB_USERNAME`, and `DOCKERHUB_TOKEN`.
+The SSH identity is a dedicated `aria-deploy` account whose authorized key is
+bound to `/usr/local/sbin/aria-staging-deploy` with OpenSSH `restrict`. The
+workflow pins both the private-key fingerprint and the VPS host key; it never
+learns a host key on first use. Provision or rotate the identity with
+`scripts/bootstrap_staging_deploy_user.sh` and
+`scripts/aria-staging-deploy-host.sh` from a trusted VPS console.
+The host command pulls both the immutable commit tag and `staging` for every
+main-server image and refuses deployment unless their image IDs match. The
+candidate SHA therefore remains authoritative even though the existing
+Watchtower-managed containers follow the mutable staging tag.
 The webhook is preferred when both transports are configured. Browser validation
 requires GitHub environment `staging-e2e`
 variable `E2E_BASE_URL` plus `E2E_WORKSPACE`, `E2E_EMAIL`, and `E2E_PASSWORD`

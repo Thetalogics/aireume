@@ -119,15 +119,33 @@ def test_staging_deploy_is_explicit_and_fail_closed():
     assert "transport=portainer" in DEPLOY_STAGING
     assert "curl --fail-with-body --silent --show-error" in DEPLOY_STAGING
     assert "VPS_SSH_KEY" in DEPLOY_STAGING
+    assert "VPS_SSH_KNOWN_HOSTS" in DEPLOY_STAGING
+    assert "VPS_SSH_KEY_FINGERPRINT" in DEPLOY_STAGING
     assert "transport=ssh" in DEPLOY_STAGING
     assert "inputs.ssh_username || secrets.VPS_USERNAME" in DEPLOY_STAGING
     assert "printf '%b" in DEPLOY_STAGING
     assert "base64 --decode" in DEPLOY_STAGING
     assert "ssh-keygen -y" in DEPLOY_STAGING
-    assert "docker login --username" in DEPLOY_STAGING
-    assert "docker pull" in DEPLOY_STAGING
-    assert "--run-once --cleanup --rolling-restart" in DEPLOY_STAGING
-    assert "staging-backend staging-frontend staging-nginx" in DEPLOY_STAGING
+    assert "ssh-keyscan" not in DEPLOY_STAGING
+    assert "StrictHostKeyChecking=yes" in DEPLOY_STAGING
+    assert "BatchMode=yes" in DEPLOY_STAGING
+    host_command = (ROOT / "scripts" / "aria-staging-deploy-host.sh").read_text(
+        encoding="utf-8"
+    )
+    bootstrap = (ROOT / "scripts" / "bootstrap_staging_deploy_user.sh").read_text(
+        encoding="utf-8"
+    )
+    assert 'SSH_ORIGINAL_COMMAND:-}" != "deploy-staging"' in host_command
+    assert "docker login --username" in host_command
+    assert "docker pull" in host_command
+    assert 'immutable_image="$repository:$expected_sha"' in host_command
+    assert "Mutable staging tag does not match candidate" in host_command
+    assert "--run-once --cleanup --rolling-restart" in host_command
+    assert "staging-backend staging-frontend staging-nginx" in host_command.replace(
+        "\n", " "
+    )
+    assert 'restrict,command=\\"$command_path\\"' in bootstrap
+    assert "usermod --append --groups docker" in bootstrap
     assert "|| echo" not in DEPLOY_STAGING
 
 
