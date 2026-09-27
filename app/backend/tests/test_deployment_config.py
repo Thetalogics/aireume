@@ -115,7 +115,11 @@ def test_release_manifest_requires_exact_sha_staging_e2e():
 
 def test_staging_deploy_is_explicit_and_fail_closed():
     assert "workflow_call:" in DEPLOY_STAGING
+    assert "PORTAINER_WEBHOOK_URL" in DEPLOY_STAGING
+    assert "transport=portainer" in DEPLOY_STAGING
+    assert "curl --fail-with-body --silent --show-error" in DEPLOY_STAGING
     assert "VPS_SSH_KEY" in DEPLOY_STAGING
+    assert "transport=ssh" in DEPLOY_STAGING
     assert "inputs.ssh_username || secrets.VPS_USERNAME" in DEPLOY_STAGING
     assert "printf '%b" in DEPLOY_STAGING
     assert "base64 --decode" in DEPLOY_STAGING

@@ -35,9 +35,10 @@ image: <user>/resume-backend@sha256:<digest>
 ```
 
 CD explicitly reconciles the three staging web containers from the `:staging`
-images through `.github/workflows/deploy-staging.yml`; persistent Watchtower is
-only a secondary recovery mechanism. The release gate then waits up to six
-minutes for the candidate SHA and fails if staging remains on an older build.
+images through `.github/workflows/deploy-staging.yml`. It prefers the configured
+Portainer stack webhook and retains audited SSH as a fallback; persistent
+Watchtower is only a secondary recovery mechanism. The release gate then waits
+for the candidate SHA and fails if staging remains on an older build.
 
 ## Production promotion
 

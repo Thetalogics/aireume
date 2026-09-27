@@ -35,9 +35,11 @@ jobs:
         if: ${{ inputs.target_environment == 'production' }}
         run: echo "Production promotion does not mutate staging."
 
-      - name: Require staging deployment credentials
+      - name: Select staging deployment transport
+        id: transport
         if: ${{ inputs.target_environment != 'production' }}
         env:
+          PORTAINER_WEBHOOK_URL: ${{ secrets.PORTAINER_WEBHOOK_URL }}
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USERNAME: ${{ inputs.ssh_username || secrets.VPS_USERNAME }}
           VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
@@ -45,15 +47,36 @@ jobs:
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
           set -euo pipefail
+          if [ -n "$PORTAINER_WEBHOOK_URL" ]; then
+            echo "transport=portainer" >> "$GITHUB_OUTPUT"
+            echo "Using the configured Portainer stack webhook."
+            exit 0
+          fi
+
           for name in VPS_HOST VPS_USERNAME VPS_SSH_KEY DOCKERHUB_USERNAME DOCKERHUB_TOKEN; do
             if [ -z "${!name:-}" ]; then
-              echo "Missing required staging deployment secret: $name" >&2
+              echo "No Portainer webhook is configured and SSH deployment secret $name is missing." >&2
               exit 1
             fi
           done
+          echo "transport=ssh" >> "$GITHUB_OUTPUT"
+          echo "Using audited SSH deployment."
+
+      - name: Trigger Portainer staging stack webhook
+        if: ${{ inputs.target_environment != 'production' && steps.transport.outputs.transport == 'portainer' }}
+        env:
+          PORTAINER_WEBHOOK_URL: ${{ secrets.PORTAINER_WEBHOOK_URL }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          set -euo pipefail
+          curl --fail-with-body --silent --show-error \
+            --request POST \
+            --header "X-ARIA-Release-SHA: $EXPECTED_SHA" \
+            "$PORTAINER_WEBHOOK_URL"
+          echo "Portainer accepted the staging reconciliation request for $EXPECTED_SHA."
 
       - name: Configure SSH
-        if: ${{ inputs.target_environment != 'production' }}
+        if: ${{ inputs.target_environment != 'production' && steps.transport.outputs.transport == 'ssh' }}
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
@@ -78,7 +101,7 @@ jobs:
           chmod 600 "$HOME/.ssh/known_hosts"
 
       - name: Authenticate staging host to Docker Hub
-        if: ${{ inputs.target_environment != 'production' }}
+        if: ${{ inputs.target_environment != 'production' && steps.transport.outputs.transport == 'ssh' }}
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USERNAME: ${{ inputs.ssh_username || secrets.VPS_USERNAME }}
@@ -97,7 +120,7 @@ jobs:
           '
 
       - name: Reconcile staging containers with published images
-        if: ${{ inputs.target_environment != 'production' }}
+        if: ${{ inputs.target_environment != 'production' && steps.transport.outputs.transport == 'ssh' }}
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USERNAME: ${{ inputs.ssh_username || secrets.VPS_USERNAME }}
@@ -148,5 +171,5 @@ jobs:
           REMOTE
 
       - name: Remove SSH material
-        if: ${{ always() && inputs.target_environment != 'production' }}
+        if: ${{ always() && inputs.target_environment != 'production' && steps.transport.outputs.transport == 'ssh' }}
         run: rm -f "$HOME/.ssh/aria_deploy" "$HOME/.ssh/known_hosts"

@@ -19,7 +19,7 @@ downgrade 082→081 / upgrade 081→082 cycle.
 
 `RUN_DB_MIGRATIONS=1` runs `python -m app.backend.services.migration_owner` before the process serves.
 Production backend and worker stay at `0` and wait for the one-shot `migrate` service (`service_completed_successfully`) because `docker compose up` recreates it.
-The Portainer stack `aria-staging-main` has no migrate service. Its backend sets `RUN_DB_MIGRATIONS=1`, so the image entrypoint runs `upgrade head` before uvicorn binds. After publishing images, CD authenticates to the staging VPS and invokes its existing Watchtower image once to reconcile `staging-backend`, `staging-frontend`, and `staging-nginx`. Persistent Watchtower remains a secondary drift-recovery mechanism, not the release trigger.
+The Portainer stack `aria-staging-main` has no migrate service. Its backend sets `RUN_DB_MIGRATIONS=1`, so the image entrypoint runs `upgrade head` before uvicorn binds. After publishing images, CD prefers the configured Portainer stack webhook and otherwise authenticates to the staging VPS and invokes its existing Watchtower image once to reconcile `staging-backend`, `staging-frontend`, and `staging-nginx`. Persistent Watchtower remains a secondary drift-recovery mechanism, not the release trigger.
 Command is `upgrade head` (singular). A PostgreSQL advisory lock prevents concurrent manual upgrades.
 
 ## Connection budget (PostgreSQL `max_connections=200`)
@@ -84,13 +84,15 @@ reload, and logout without mocking browser-to-API traffic.
 
 CD calls `.github/workflows/deploy-staging.yml` after publishing the candidate
 images, then calls `.github/workflows/e2e-staging.yml`. Deployment requires
-`VPS_HOST`, `VPS_USERNAME`, `VPS_SSH_KEY`, `DOCKERHUB_USERNAME`, and
-`DOCKERHUB_TOKEN`; browser validation requires GitHub environment `staging-e2e`
+either `PORTAINER_WEBHOOK_URL`, or the SSH fallback set `VPS_HOST`,
+`VPS_USERNAME`, `VPS_SSH_KEY`, `DOCKERHUB_USERNAME`, and `DOCKERHUB_TOKEN`.
+The webhook is preferred when both transports are configured. Browser validation
+requires GitHub environment `staging-e2e`
 variable `E2E_BASE_URL` plus `E2E_WORKSPACE`, `E2E_EMAIL`, and `E2E_PASSWORD`
 secrets for a dedicated non-privileged account. It waits for
 both `/ready` and `/api/version`, requires the deployed backend and frontend to
 report the candidate SHA, and runs the authenticated critical flow. Missing
-secrets, deployment drift, and test failures all block release-manifest creation;
+secrets, transport failures, deployment drift, and test failures all block release-manifest creation;
 none are converted to skips.
 
 ## Internal header
