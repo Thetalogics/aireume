@@ -78,11 +78,13 @@ export async function confirmSkillsIfNeeded(page: Page) {
   const skipDefaults = page.getByRole('button', { name: /skip & use defaults/i });
   const confirmAnalyze = page.getByRole('button', { name: /confirm & analyze/i });
   const alreadyConfirmed = page.getByRole('button', { name: /re-edit/i });
+  const uploadReady = page.getByRole('heading', { name: /step 2: upload & analyze/i });
 
   await expect.poll(
     async () => {
       const parseError = (await page.getByText(/could not parse|parse error|failed to parse/i).first().textContent().catch(() => null))?.trim();
       if (parseError) return `parse-error:${parseError}`;
+      if (await uploadReady.isVisible().catch(() => false)) return 'ready';
       if (await alreadyConfirmed.isVisible().catch(() => false)) return 'ready';
       if (await skipDefaults.isVisible().catch(() => false)) return 'ready';
       if (await confirmAnalyze.isVisible().catch(() => false)) return 'ready';
@@ -91,6 +93,9 @@ export async function confirmSkillsIfNeeded(page: Page) {
     { timeout: 60000, message: 'JD skill confirmation never became available' },
   ).toBe('ready');
 
+  if (await uploadReady.isVisible().catch(() => false)) {
+    return;
+  }
   if (await alreadyConfirmed.isVisible().catch(() => false)) {
     return;
   }
@@ -106,10 +111,15 @@ export async function confirmSkillsIfNeeded(page: Page) {
 }
 
 export async function goToAnalyzeUploadStep(page: Page) {
-  const uploadStep = page.getByRole('button', { name: /^upload$/i }).first();
+  const uploadReady = page.getByRole('heading', { name: /step 2: upload & analyze/i });
+  if (await uploadReady.isVisible().catch(() => false)) {
+    return;
+  }
+
+  const uploadStep = page.getByRole('button', { name: /upload/i }).first();
   await expect(uploadStep).toBeVisible({ timeout: 15000 });
   await uploadStep.click();
-  await expect(page.getByText(/step 2: upload & analyze/i)).toBeVisible({ timeout: 15000 });
+  await expect(uploadReady).toBeVisible({ timeout: 15000 });
 }
 
 export function apiBaseUrl(): string {
