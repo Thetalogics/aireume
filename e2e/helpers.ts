@@ -79,10 +79,11 @@ export async function confirmSkillsIfNeeded(page: Page) {
   const confirmAnalyze = page.getByRole('button', { name: /confirm & analyze/i });
   const alreadyConfirmed = page.getByRole('button', { name: /re-edit/i });
   const uploadReady = page.getByRole('heading', { name: /step 2: upload & analyze/i });
+  const parseErrors = page.getByText(/could not parse|parse error|failed to parse/i);
 
   await expect.poll(
     async () => {
-      const parseError = (await page.getByText(/could not parse|parse error|failed to parse/i).first().textContent().catch(() => null))?.trim();
+      const parseError = (await parseErrors.allTextContents()).map((text) => text.trim()).find(Boolean);
       if (parseError) return `parse-error:${parseError}`;
       if (await uploadReady.isVisible().catch(() => false)) return 'ready';
       if (await alreadyConfirmed.isVisible().catch(() => false)) return 'ready';

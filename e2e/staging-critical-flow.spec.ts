@@ -74,7 +74,7 @@ test.describe('Authenticated staging critical flow', () => {
     const pageError = page.locator('p.text-sm.font-semibold.text-red-900');
     await expect.poll(
       async () => {
-        const err = (await pageError.textContent().catch(() => null))?.trim();
+        const err = (await pageError.allTextContents()).map((text) => text.trim()).find(Boolean);
         if (err) return `error:${err}`;
         if (await page.getByRole('button', { name: /view top candidate/i }).isVisible().catch(() => false)) {
           return 'done';
