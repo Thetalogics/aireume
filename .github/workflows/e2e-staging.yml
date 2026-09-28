@@ -17,9 +17,9 @@ on:
 # Deployment-environment gate. CD requires this workflow before emitting an
 # approved immutable release manifest; it can also be dispatched manually.
 # Requires GitHub environment `staging-e2e` variable `E2E_BASE_URL` and
-# repository/environment secrets `E2E_EMAIL`, `E2E_PASSWORD`, `E2E_WORKSPACE`.
-# MFA must be disabled only on this dedicated non-privileged test account.
-# Application MFA policy is not changed by this workflow.
+# repository/environment secrets `E2E_EMAIL`, `E2E_PASSWORD`, `E2E_WORKSPACE`,
+# and optional `E2E_MFA_SECRET` when the dedicated account has TOTP enabled.
+# Application MFA policy is never changed by this workflow.
 
 jobs:
   authenticated-e2e:
@@ -53,8 +53,9 @@ jobs:
           for attempt in $(seq 1 36); do
             READY="$(curl --fail --silent --show-error "$BASE_URL/ready" 2>/dev/null || true)"
             VERSION="$(curl --fail --silent --show-error "$BASE_URL/api/version" 2>/dev/null || true)"
+            READY_STATUS="$(printf '%s' "$READY" | jq -r '.status // empty' 2>/dev/null || true)"
             ACTUAL_SHA="$(printf '%s' "$VERSION" | jq -r '.build_id // empty' 2>/dev/null || true)"
-            if [ -n "$READY" ] && { [ -z "$EXPECTED_SHA" ] || [ "$ACTUAL_SHA" = "$EXPECTED_SHA" ]; }; then
+            if [ "$READY_STATUS" = "ready" ] && { [ -z "$EXPECTED_SHA" ] || [ "$ACTUAL_SHA" = "$EXPECTED_SHA" ]; }; then
               echo "Staging is ready at build ${ACTUAL_SHA:-unversioned}."
               exit 0
             fi
@@ -72,6 +73,7 @@ jobs:
           E2E_EMAIL: ${{ secrets.E2E_EMAIL }}
           E2E_PASSWORD: ${{ secrets.E2E_PASSWORD }}
           E2E_WORKSPACE: ${{ secrets.E2E_WORKSPACE }}
+          E2E_MFA_SECRET: ${{ secrets.E2E_MFA_SECRET }}
           E2E_EXPECTED_SHA: ${{ inputs.expected_sha }}
         run: npx playwright test --config=playwright.staging.config.ts
       - name: Upload Playwright report

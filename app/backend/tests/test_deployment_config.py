@@ -107,10 +107,17 @@ def test_release_manifest_requires_exact_sha_staging_e2e():
     )
     assert "Wait for healthy staging deployment at the expected SHA" in E2E_STAGING
     assert "E2E_EXPECTED_SHA" in E2E_STAGING
+    assert 'READY_STATUS="$(printf' in E2E_STAGING
+    assert '[ "$READY_STATUS" = "ready" ]' in E2E_STAGING
     assert "vars.E2E_BASE_URL" in E2E_STAGING
     assert "secrets.E2E_EMAIL" in E2E_STAGING
     assert "secrets.E2E_PASSWORD" in E2E_STAGING
+    assert "secrets.E2E_MFA_SECRET" in E2E_STAGING
     assert "E2E_RECRUITER_EMAIL" not in E2E_STAGING
+
+    nginx = (ROOT / "nginx" / "nginx.prod.conf").read_text(encoding="utf-8")
+    ready_block = nginx.split("location = /ready", 1)[1].split("}", 1)[0]
+    assert "backend:8000" in ready_block
 
 
 def test_staging_deploy_is_explicit_and_fail_closed():

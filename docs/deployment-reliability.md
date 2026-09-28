@@ -102,7 +102,9 @@ API version, avoiding client-version failures after Docker Engine upgrades.
 The webhook is preferred when both transports are configured. Browser validation
 requires GitHub environment `staging-e2e`
 variable `E2E_BASE_URL` plus `E2E_WORKSPACE`, `E2E_EMAIL`, and `E2E_PASSWORD`
-secrets for a dedicated non-privileged account. It waits for
+secrets for a dedicated non-privileged account. When that account has MFA,
+configure its TOTP seed as `E2E_MFA_SECRET`; Playwright generates a fresh code
+for each login without weakening application MFA policy. It waits for
 both `/ready` and `/api/version`, requires the deployed backend and frontend to
 report the candidate SHA, and runs the authenticated critical flow. Missing
 secrets, transport failures, deployment drift, and test failures all block release-manifest creation;
