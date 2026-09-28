@@ -97,6 +97,8 @@ The host command pulls both the immutable commit tag and `staging` for every
 main-server image and refuses deployment unless their image IDs match. The
 candidate SHA therefore remains authoritative even though the existing
 Watchtower-managed containers follow the mutable staging tag.
+The one-shot Watchtower process receives the Docker daemon's advertised minimum
+API version, avoiding client-version failures after Docker Engine upgrades.
 The webhook is preferred when both transports are configured. Browser validation
 requires GitHub environment `staging-e2e`
 variable `E2E_BASE_URL` plus `E2E_WORKSPACE`, `E2E_EMAIL`, and `E2E_PASSWORD`

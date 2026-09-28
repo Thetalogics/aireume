@@ -61,7 +61,12 @@ done
 
 watchtower_image="$(docker inspect staging-watchtower --format '{{.Image}}')"
 docker_config="$HOME/.docker/config.json"
+docker_min_api="$(docker version --format '{{.Server.MinAPIVersion}}')"
 test -s "$docker_config"
+if [[ ! "$docker_min_api" =~ ^[0-9]+\.[0-9]+$ ]]; then
+  echo "Docker daemon did not report a valid minimum API version." >&2
+  exit 67
+fi
 
 docker stop staging-watchtower >/dev/null
 docker rm -f aria-staging-release >/dev/null 2>&1 || true
@@ -69,6 +74,7 @@ docker run --rm \
   --name aria-staging-release \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v "$docker_config:/config.json:ro" \
+  -e DOCKER_API_VERSION="$docker_min_api" \
   "$watchtower_image" \
   --run-once --cleanup --rolling-restart \
   "${services[@]}"

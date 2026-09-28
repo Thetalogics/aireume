@@ -140,6 +140,8 @@ def test_staging_deploy_is_explicit_and_fail_closed():
     assert "docker pull" in host_command
     assert 'immutable_image="$repository:$expected_sha"' in host_command
     assert "Mutable staging tag does not match candidate" in host_command
+    assert "docker version --format '{{.Server.MinAPIVersion}}'" in host_command
+    assert '-e DOCKER_API_VERSION="$docker_min_api"' in host_command
     assert "--run-once --cleanup --rolling-restart" in host_command
     assert "staging-backend staging-frontend staging-nginx" in host_command.replace(
         "\n", " "
