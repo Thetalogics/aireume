@@ -60,15 +60,15 @@ setup('authenticate', async ({ page }) => {
     await page.getByRole('button', { name: /sign in|log in|login/i }).click();
   }
 
-  await expect(async () => {
-    if (page.url().includes('/login')) {
-      const error = (await loginError.textContent().catch(() => null))?.trim() || '(none)';
-      const mfa = await mfaInput.isVisible().catch(() => false);
-      throw new Error(
-        `Authentication did not leave /login (http=${loginStatus ?? 'n/a'} mfa=${mfa} error=${error} url=${page.url()})`,
-      );
-    }
-  }).toPass({ timeout: 15000 });
+  try {
+    await expect(page).not.toHaveURL(/\/login(?:[/?#]|$)/, { timeout: 15000 });
+  } catch {
+    const error = (await loginError.textContent({ timeout: 1000 }).catch(() => null))?.trim() || '(none)';
+    const mfa = await mfaInput.isVisible().catch(() => false);
+    throw new Error(
+      `Authentication did not leave /login (http=${loginStatus ?? 'n/a'} mfa=${mfa} error=${error} url=${page.url()})`,
+    );
+  }
 
   const pathName = new URL(page.url()).pathname;
   if (pathName.includes('/onboarding')) {
