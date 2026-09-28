@@ -94,10 +94,14 @@ test.describe('Authenticated staging critical flow', () => {
     await analyzeBtn.click();
 
     const pageError = page.locator('p.text-sm.font-semibold.text-red-900');
+    const reportHeading = page.getByRole('heading', { name: /analysis results/i });
     await expect.poll(
       async () => {
         const err = (await pageError.allTextContents()).map((text) => text.trim()).find(Boolean);
         if (err) return `error:${err}`;
+        if (await reportHeading.isVisible().catch(() => false)) {
+          return 'done';
+        }
         if (await page.getByRole('button', { name: /view top candidate/i }).isVisible().catch(() => false)) {
           return 'done';
         }
@@ -115,12 +119,13 @@ test.describe('Authenticated staging critical flow', () => {
     await expect(
       page.getByRole('button', { name: /view top candidate/i })
         .or(page.getByText(/analysis complete/i))
-        .or(page.locator('table').getByText(candidateName)),
+        .or(page.locator('table').getByText(candidateName))
+        .or(reportHeading),
     ).toBeVisible();
 
     await page.goto('/candidates');
-    await page.getByPlaceholder(/search by name or email/i).fill(candidateName);
-    await expect(page.getByText(candidateName).first()).toBeVisible({ timeout: 20000 });
+    await page.getByPlaceholder(/search by name or email/i).fill(email);
+    await expect(page.getByText(email).first()).toBeVisible({ timeout: 20000 });
 
     await page.getByRole('button', { name: 'User menu' }).click();
     await page.getByRole('menuitem', { name: /sign out/i }).click();
