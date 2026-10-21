@@ -9,6 +9,13 @@
       "review_by": "2026-12-31"
     },
     {
+      "id": "PYSEC-2026-4298",
+      "package": "python-jose 3.4.0",
+      "reason": "No upstream release fixes DER public-key HMAC confusion through 3.5.0.",
+      "compensating_control": "Every jwt.decode call passes algorithms=[HS256] and the HMAC key is the server secret, not a public key.",
+      "review_by": "2026-12-31"
+    },
+    {
       "id": "PYSEC-2026-1845",
       "package": "pytest 8.3.4",
       "reason": "Kept for pytest-asyncio 0.24 compatibility; fix is in pytest 9.0.3.",
