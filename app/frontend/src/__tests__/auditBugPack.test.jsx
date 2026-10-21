@@ -23,9 +23,7 @@ vi.mock('axios', async () => {
 })
 
 vi.mock('nanoid', () => ({ nanoid: () => 'audit-upload-id' }))
-vi.mock('html2pdf.js', () => ({ default: () => ({ set: () => ({ from: () => ({ save: vi.fn() }) }) }) }))
-
-vi.mock('../contexts/OnboardingContext', () => ({
+vi.mock('../contexts/useOnboarding', () => ({
   useOnboarding: () => ({ completeChecklistItem: vi.fn() }),
 }))
 vi.mock('../hooks/usePermissions', () => ({
@@ -34,7 +32,7 @@ vi.mock('../hooks/usePermissions', () => ({
 vi.mock('../hooks/useSubscription', () => ({
   useSubscription: () => ({ isFeatureAvailable: () => false }),
 }))
-vi.mock('../contexts/NotificationContext', () => ({
+vi.mock('../contexts/useNotification', () => ({
   useNotification: () => ({
     trackEnrichmentJob: vi.fn(),
     updateEnrichmentJob: vi.fn(),
@@ -42,7 +40,7 @@ vi.mock('../contexts/NotificationContext', () => ({
     addNotification: vi.fn(),
   }),
 }))
-vi.mock('../contexts/LiveScreenModeContext', () => ({
+vi.mock('../contexts/useLiveScreenMode', () => ({
   useLiveScreenMode: () => ({ setActive: vi.fn(), active: false }),
 }))
 vi.mock('../hooks/useEnrichmentPolling', () => ({
@@ -69,7 +67,8 @@ vi.mock('../components/patterns', () => ({
   ConsolidatedScoreHero: ({ result }) => <div>{result?.candidate_name || result?.contact_info?.name}</div>,
 }))
 vi.mock('../components/OAuthButtons', () => ({ default: () => null }))
-vi.mock('../contexts/AuthContext', () => ({
+vi.mock('../contexts/useAuth', async (original) => ({
+  ...await original(),
   useAuth: () => ({ register: vi.fn(), loading: false, logout: vi.fn(), user: null }),
   AuthProvider: ({ children }) => children,
 }))
@@ -232,7 +231,8 @@ describe('BUG-016 logout clears screening storage', () => {
     const api = (await import('../lib/api')).default
     api.get.mockRejectedValue({ response: { status: 401 } })
     api.post.mockResolvedValue({ data: {} })
-    const { AuthProvider, useAuth } = await vi.importActual('../contexts/AuthContext')
+    const { AuthProvider } = await vi.importActual('../contexts/AuthContext')
+    const { useAuth } = await vi.importActual('../contexts/useAuth')
     function LogoutProbe() {
       const { logout } = useAuth()
       return <button type="button" onClick={() => logout()}>logout</button>

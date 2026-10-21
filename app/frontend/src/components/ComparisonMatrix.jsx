@@ -9,28 +9,28 @@ export default function ComparisonMatrix({ candidateIds, jdAnalysis, screeningRe
   const [sortBy, setSortBy] = useState('match_percentage'); // or 'gaps_filled' or 'fit_score'
 
   useEffect(() => {
-    if (candidateIds?.length >= 2) {
-      fetchComparison();
+    if (candidateIds?.length < 2 || !candidateIds) return;
+    let cancelled = false;
+    async function fetchComparison() {
+      setLoading(true);
+      setError(null);
+      try {
+        const result = await compareCandidates({
+          candidate_ids: candidateIds,
+          jd_analysis: jdAnalysis || undefined,
+          screening_result_id: screeningResultId || undefined,
+          team_gaps: teamGaps || [],
+        });
+        if (!cancelled) setData(result);
+      } catch (e) {
+        if (!cancelled) setError(e.message || 'Failed to load comparison');
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
     }
+    fetchComparison();
+    return () => { cancelled = true; };
   }, [candidateIds, jdAnalysis, screeningResultId, teamGaps]);
-
-  async function fetchComparison() {
-    setLoading(true);
-    setError(null);
-    try {
-      const result = await compareCandidates({
-        candidate_ids: candidateIds,
-        jd_analysis: jdAnalysis || undefined,
-        screening_result_id: screeningResultId || undefined,
-        team_gaps: teamGaps || [],
-      });
-      setData(result);
-    } catch (e) {
-      setError(e.message || 'Failed to load comparison');
-    } finally {
-      setLoading(false);
-    }
-  }
 
   if (loading) return <div className="flex justify-center p-8"><div className="animate-spin h-8 w-8 border-4 border-brand-500 border-t-transparent rounded-full" /></div>;
   if (error) return <div className="p-4 bg-red-50 text-red-700 rounded-lg">{error}</div>;

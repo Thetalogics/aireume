@@ -8,7 +8,7 @@ import {
   Plus, AlertTriangle, Sparkles, GitCompare, Download,
   Mic, Calendar, TrendingUp, Star
 } from 'lucide-react'
-import { useAuth } from '../contexts/AuthContext'
+import { useAuth } from '../contexts/useAuth'
 import usePermissions from '../hooks/usePermissions'
 import { useSubscription } from '../hooks/useSubscription'
 import { ViewerReadOnlyBanner } from '../components/RequireWriteAccess'

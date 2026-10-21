@@ -5,7 +5,7 @@ import { Button } from '../ui'
 import { REQUISITIONS } from '../../lib/uxLabels'
 import { showError } from '../../lib/toast'
 import usePermissions from '../../hooks/usePermissions'
-import { useOnboarding } from '../../contexts/OnboardingContext'
+import { useOnboarding } from '../../contexts/useOnboarding'
 
 export default function RequisitionSettingsPanel() {
   const { isAdmin } = usePermissions()

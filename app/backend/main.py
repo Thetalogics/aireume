@@ -213,10 +213,9 @@ from app.backend.routes import nps
 from app.backend.routes import client_errors
 from app.backend.routes import decisions
 from app.backend.services import llm_service
+from app.backend.version import VERSION
 
 log = logging.getLogger("aria.startup")
-
-VERSION = "2.0.0"
 W = 54  # banner width (inner)
 
 

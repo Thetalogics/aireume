@@ -1,9 +1,5 @@
-import { createContext, useContext, useMemo, useState } from 'react'
-
-const LiveScreenModeContext = createContext({
-  active: false,
-  setActive: () => {},
-})
+import { LiveScreenModeContext } from './useLiveScreenMode'
+import { useMemo, useState } from 'react'
 
 export function LiveScreenModeProvider({ children }) {
   const [active, setActive] = useState(false)
@@ -13,8 +9,4 @@ export function LiveScreenModeProvider({ children }) {
       {children}
     </LiveScreenModeContext.Provider>
   )
-}
-
-export function useLiveScreenMode() {
-  return useContext(LiveScreenModeContext)
 }

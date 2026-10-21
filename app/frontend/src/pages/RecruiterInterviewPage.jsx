@@ -102,7 +102,7 @@ export default function RecruiterInterviewPage() {
   const [config, setConfig] = useState(null)
   const [configDraft, setConfigDraft] = useState(null)
   const [loading, setLoading] = useState(true)
-  const [sessionsLoading, setSessionsLoading] = useState(false)
+  const [sessionsLoading, setSessionsLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState(null)
   const [activeTab, setActiveTab] = useState(initialTab)
@@ -120,12 +120,10 @@ export default function RecruiterInterviewPage() {
   const fetchAll = useCallback(async () => {
     try {
       setLoading(true)
-      const [sess, analyticsData, cfg] = await Promise.all([
-        getRecruiterSessions({ limit: 50 }).catch(() => []),
+      const [analyticsData, cfg] = await Promise.all([
         getRecruiterAnalytics().catch(() => null),
         getRecruiterConfig().catch(() => null),
       ])
-      setSessions(Array.isArray(sess) ? sess : sess.sessions || [])
       setAnalytics(analyticsData)
       if (cfg) { setConfig(cfg); setConfigDraft(cfg) }
     } catch (err) {
@@ -155,7 +153,7 @@ export default function RecruiterInterviewPage() {
       fetchSessions(params)
     }, 300)
     return () => clearTimeout(timeout)
-  }, [searchQuery, statusFilter])
+  }, [searchQuery, statusFilter, fetchSessions])
 
   async function handleSaveConfig() {
     try {

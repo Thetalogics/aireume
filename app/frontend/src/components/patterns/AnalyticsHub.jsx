@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, forwardRef, useImperativeHandle, useMemo } from 'react'
+import { useState, useEffect, useCallback, forwardRef, useImperativeHandle, useMemo, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   BarChart3, Users, Columns3, Phone, Building2, AlertTriangle, Plug, FileSpreadsheet, Download,
@@ -10,10 +10,7 @@ import {
 import EmptyState from '../EmptyState'
 import ScreeningTrendsCharts from './ScreeningTrendsCharts'
 import { ANALYTICS } from '../../lib/uxLabels'
-
-export const VALID_SLICE_IDS = new Set([
-  'screening', 'funnel', 'interviews', 'team', 'hm', 'leadership', 'ats', 'reports',
-])
+import { VALID_SLICE_IDS } from './analyticsConstants'
 
 const ALL_SLICES = [
   { id: 'screening', label: ANALYTICS.sliceScreening, icon: BarChart3 },
@@ -868,6 +865,9 @@ const AnalyticsHub = forwardRef(function AnalyticsHub({
     setDrillOffset(0)
   }, [period, startDate, endDate, requisitionId, recruiterId, slice])
 
+  const onGeneratedAtRef = useRef(onGeneratedAt)
+  useEffect(() => { onGeneratedAtRef.current = onGeneratedAt }, [onGeneratedAt])
+
   const load = useCallback(async (offset = 0) => {
     if (slice === 'reports') {
       setLoading(false)
@@ -911,7 +911,7 @@ const AnalyticsHub = forwardRef(function AnalyticsHub({
         }
         return data
       })
-      onGeneratedAt?.(data.generated_at)
+      onGeneratedAtRef.current?.(data.generated_at)
     } catch (err) {
       setHub(null)
       const detail = err?.response?.data?.detail
@@ -919,7 +919,7 @@ const AnalyticsHub = forwardRef(function AnalyticsHub({
     } finally {
       setLoading(false)
     }
-  }, [period, startDate, endDate, requisitionId, recruiterId, slice, compare, onGeneratedAt])
+  }, [period, startDate, endDate, requisitionId, recruiterId, slice, compare])
 
   useImperativeHandle(ref, () => ({
     reload: () => load(0),
@@ -927,7 +927,7 @@ const AnalyticsHub = forwardRef(function AnalyticsHub({
 
   useEffect(() => {
     load(0)
-  }, [period, startDate, endDate, requisitionId, recruiterId, slice, compare])
+  }, [load])
 
   useEffect(() => {
     if (controlledSlice !== undefined) return

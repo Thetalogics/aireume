@@ -39,7 +39,7 @@ OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
 def _training_enabled() -> bool:
     """
-    Fine-tuning-style training is not implemented. Prompt personalization is disabled
+    Prompt personalization changes SYSTEM prompt context, not model weights. It is disabled
     by default in production and must be enabled via TRAINING_ENABLED=true.
     """
     explicit = os.getenv("TRAINING_ENABLED")
@@ -111,7 +111,7 @@ def start_training(
     if len(examples) < 10:
         raise HTTPException(
             status_code=400,
-            detail=f"Need at least 10 labeled examples to train. Current: {len(examples)}"
+            detail=f"Need at least 10 labeled examples to personalize ARIA. Current: {len(examples)}"
         )
 
     training_data = []
@@ -137,11 +137,11 @@ def start_training(
     )
 
     background_tasks.add_task(_train_model, tenant_id, model_name, training_data)
-    return {"message": "Training started in background", "model_name": model_name}
+    return {"message": "Prompt personalization started in background", "model_name": model_name}
 
 
 async def _train_model(tenant_id: int, model_name: str, training_data: list):
-    """Build a custom Ollama model from training examples."""
+    """Create a tenant-scoped Ollama model name with labeled outcomes in its SYSTEM prompt."""
     from app.backend.db.database import SessionLocal
 
     db = SessionLocal()
@@ -160,18 +160,22 @@ async def _train_model(tenant_id: int, model_name: str, training_data: list):
 
     modelfile = (
         f"FROM {get_ollama_model()}\n"
-        f"SYSTEM You are ARIA, a specialized recruiter AI trained on {len(training_data)} real hiring outcomes. "
+        f"SYSTEM You are ARIA, a specialized recruiter AI with {len(training_data)} labeled hiring outcomes available for prompt personalization. "
         f"You analyze candidate profiles and predict fit. "
-        f"Training examples:\n{examples_text}\n"
+        f"Labeled outcomes for prompt context:\n{examples_text}\n"
         f"Always return valid JSON with keys: strengths, weaknesses, education_analysis, risk_signals, final_recommendation."
     )
 
     try:
         async with httpx.AsyncClient(timeout=120.0) as client:
-            await client.post(
+            response = await client.post(
                 f"{OLLAMA_BASE_URL}/api/create",
-                json={"name": model_name, "modelfile": modelfile}
+                json={"name": model_name, "modelfile": modelfile, "stream": False}
             )
+            response.raise_for_status()
+            completion = response.json()
+            if not isinstance(completion, dict) or completion.get("status") != "success" or "error" in completion:
+                raise ValueError("Provider did not confirm model creation success.")
         db = SessionLocal()
         try:
             _upsert_run(
@@ -186,12 +190,15 @@ async def _train_model(tenant_id: int, model_name: str, training_data: list):
             db.close()
     except (httpx.HTTPError, OSError, ValueError, RuntimeError) as e:
         logger.exception(
-            "Model training failed for tenant %s: %s", tenant_id, e,
+            "Prompt personalization failed for tenant %s: %s", tenant_id, e,
             extra={"error_code": "LLM_ERROR"},
         )
         db = SessionLocal()
         try:
-            _upsert_run(db, tenant_id, state="failed", model_name=model_name, error=str(e))
+            _upsert_run(
+                db, tenant_id, state="failed", model_name=model_name,
+                completed_at=None, error="Model personalization failed.",
+            )
         finally:
             db.close()
 

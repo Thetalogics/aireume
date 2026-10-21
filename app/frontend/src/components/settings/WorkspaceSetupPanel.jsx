@@ -1,6 +1,6 @@
 import { Link } from 'react-router-dom'
 import { Sparkles } from 'lucide-react'
-import { useOnboarding } from '../../contexts/OnboardingContext'
+import { useOnboarding } from '../../contexts/useOnboarding'
 import { useSubscription } from '../../hooks/useSubscription'
 import usePermissions from '../../hooks/usePermissions'
 import { ReadinessCard } from '../GettingStarted'

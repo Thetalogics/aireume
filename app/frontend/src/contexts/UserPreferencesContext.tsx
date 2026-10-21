@@ -1,10 +1,11 @@
-import { createContext, useContext, useState, useCallback, useEffect } from 'react'
+import { UserPreferencesContext } from './useUserPreferences'
+import { useState, useCallback, useEffect } from 'react'
 import {
   getUserPreferences,
   patchUserPreferences,
   markModalSeen as markModalSeenApi,
 } from '../lib/api'
-import { useAuth } from './AuthContext'
+import { useAuth } from './useAuth'
 
 const DEFAULT_PREFERENCES = {
   notifications: {
@@ -16,20 +17,21 @@ const DEFAULT_PREFERENCES = {
   invited_welcome_dismissed: false,
 }
 
-const UserPreferencesContext = createContext(null)
-
 export function UserPreferencesProvider({ children }) {
   const { user, loading: authLoading } = useAuth()
+  const userId = user?.id
   const [preferences, setPreferences] = useState(DEFAULT_PREFERENCES)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     if (authLoading) return
-    if (!user) {
+    setPreferences(DEFAULT_PREFERENCES)
+    if (!userId) {
       setPreferences(DEFAULT_PREFERENCES)
       setLoading(false)
       return
     }
+    setLoading(true)
     let cancelled = false
     ;(async () => {
       try {
@@ -47,7 +49,7 @@ export function UserPreferencesProvider({ children }) {
       }
     })()
     return () => { cancelled = true }
-  }, [authLoading, user?.id])
+  }, [authLoading, userId])
 
   const updatePreferences = useCallback(async (patch) => {
     const data = await patchUserPreferences(patch)
@@ -86,10 +88,4 @@ export function UserPreferencesProvider({ children }) {
       {children}
     </UserPreferencesContext.Provider>
   )
-}
-
-export function useUserPreferences() {
-  const ctx = useContext(UserPreferencesContext)
-  if (!ctx) throw new Error('useUserPreferences must be used within UserPreferencesProvider')
-  return ctx
 }

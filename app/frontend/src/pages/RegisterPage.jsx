@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { Sparkles, Eye, EyeOff, AlertCircle, Building2, ArrowRight } from 'lucide-react'
-import { useAuth } from '../contexts/AuthContext'
+import { useAuth } from '../contexts/useAuth'
 import { TRUST } from '../lib/uxLabels'
 import OAuthButtons from '../components/OAuthButtons'
 

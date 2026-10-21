@@ -10,7 +10,7 @@ name: aria-staging-main
 
 services:
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
     container_name: staging-postgres
     command: >
       postgres
@@ -128,7 +128,7 @@ services:
     restart: unless-stopped
 
   watchtower:
-    image: containrrr/watchtower
+    image: containrrr/watchtower@sha256:6dd50763bbd632a83cb154d5451700530d1e44200b268a4e9488fefdfcf2b038
     container_name: staging-watchtower
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock

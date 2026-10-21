@@ -5,7 +5,7 @@ import {
   ThumbsUp, ThumbsDown, Loader2, Pencil, X as XIcon, Upload, Eye, FileText, Clock,
   PhoneCall, Mic, ExternalLink, Sparkles, Calendar, BarChart2,
 } from 'lucide-react'
-import html2pdf from 'html2pdf.js'
+import { printDocument } from '../lib/printDocument'
 import ScoreGauge from '../components/ScoreGauge'
 import ResultCard from '../components/ResultCard'
 import InterviewScorecard from '../components/InterviewScorecard'
@@ -17,10 +17,10 @@ import Skeleton from '../components/Skeleton'
 import EvaluationChecklist from '../components/EvaluationChecklist'
 import InterviewInitiateModal from '../components/InterviewInitiateModal'
 import { EnrichmentBanner, ReportActionBar, AnalysisStageTracker, RescoreSheet, LiveScreenCallShell, LiveScreenKitReadinessGate, ConsolidatedScoreHero } from '../components/patterns'
-import { useLiveScreenMode } from '../contexts/LiveScreenModeContext'
+import { useLiveScreenMode } from '../contexts/useLiveScreenMode'
 import { useEnrichmentPolling } from '../hooks/useEnrichmentPolling'
-import { useNotification } from '../contexts/NotificationContext'
-import { useOnboarding } from '../contexts/OnboardingContext'
+import { useNotification } from '../contexts/useNotification'
+import { useOnboarding } from '../contexts/useOnboarding'
 import usePermissions from '../hooks/usePermissions'
 import { useSubscription } from '../hooks/useSubscription'
 import { ViewerReadOnlyBanner } from '../components/RequireWriteAccess'
@@ -482,7 +482,12 @@ export default function ReportPage() {
   }, [])
 
   useEffect(() => {
+    const result = location.state?.result
+    let cancelled = false
+    const cancel = () => { cancelled = true }
+    setNoResult(false)
     const applyFetchedResult = (data) => {
+      if (cancelled) return
       setResult(data)
       setCandidateName(resolveName(data))
       try {
@@ -512,15 +517,16 @@ export default function ReportPage() {
       getScreeningResult(urlId)
         .then(applyFetchedResult)
         .catch(() => {
-          setNoResult(true)
+          if (!cancelled) setNoResult(true)
         })
         .finally(() => {
-          setLoading(false)
+          if (!cancelled) setLoading(false)
         })
-      return
+      return cancel
     }
 
     if (isCompleteResult) {
+      setResult(result)
       setCandidateName(resolveName(result))
       setLoading(false)
       if (id && needsEnrichmentRefetch(result)) {
@@ -528,14 +534,14 @@ export default function ReportPage() {
           .then(applyFetchedResult)
           .catch(() => {})
       }
-      return
+      return cancel
     }
 
     // Extract ID from either the partial result or URL params
     if (!id) {
       setNoResult(true)
       setLoading(false)
-      return
+      return cancel
     }
 
     // Try sessionStorage first — refetch if narrative or kit is not fully hydrated
@@ -551,7 +557,7 @@ export default function ReportPage() {
             .then(applyFetchedResult)
             .catch(() => {})
         }
-        return
+        return cancel
       }
     } catch { /* ignore */ }
 
@@ -560,12 +566,13 @@ export default function ReportPage() {
     getScreeningResult(id)
       .then(applyFetchedResult)
       .catch(() => {
-        setNoResult(true)
+        if (!cancelled) setNoResult(true)
       })
       .finally(() => {
-        setLoading(false)
+        if (!cancelled) setLoading(false)
       })
-  }, [location.search])
+    return cancel
+  }, [location.search, location.state?.result])
 
   // Fetch audit log when candidate_id is available
   useEffect(() => {
@@ -669,7 +676,7 @@ export default function ReportPage() {
         ? 'ready'
         : 'processing',
     })
-  }, [result?.narrative_status, result?.interview_kit_status, result?.voice_strategy_status, updateEnrichmentJob])
+  }, [result, updateEnrichmentJob])
 
   const handleAdverseAction = async () => {
     const resultId = result?.result_id || result?.id
@@ -691,15 +698,23 @@ export default function ReportPage() {
     }
   }
 
-  // Load resume blob when entering screen mode
+  const resumeCandidateId = result?.candidate_id
+  const fallbackResumeText = result?.raw_resume_text || result?.resume_text || 'Resume preview not available for this file format.'
+
+  // This effect owns the URL for the active candidate and screening session.
   useEffect(() => {
-    if (!screenMode || !result?.candidate_id) return
-    if (resumeBlobUrl || resumeIsText) return // already loaded
+    setResumeBlobUrl(null)
+    setResumeIsText(false)
+    setResumeText('')
+    setResumeLoading(false)
+    if (!screenMode || !resumeCandidateId) return
     let objectUrl = null
+    let cancelled = false
     const loadResume = async () => {
       setResumeLoading(true)
       try {
-        const resp = await api.get(`/candidates/${result.candidate_id}/resume?inline=true`, { responseType: 'blob' })
+        const resp = await api.get(`/candidates/${resumeCandidateId}/resume?inline=true`, { responseType: 'blob' })
+        if (cancelled) return
         const blob = resp.data
         const contentType = blob.type || resp.headers['content-type'] || ''
         if (contentType.includes('application/pdf')) {
@@ -708,36 +723,26 @@ export default function ReportPage() {
           setResumeIsText(false)
         } else if (contentType.startsWith('text/')) {
           const text = await blob.text()
+          if (cancelled) return
           setResumeText(text)
           setResumeIsText(true)
         } else {
           // Fallback: use raw_resume_text from result data
-          setResumeText(result?.raw_resume_text || result?.resume_text || 'Resume preview not available for this file format.')
+          setResumeText(fallbackResumeText)
           setResumeIsText(true)
         }
       } catch (e) {
         console.warn('PhoneScreen: failed to load resume blob', e)
       } finally {
-        setResumeLoading(false)
+        if (!cancelled) setResumeLoading(false)
       }
     }
     loadResume()
     return () => {
+      cancelled = true
       if (objectUrl) URL.revokeObjectURL(objectUrl)
     }
-  }, [screenMode, result?.candidate_id])
-
-  // Revoke blob URL when exiting screen mode
-  useEffect(() => {
-    if (!screenMode) {
-      if (resumeBlobUrl) {
-        URL.revokeObjectURL(resumeBlobUrl)
-        setResumeBlobUrl(null)
-      }
-      setResumeIsText(false)
-      setResumeText('')
-    }
-  }, [screenMode])
+  }, [screenMode, resumeCandidateId, fallbackResumeText])
 
   // Kit readiness hooks must run before any early return (Rules of Hooks)
   const interviewQsForKit = useMemo(
@@ -846,45 +851,18 @@ export default function ReportPage() {
     }).catch(() => window.prompt('Copy this report link:', shareUrl))
   }
 
-  const fallbackClientSidePdf = async () => {
+  const fallbackClientSidePdf = () => {
     if (isDownloading) return
-
-    setIsDownloading(true)
+    const element = document.querySelector('.report-content')
+    if (!element) {
+      showError('Report content not found. Please try again.')
+      return
+    }
     try {
-      // Get the report content element
-      const element = document.querySelector('.report-content')
-      if (!element) {
-        showError('Report content not found. Please try again.')
-        setIsDownloading(false)
-        return
-      }
-
-      // PDF options
-      const opt = {
-        margin: [10, 10, 10, 10],
-        filename: `${candidateName || 'Candidate'}_Screening_Report.pdf`,
-        image: { type: 'jpeg', quality: 0.98 },
-        html2canvas: {
-          scale: 2,
-          useCORS: true,
-          logging: false,
-          letterRendering: true
-        },
-        jsPDF: {
-          unit: 'mm',
-          format: 'a4',
-          orientation: 'portrait'
-        },
-        pagebreak: { mode: ['avoid-all', 'css', 'legacy'] }
-      }
-
-      // Generate and download PDF
-      await html2pdf().set(opt).from(element).save()
+      printDocument()
     } catch (error) {
-      console.error('PDF generation error:', error)
-      showError('Failed to generate PDF. Please try again or use the browser print option (Ctrl+P).')
-    } finally {
-      setIsDownloading(false)
+      console.error('Print failed:', error)
+      showError('Failed to open the print dialog. Use the browser print option (Ctrl+P).')
     }
   }
 

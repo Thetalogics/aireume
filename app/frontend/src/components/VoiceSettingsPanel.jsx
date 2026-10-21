@@ -1,10 +1,7 @@
 import { Bell, Clock, Loader2, Mic, PhoneCall, Save, Shield, Volume2 } from 'lucide-react'
 import { suggestInterviewOpening } from '../lib/api'
-import {
-  OPENING_PLACEHOLDERS, VOICE_OPTIONS, GREETING_OPTIONS, DETAIL_OPTIONS,
-  FOLLOW_UP_OPTIONS, TIMEZONE_OPTIONS,
-  Section, Field, TextInput, Select, DayPicker,
-} from './VoiceScreeningPrimitives'
+import { Section, Field, TextInput, Select, DayPicker } from './VoiceScreeningPrimitives'
+import { OPENING_PLACEHOLDERS, VOICE_OPTIONS, GREETING_OPTIONS, DETAIL_OPTIONS, FOLLOW_UP_OPTIONS, TIMEZONE_OPTIONS } from './voiceScreeningConstants'
 
 export default function VoiceSettingsPanel({
   draft,

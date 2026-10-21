@@ -8,7 +8,7 @@ name: aria
 
 services:
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
     container_name: resume-screener-postgres
     command: >
       postgres
@@ -35,7 +35,7 @@ services:
       start_period: 30s
 
   ollama:
-    image: ollama/ollama:latest
+    image: ollama/ollama:latest@sha256:2e6cc92ffa43b4b1a2e70e315407e00ac97ec125afc71277d73c7efe01c4f31b
     container_name: resume-screener-ollama
     environment:
       - OLLAMA_NUM_THREAD=8
@@ -106,7 +106,7 @@ services:
       start_period: 10s
 
   ollama-warmup:
-    image: ollama/ollama:latest
+    image: ollama/ollama:latest@sha256:2e6cc92ffa43b4b1a2e70e315407e00ac97ec125afc71277d73c7efe01c4f31b
     container_name: resume-screener-ollama-warmup
     depends_on:
       ollama:
@@ -125,7 +125,7 @@ services:
     restart: "no"
 
   watchtower:
-    image: containrrr/watchtower
+    image: containrrr/watchtower@sha256:6dd50763bbd632a83cb154d5451700530d1e44200b268a4e9488fefdfcf2b038
     container_name: resume-screener-watchtower
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
@@ -145,7 +145,7 @@ services:
     restart: unless-stopped
 
   certbot:
-    image: certbot/certbot
+    image: certbot/certbot@sha256:f70ad0adbb7e117f0fe42a63c553f28ea451edabc0148757b6efcd9735acaa20
     container_name: resume-screener-certbot
     volumes:
       - certbot_certs:/etc/letsencrypt

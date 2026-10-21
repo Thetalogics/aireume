@@ -1,7 +1,7 @@
 import { useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { Check, Circle, ChevronRight, X, PartyPopper, Lock } from 'lucide-react'
-import { useOnboarding } from '../contexts/OnboardingContext'
+import { useOnboarding } from '../contexts/useOnboarding'
 import { useSubscription } from '../hooks/useSubscription'
 import usePermissions from '../hooks/usePermissions'
 import {

@@ -141,10 +141,11 @@ The Live Screen Kit requires background **interview kit enrichment**. If questio
 - **Excel Export** — Formatted workbook output
 - **Email Templates** — Shortlist / rejection / screening call generation
 
-### Custom AI Training
+### Prompt Personalization (Beta)
 - **Outcome Labeling** — Tag past screenings (hired/rejected)
-- **Model Fine-Tuning** — Ollama Modelfile customization (10+ examples required)
-- **Per-Tenant Models** — Organization-specific AI tuning
+- **Prompt Context** — At least 10 labeled examples required; up to 50 are embedded in an Ollama Modelfile `SYSTEM` prompt
+- **Tenant Scope** — A tenant-scoped Ollama model name wraps the base model with prompt context; weights and adapters are unchanged
+- **Production Gate** — Disabled by default when `ENVIRONMENT=production`; requires `TRAINING_ENABLED=true` to enable
 
 ### Subscription & Billing
 - **Tiered Plans** — Free / Pro / Enterprise with configurable limits
@@ -270,6 +271,11 @@ Local Ollama is supported for **self-managed / lab** deployments only. It is **n
 - Ollama Cloud API key (get it free from [ollama.com/settings/keys](https://ollama.com/settings/keys))
 - Git
 
+For local development and CI, use Node.js 22.x (selected by `.nvmrc`)
+and Python 3.11.x (selected by `.python-version`). These select supported
+release lines; patch versions are not pinned. CI checks the installed Node
+major and Python major/minor against these files after setup.
+
 > **Note:** Ollama Cloud is the default for ThetaLogics SaaS. Local Ollama is an optional advanced path — see [Using Local Ollama (Optional, Advanced)](#using-local-ollama-optional-advanced).
 
 ### Quick Start (Ollama Cloud — Default)
@@ -321,7 +327,7 @@ docker exec -it resume-screener-ollama ollama pull gemma4:31b
 | **Model Quality** | Access to cloud models (e.g. gemma4) | Limited by local hardware |
 | **Typical use** | ThetaLogics SaaS production | Lab, air-gapped, dedicated enterprise |
 
-**Note:** `/api/training` stores labeled examples for **prompt/model personalization**. It does not train or ship a fine-tuned model in the hosted SaaS path.
+**Note:** `/api/training` stores labeled hiring outcomes for **tenant prompt personalization**. This beta constructs an Ollama Modelfile `SYSTEM` prompt under a tenant-scoped model name; it does not train weights or adapters, perform hosted fine-tuning, or produce a separately trained ML model. It is disabled by default when `ENVIRONMENT=production`; set `TRAINING_ENABLED=true` to enable it.
 
 ### Development Setup
 
@@ -588,13 +594,13 @@ LLM_NARRATIVE_TIMEOUT=180
 | POST | `/api/transcript/analyze` | Analyze transcript |
 | GET | `/api/transcript/analyses` | List analyses |
 
-### Training
+### Prompt Personalization (legacy `/api/training` paths)
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | POST | `/api/training/label` | Label outcome |
 | POST | `/api/training/train` | Trigger prompt personalization job |
-| GET | `/api/training/status` | Training status |
+| GET | `/api/training/status` | Background personalization job status; `trained` is true only after completion |
 
 ### Health & Monitoring
 
@@ -652,7 +658,11 @@ LLM_NARRATIVE_TIMEOUT=180
 
 **TrainingExample**
 - `id`, `tenant_id`, `screening_result_id`, `outcome` (hired/rejected)
-- Custom model training data
+- Tenant-scoped labeled hiring outcomes used as prompt context
+
+**TrainingRun**
+- Background prompt-personalization job state and tenant-scoped Ollama model name
+- Legacy `trained` / `last_trained` response fields reflect job completion; failed or running jobs remain untrained
 
 ---
 
@@ -680,6 +690,47 @@ LLM_NARRATIVE_TIMEOUT=180
 ---
 
 ## Testing
+
+### Repository Verification
+
+Use Node 22 and Python 3.11 (pinned in `.nvmrc` and `.python-version`), install
+the locked backend requirements, and run `npm ci` at the root and in
+`app/frontend` before verification. From the repository root:
+
+```bash
+npm test                    # Fast: runner, findings, Python suites, frontend tests and strict lint
+npm run verify              # Full release gates, including real service integrations
+npm test -- --list          # Inspect fast commands and intentionally excluded service gates
+npm run verify -- --list    # Inspect full commands and required environment; executes no gates
+python -m pytest            # Default deterministic Python collection under tests/
+```
+
+Set `PYTHON` to a Python executable path when needed; paths with spaces are
+supported. Otherwise verification uses the active virtual environment, then
+`python` on PATH. The fast runner explicitly includes `app/backend/tests` as
+well as the default root `tests/` suite. Fast mode labels external service
+gates as intentionally excluded; their tests may skip in the general suite.
+
+Full mode requires disposable, reachable services prepared as in `ci.yml`:
+
+- PostgreSQL: `DATABASE_URL`, `RELIABILITY_POSTGRES_URL`, and `PHASE0_POSTGRES_URL`;
+  use a test role that can create databases, with `pg_dump`/`pg_restore` available
+  (or the configured `POSTGRES_TEST_CONTAINER` Docker fallback).
+- Redis: `REDIS_URL`.
+- S3-compatible object storage: `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY`, and
+  `S3_SECRET_KEY`, with an existing writable test bucket.
+- Real-backend browser integration: `JWT_SECRET_KEY`, `INTERNAL_SERVICE_SECRET`,
+  installed Playwright Chromium (`npx playwright install chromium`), and free
+  local ports 8000 and 5173 (4173 for deterministic browser E2E). The runner
+  migrates the test database and starts the API/frontend with CI test settings.
+
+Missing required environment fails preflight before any gates run; unreachable
+services fail their required integration gates rather than silently skipping.
+Full mode also runs build, migration and dependency audit gates, including
+`npm audit --omit=dev --audit-level=low` for frontend production dependencies.
+The mandatory bundle-budget gate remains pending until
+`scripts/check-bundle-budget.mjs` exists; full mode and its list command return
+nonzero while that gate is unavailable.
 
 ### Backend Tests
 
@@ -758,9 +809,11 @@ Triggered on push to `main`:
 | **Team Members** | 3 | 10 | Unlimited |
 | **Batch Processing** | ✓ | ✓ | ✓ |
 | **Video Analysis** | — | ✓ | ✓ |
-| **Custom Training** | — | — | ✓ |
+| **Prompt Personalization (Beta)** | — | — | Requires deployment enablement* |
 | **API Access** | — | — | ✓ |
 | **Priority Support** | — | Email | 24/7 Phone |
+
+*Prompt personalization is disabled by default in production (`ENVIRONMENT=production`); an administrator must set `TRAINING_ENABLED=true`. This constructs prompts using labeled outcomes; it does not train model weights or adapters, and no accuracy improvement is guaranteed.
 
 ---
 
@@ -803,7 +856,7 @@ Triggered on push to `main`:
 │   │   │   ├── subscription.py # Subscription endpoints
 │   │   │   ├── team.py         # Team management
 │   │   │   ├── templates.py    # JD templates
-│   │   │   ├── training.py     # AI training
+│   │   │   ├── training.py     # Tenant prompt personalization (legacy API name)
 │   │   │   ├── transcript.py   # Transcript analysis
 │   │   │   └── video.py        # Video analysis
 │   │   ├── services/
@@ -840,7 +893,7 @@ Triggered on push to `main`:
 │       ├── nginx.conf          # Dev config
 │       └── nginx.prod.conf     # Production config
 ├── ollama/
-│   ├── Modelfile               # Custom model definition
+│   ├── Modelfile               # Base model prompt and inference parameters
 │   └── setup-recruiter-model.sh
 ├── scripts/
 │   ├── pre-commit-check.ps1

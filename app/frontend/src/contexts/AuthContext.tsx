@@ -1,9 +1,8 @@
-import { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react'
+import { AuthContext } from './useAuth'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import api from '../lib/api'
 import useIdleTimeout from '../hooks/useIdleTimeout'
 import SessionTimeoutModal from '../components/SessionTimeoutModal'
-
-const AuthContext = createContext(null)
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null)
@@ -107,7 +106,6 @@ export function AuthProvider({ children }) {
     // Redirect to login — ProtectedRoute will also catch the null user,
     // but this ensures the redirect even on the current cycle
     window.location.href = '/login'
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const { isWarning, countdown, resetTimer } = useIdleTimeout(!!user, handleIdleTimeout)
@@ -121,7 +119,6 @@ export function AuthProvider({ children }) {
   const handleLogoutNow = useCallback(() => {
     logout()
     window.location.href = '/login'
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   return (
@@ -136,10 +133,4 @@ export function AuthProvider({ children }) {
       )}
     </AuthContext.Provider>
   )
-}
-
-export function useAuth() {
-  const ctx = useContext(AuthContext)
-  if (!ctx) throw new Error('useAuth must be used within AuthProvider')
-  return ctx
 }

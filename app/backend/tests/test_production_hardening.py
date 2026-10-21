@@ -457,6 +457,68 @@ class TestMfaRequiredAtLogin:
         assert isinstance(detail, dict)
         assert detail["error_code"] == "MFA_SETUP_REQUIRED"
 
+    def test_mfa_setup_returns_scannable_uri(self, auth_client, db):
+        from urllib.parse import parse_qs, urlparse
+
+        from app.backend.models.db_models import User
+
+        resp = auth_client.post("/api/auth/mfa/setup")
+        assert resp.status_code == 200
+        assert resp.headers["cache-control"] == "no-store"
+
+        payload = resp.json()
+        uri = urlparse(payload["otpauth_url"])
+        assert uri.scheme == "otpauth"
+        assert uri.netloc == "totp"
+        assert parse_qs(uri.query)["secret"] == [payload["secret"]]
+
+        user = db.query(User).filter(User.email == "admin@testcorp.com").one()
+        assert user.mfa_enabled is False
+        assert user.mfa_secret == payload["secret"]
+
+    def test_mfa_setup_cannot_replace_enabled_factor(self, auth_client, db):
+        from app.backend.models.db_models import User
+
+        user = db.query(User).filter(User.email == "admin@testcorp.com").one()
+        user.mfa_enabled = True
+        user.mfa_secret = "JBSWY3DPEHPK3PXP"
+        db.commit()
+
+        resp = auth_client.post("/api/auth/mfa/setup")
+        assert resp.status_code == 409
+        assert "re-enrolling" in resp.json()["detail"]
+
+        db.refresh(user)
+        assert user.mfa_enabled is True
+        assert user.mfa_secret == "JBSWY3DPEHPK3PXP"
+
+    def test_login_distinguishes_missing_and_invalid_mfa_codes(self, auth_client):
+        import pyotp
+
+        setup = auth_client.post("/api/auth/mfa/setup")
+        secret = setup.json()["secret"]
+        enabled = auth_client.post(
+            "/api/auth/mfa/enable",
+            json={"code": pyotp.TOTP(secret).now()},
+        )
+        assert enabled.status_code == 200
+
+        credentials = {
+            "email": "admin@testcorp.com",
+            "password": "TestPass123!",
+            "tenant_slug": "testcorp",
+        }
+        missing = auth_client.post("/api/auth/login", json=credentials)
+        assert missing.status_code == 401
+        assert missing.json()["detail"] == "MFA code required"
+
+        invalid = auth_client.post(
+            "/api/auth/login",
+            json={**credentials, "mfa_code": "000000"},
+        )
+        assert invalid.status_code == 401
+        assert invalid.json()["detail"] == "Invalid or expired MFA code"
+
 
 class TestEnvExampleSecrets:
     def test_example_env_uses_placeholders(self):

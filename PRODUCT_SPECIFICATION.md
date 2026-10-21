@@ -466,18 +466,21 @@ ARIA is an enterprise-grade, AI-powered resume intelligence platform designed fo
 - **Automatic Extraction**: Parse JD from URL
 - **Validation**: Content size and format checks
 
-### 11. Custom AI Training
+### 11. Tenant Prompt Personalization (Beta)
 
 #### 11.1 Outcome Labeling
 - **Tag Screenings**: Mark results as hired or rejected
 - **Feedback Storage**: Optional feedback text
-- **Tenant Isolation**: Training data scoped to tenant
+- **Tenant Isolation**: Labeled hiring outcomes scoped to tenant
 
-#### 11.2 Prompt / model personalization
-- **Labeled examples**: Recruiter outcomes used as prompt context (not hosted fine-tuning)
-- **Minimum examples**: 10+ labeled examples required for the personalization path
-- **Per-tenant prompts**: Organization-specific wording, not a separate trained model
-- **Training status**: Track personalization job status
+#### 11.2 Prompt construction
+- **Mechanism**: Labeled hiring outcomes are embedded in an Ollama Modelfile `SYSTEM` prompt
+- **Example limits**: At least 10 labeled examples are required; at most 50 are currently embedded
+- **Tenant-scoped model name**: The base model is wrapped with tenant prompt context under an Ollama name such as `aria-{tenant_id}`
+- **Capability boundary**: No weight training, adapter training, hosted fine-tuning, separately trained ML model, or guaranteed accuracy improvement
+- **Production gate**: Disabled by default when `ENVIRONMENT=production`; requires `TRAINING_ENABLED=true` to enable
+- **Job status**: Tracks the background personalization job. The backward-compatible `trained` field is true only after completion; failed or running jobs remain untrained
+- **Compatibility**: Existing `/api/training/*` paths, `TrainingExample` / `TrainingRun` schema names, and status field names remain unchanged
 
 ### 12. Dashboard & Analytics
 
@@ -754,7 +757,8 @@ ARIA is an enterprise-grade, AI-powered resume intelligence platform designed fo
 - **ScreeningResult**: Analysis results with fit scores, narratives, status, versioning; optional requisition linkage
 - **CandidateNote**: Team notes on candidates
 - **RoleTemplate**: Saved job descriptions with custom weights
-- **TrainingExample**: Labeled outcomes for model training
+- **TrainingExample**: Tenant-scoped labeled hiring outcomes used as prompt context
+- **TrainingRun**: Background prompt-personalization job state, tenant-scoped Ollama name, timestamps, and failure status; the legacy schema name does not imply weight training
 
 #### 19.2b Requisitions & HM Workflow
 - **Requisition**: Opening with intake, criteria version, status, `assigned_recruiter_id`, `opened_on_behalf_of_hm_id`, routing policy JSON, sourcing brief
@@ -882,10 +886,10 @@ ARIA is an enterprise-grade, AI-powered resume intelligence platform designed fo
 - `GET /api/export/excel` - Export as Excel
 - `GET /api/export/{result_id}/pdf-report` - Generate PDF interview kit report
 
-#### 20.11 Training (`/api/training`)
+#### 20.11 Prompt Personalization (legacy `/api/training` paths)
 - `POST /api/training/label` - Label outcome
 - `POST /api/training/train` - Trigger prompt personalization job
-- `GET /api/training/status` - Training status
+- `GET /api/training/status` - Background personalization job status; `trained` is true only after completion
 
 #### 20.12 Subscription (`/api/subscription`)
 - `GET /api/subscription` - Current subscription
@@ -1243,7 +1247,7 @@ ARIA is an enterprise-grade, AI-powered resume intelligence platform designed fo
 - Unlimited analyses
 - 100 GB+ storage
 - Unlimited team members
-- Custom AI training
+- Beta tenant prompt personalization when enabled by the deployment administrator (`TRAINING_ENABLED=true` in production)
 - API access
 - Priority support (24/7 phone)
 - Custom integrations
@@ -1266,7 +1270,6 @@ ARIA is an enterprise-grade, AI-powered resume intelligence platform designed fo
 ✅ Workspace onboarding wizard  
 ✅ Email generation  
 ✅ Export (CSV/Excel)  
-✅ Custom AI training  
 ✅ Dashboard & analytics / report builder  
 ✅ Subscription & billing  
 ✅ Platform administration  
@@ -1283,6 +1286,8 @@ ARIA is an enterprise-grade, AI-powered resume intelligence platform designed fo
 ✅ Automated backend + frontend test suites  
 
 #### 29.2 In Progress / Partial
+🔄 Tenant prompt personalization beta (implemented Modelfile `SYSTEM` prompt path; disabled by default in production, no weight/adapter training)
+
 🔄 Adverse action report system  
 🔄 Calibration & drift detection  
 🔄 Multi-model consensus scoring  
@@ -1302,7 +1307,7 @@ ARIA is an enterprise-grade, AI-powered resume intelligence platform designed fo
 3. **AI Quality**: Hybrid pipeline, hallucination guards, PII redaction — not 100% accurate or bias-free
 4. **Enterprise-Grade**: Multi-tenant, granular RBAC, webhooks, rate limiting
 5. **Open Source**: MIT license, fully auditable
-6. **Customizable**: Adaptive weights, custom training, feature flags
+6. **Customizable**: Adaptive scoring weights, beta tenant prompt personalization, and feature flags; personalization changes prompt context without training model weights
 7. **Production-Ready**: Automated test suites, CI/CD, monitoring, health checks
 8. **Comprehensive API**: 100+ endpoints, OpenAPI docs
 9. **Explainability**: Transparent scoring, decision explanations

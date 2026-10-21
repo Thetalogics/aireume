@@ -29,23 +29,6 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     sourcemap: true,
-    chunkSizeWarningLimit: 1000,
-    rollupOptions: {
-      output: {
-        manualChunks(id) {
-          // Heavy standalone libs that don't depend on React
-          if (id.includes('node_modules/html2pdf') || id.includes('node_modules/jspdf') || id.includes('node_modules/html2canvas')) {
-            return 'vendor-pdf'
-          }
-          // All React + React-dependent libs in one chunk to avoid load-order crashes
-          // (lucide-react, react-router, recharts, framer-motion etc. all use React.forwardRef
-          //  or other React internals at module init time)
-          if (id.includes('node_modules/')) {
-            return 'vendor-react'
-          }
-        }
-      }
-    }
   },
   test: {
     globals: true,

@@ -2,8 +2,8 @@ import { useState, useEffect } from 'react'
 import { Users2, UserPlus, Shield, AlertCircle, Check, X } from 'lucide-react'
 import EmptyState from '../components/EmptyState'
 import { getTeamMembers, inviteTeamMember, startTraining, getTrainingStatus, getTenantAuditLogs } from '../lib/api'
-import { useAuth } from '../contexts/AuthContext'
-import { useOnboarding } from '../contexts/OnboardingContext'
+import { useAuth } from '../contexts/useAuth'
+import { useOnboarding } from '../contexts/useOnboarding'
 import { showError } from '../lib/toast'
 
 const ROLES = ['admin', 'ta_lead', 'recruiter', 'hiring_manager', 'viewer']
@@ -128,7 +128,7 @@ function TrainingDashboard() {
       await startTraining()
       setTimeout(load, 2000)
     } catch (err) {
-      showError(err.response?.data?.detail || 'Training failed')
+      showError(err.response?.data?.detail || 'Prompt personalization failed')
     } finally {
       setTraining(false)
     }
@@ -143,27 +143,27 @@ function TrainingDashboard() {
   return (
     <div className="bg-white/90 backdrop-blur-md rounded-3xl ring-1 ring-brand-100 shadow-brand p-5 space-y-4">
       <div>
-        <h3 className="font-extrabold text-brand-900 tracking-tight">Custom AI Training</h3>
-        <p className="text-sm text-slate-500 mt-0.5">Fine-tune ARIA on your company's past hiring decisions.</p>
+        <h3 className="font-extrabold text-brand-900 tracking-tight">Prompt personalization</h3>
+        <p className="text-sm text-slate-500 mt-0.5">Use your team's labeled hiring outcomes as prompt context. Beta feature; model weights stay unchanged.</p>
       </div>
 
       <div className="grid grid-cols-2 gap-4">
         <div className="bg-brand-50 ring-1 ring-brand-100 rounded-2xl p-4 text-center">
           <p className="text-3xl font-extrabold text-brand-900">{status?.labeled_count || 0}</p>
           <p className="text-xs font-semibold text-brand-700 mt-0.5">Labeled Examples</p>
-          <p className="text-xs text-slate-400 mt-1">Need 10+ to train</p>
+          <p className="text-xs text-slate-400 mt-1">Need 10+ to personalize</p>
         </div>
         <div className={`rounded-2xl p-4 text-center ring-1 ${status?.trained ? 'bg-green-50 ring-green-200' : 'bg-brand-50 ring-brand-100'}`}>
           <p className={`text-sm font-bold ${status?.trained ? 'text-green-700' : 'text-slate-500'}`}>
-            {status?.trained ? '✓ Custom Model Active' : 'No Custom Model'}
+            {status?.trained ? 'Prompt personalization ready' : 'Prompt personalization not completed'}
           </p>
           {status?.model_name && <p className="text-xs text-slate-400 mt-1 font-medium">{status.model_name}</p>}
         </div>
       </div>
 
       <p className="text-xs text-slate-500 leading-relaxed">
-        Label candidates as "Hired" or "Rejected" from the report page to build training data.
-        Once you have 10+ examples, ARIA will learn your company's hiring patterns.
+        Label candidates as "Hired" or "Rejected" from the report page. With at least 10 labeled
+        examples, personalization embeds up to 50 in an Ollama Modelfile SYSTEM prompt for your tenant.
       </p>
 
       <button
@@ -171,7 +171,7 @@ function TrainingDashboard() {
         disabled={training || (status?.labeled_count || 0) < 10}
         className="w-full py-2.5 bg-brand-600 hover:bg-brand-700 text-white text-sm font-bold rounded-2xl disabled:opacity-50 transition-colors shadow-brand-sm"
       >
-        {training ? 'Training in background...' : 'Train Custom Model'}
+        {training ? 'Starting personalization...' : 'Personalize ARIA'}
       </button>
     </div>
   )
@@ -232,7 +232,7 @@ export default function TeamPage() {
         <div className="flex items-center justify-between card-animate">
           <div>
             <h2 className="text-3xl font-extrabold text-brand-900 tracking-tight">Team</h2>
-            <p className="text-slate-500 text-sm mt-1 font-medium">Manage your workspace members and AI training.</p>
+            <p className="text-slate-500 text-sm mt-1 font-medium">Manage your workspace members and ARIA prompt personalization.</p>
           </div>
           {isAdmin && (
             <button
@@ -296,7 +296,7 @@ export default function TeamPage() {
 
         {isAdmin && <TenantAuditPanel />}
 
-        {/* Training dashboard */}
+        {/* Prompt personalization dashboard */}
         <TrainingDashboard />
       </main>
 

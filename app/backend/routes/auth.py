@@ -13,7 +13,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from threading import Lock
 
-from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi import APIRouter, Depends, HTTPException, status, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from jose import jwt
@@ -511,7 +511,8 @@ def login(request: Request, body: LoginRequest, db: Session = Depends(get_db)):
     if getattr(user, "mfa_enabled", False):
         from app.backend.services.mfa_service import verify_code
         if not verify_code(user.mfa_secret, body.mfa_code):
-            raise HTTPException(status_code=401, detail="MFA code required")
+            detail = "Invalid or expired MFA code" if body.mfa_code else "MFA code required"
+            raise HTTPException(status_code=401, detail=detail)
 
     # Check email verification
     if not user.email_verified:
@@ -859,12 +860,22 @@ class MfaCodeBody(BaseModel):
 
 
 @router.post("/mfa/setup")
-def mfa_setup(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def mfa_setup(
+    response: Response,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     from app.backend.services.mfa_service import new_secret, provisioning_uri
+    if current_user.mfa_enabled:
+        raise HTTPException(
+            status_code=409,
+            detail="MFA is already enabled. Complete an approved recovery flow before re-enrolling.",
+        )
     secret = new_secret()
     current_user.mfa_secret = secret
     current_user.mfa_enabled = False
     db.commit()
+    response.headers["Cache-Control"] = "no-store"
     return {"secret": secret, "otpauth_url": provisioning_uri(current_user.email, secret)}
 
 

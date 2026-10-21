@@ -1398,7 +1398,9 @@ async def batch_analyze_chunked_endpoint(
         processing_type=PROCESSING_RESUME_ANALYSIS,
     )
 
-    from app.backend.routes.upload import CHUNK_STORAGE_DIR
+    from app.backend.routes.upload import (
+        _safe_client_filename, get_assembled_upload, remove_assembled_upload,
+    )
 
     if not upload_ids:
         raise HTTPException(status_code=400, detail="At least one upload_id required")
@@ -1427,33 +1429,19 @@ async def batch_analyze_chunked_endpoint(
     _check_jd_size(job_description)
 
     # Locate assembled files for each upload_id
-    assembled_dir = CHUNK_STORAGE_DIR / "assembled"
     file_data = []
     failed_items: list[BatchFailedItem] = []
 
     for upload_id, filename in zip(upload_ids, filenames):
-        # Sanitise to prevent directory traversal
-        safe_uid = upload_id.replace("..", "").replace("/", "").replace("\\", "")
-        safe_fname = filename.replace("..", "").replace("/", "").replace("\\", "")
         try:
-            from app.backend.routes.upload import assert_upload_owned
-            assert_upload_owned(safe_uid, current_user)
+            _safe_client_filename(filename)
+            assembled_path, filename = get_assembled_upload(upload_id, current_user)
         except HTTPException:
             failed_items.append(BatchFailedItem(
                 filename=filename,
                 error=f"Upload {upload_id} not found or expired. Please re-upload.",
             ))
             continue
-        assembled_path = assembled_dir / f"{safe_uid}_{safe_fname}"
-
-        if not assembled_path.exists():
-            log.warning("Assembled file not found for upload_id=%s, filename=%s", upload_id, filename)
-            failed_items.append(BatchFailedItem(
-                filename=filename,
-                error=f"Upload {upload_id} not found or expired. Please re-upload.",
-            ))
-            continue
-
         try:
             content = assembled_path.read_bytes()
         except OSError as e:
@@ -1463,7 +1451,7 @@ async def batch_analyze_chunked_endpoint(
             )
             failed_items.append(BatchFailedItem(
                 filename=filename,
-                error=f"Failed to read assembled file: {str(e)}",
+                error="Failed to read uploaded file",
             ))
             continue
 
@@ -1617,13 +1605,8 @@ async def batch_analyze_chunked_endpoint(
     # Clean up assembled files after successful processing
     for _content, filename, upload_id in file_data:
         try:
-            safe_uid = upload_id.replace("..", "").replace("/", "").replace("\\", "")
-            safe_fname = filename.replace("..", "").replace("/", "").replace("\\", "")
-            assembled_path = assembled_dir / f"{safe_uid}_{safe_fname}"
-            if assembled_path.exists():
-                assembled_path.unlink()
-                log.info("Cleaned up assembled file: %s", assembled_path)
-        except OSError as e:
+            remove_assembled_upload(upload_id, current_user)
+        except (OSError, HTTPException) as e:
             log.warning(
                 "Non-critical: Failed to clean up assembled file for upload_id=%s: %s", upload_id, e,
                 extra={"error_code": "IO_ERROR"},
@@ -1699,7 +1682,9 @@ async def batch_analyze_stream_endpoint(
         processing_type=PROCESSING_RESUME_ANALYSIS,
     )
 
-    from app.backend.routes.upload import CHUNK_STORAGE_DIR
+    from app.backend.routes.upload import (
+        _safe_client_filename, get_assembled_upload, remove_assembled_upload,
+    )
 
     # ── Input validation ────────────────────────────────────────────────────
     if not upload_ids:
@@ -1729,33 +1714,19 @@ async def batch_analyze_stream_endpoint(
     _check_jd_size(job_description)
 
     # Locate assembled files for each upload_id
-    assembled_dir = CHUNK_STORAGE_DIR / "assembled"
     file_data = []
     failed_items: list[BatchFailedItem] = []
 
     for upload_id, filename in zip(upload_ids, filenames):
-        # Sanitise to prevent directory traversal
-        safe_uid = upload_id.replace("..", "").replace("/", "").replace("\\", "")
-        safe_fname = filename.replace("..", "").replace("/", "").replace("\\", "")
         try:
-            from app.backend.routes.upload import assert_upload_owned
-            assert_upload_owned(safe_uid, current_user)
+            _safe_client_filename(filename)
+            assembled_path, filename = get_assembled_upload(upload_id, current_user)
         except HTTPException:
             failed_items.append(BatchFailedItem(
                 filename=filename,
                 error=f"Upload {upload_id} not found or expired. Please re-upload.",
             ))
             continue
-        assembled_path = assembled_dir / f"{safe_uid}_{safe_fname}"
-
-        if not assembled_path.exists():
-            log.warning("Assembled file not found for upload_id=%s, filename=%s", upload_id, filename)
-            failed_items.append(BatchFailedItem(
-                filename=filename,
-                error=f"Upload {upload_id} not found or expired. Please re-upload.",
-            ))
-            continue
-
         try:
             content = assembled_path.read_bytes()
         except OSError as e:
@@ -1765,7 +1736,7 @@ async def batch_analyze_stream_endpoint(
             )
             failed_items.append(BatchFailedItem(
                 filename=filename,
-                error=f"Failed to read assembled file: {str(e)}",
+                error="Failed to read uploaded file",
             ))
             continue
 
@@ -2060,13 +2031,8 @@ async def batch_analyze_stream_endpoint(
         # Clean up assembled files after all processing
         for _content, filename, upload_id in file_data:
             try:
-                safe_uid = upload_id.replace("..", "").replace("/", "").replace("\\", "")
-                safe_fname = filename.replace("..", "").replace("/", "").replace("\\", "")
-                assembled_path = assembled_dir / f"{safe_uid}_{safe_fname}"
-                if assembled_path.exists():
-                    assembled_path.unlink()
-                    log.info("Cleaned up assembled file: %s", assembled_path)
-            except OSError as e:
+                remove_assembled_upload(upload_id, current_user)
+            except (OSError, HTTPException) as e:
                 log.warning(
                     "Non-critical: Failed to clean up assembled file for upload_id=%s: %s", upload_id, e,
                     extra={"error_code": "IO_ERROR"},

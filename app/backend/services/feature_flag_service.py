@@ -1,6 +1,7 @@
 """Feature flag service with in-memory caching."""
 import time
 import threading
+import logging
 from sqlalchemy.orm import Session
 from app.backend.models.db_models import FeatureFlag, TenantFeatureOverride, PlanFeature, Tenant
 from app.backend.services.plan_entitlement_service import (
@@ -13,6 +14,7 @@ from app.backend.services.plan_entitlement_service import (
 _cache = {}
 _cache_lock = threading.Lock()
 _CACHE_TTL = 60  # seconds
+logger = logging.getLogger(__name__)
 
 
 def _cache_key(tenant_id: int, feature_key: str) -> str:
@@ -45,20 +47,45 @@ def _set_cached(key: str, val: bool):
         _cache[key] = {"val": val, "ts": time.time()}
 
 
-def invalidate_cache(tenant_id: int = None, feature_key: str = None):
-    """Clear cache entries. If no args, clear all."""
+def invalidate_cache(tenant_id: int | None = None, feature_key: str | None = None):
+    """Clear matching feature entries from Redis and process-local cache tiers."""
     with _cache_lock:
-        if tenant_id is None and feature_key is None:
-            _cache.clear()
-        else:
-            keys_to_remove = []
-            for k in _cache:
-                if tenant_id and str(tenant_id) in k:
-                    keys_to_remove.append(k)
-                elif feature_key and feature_key in k:
-                    keys_to_remove.append(k)
-            for k in keys_to_remove:
-                del _cache[k]
+        for key in list(_cache):
+            tenant, _, feature = key.partition(":")
+            if (tenant_id is None or tenant == str(tenant_id)) and (
+                feature_key is None or feature == feature_key
+            ):
+                del _cache[key]
+
+    from app.backend.services import shared_cache
+
+    if tenant_id is not None and feature_key is not None:
+        shared_cache.cache_delete(f"ff:{tenant_id}:{feature_key}")
+    elif tenant_id is not None:
+        shared_cache.cache_delete_prefix(f"ff:{tenant_id}:")
+    elif feature_key is None:
+        shared_cache.cache_delete_prefix("ff:")
+    else:
+        # A feature is a suffix component, not a prefix. Clear fallback first
+        # so even an unavailable Redis or failed SCAN cannot retain local truth.
+        with shared_cache._lock:
+            for key in list(shared_cache._memory):
+                if key.startswith("ff:") and key.split(":", 2)[-1] == feature_key:
+                    del shared_cache._memory[key]
+        try:
+            r = shared_cache._client()
+            if r is not None:
+                feature_pattern = "".join("\\" + char if char in "\\*?[]" else char for char in feature_key)
+                cursor = 0
+                while True:
+                    cursor, keys = r.scan(cursor=cursor, match=f"ff:*:{feature_pattern}", count=100)
+                    for key in keys:
+                        if key.split(":", 2)[-1] == feature_key:
+                            shared_cache.cache_delete(key)
+                    if cursor == 0:
+                        break
+        except Exception as exc:
+            logger.warning("Redis feature invalidation failed (%s); cleared local cache", exc)
 
 
 def is_feature_enabled(db: Session, tenant_id: int, feature_key: str) -> bool:

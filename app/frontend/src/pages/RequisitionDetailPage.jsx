@@ -35,19 +35,11 @@ import usePermissions from '../hooks/usePermissions'
 import { ViewerReadOnlyBanner } from '../components/RequireWriteAccess'
 import { REQUISITIONS } from '../lib/uxLabels'
 import { showSuccess, showError } from '../lib/toast'
-import { useAuth } from '../contexts/AuthContext'
+import { useAuth } from '../contexts/useAuth'
 import HmOutcomeModal from '../components/HmOutcomeModal'
 import RequisitionSourcingPanel from '../components/RequisitionSourcingPanel'
-import {
-  resolveRequisitionNextAction,
-  JdFullModal,
-  JdReferencePanel,
-  HmRequestModal,
-  HmInviteModal,
-  parseScoringWeights,
-  IntakeWorkflowBar,
-  IntakeForm,
-} from '../components/requisition/RequisitionDetailPanels'
+import { JdFullModal, JdReferencePanel, HmRequestModal, HmInviteModal, IntakeWorkflowBar, IntakeForm } from '../components/requisition/RequisitionDetailPanels'
+import { resolveRequisitionNextAction, parseScoringWeights } from '../components/requisition/requisitionDetailUtils'
 import RequisitionOverviewPanel from '../components/requisition/RequisitionOverviewPanel'
 import RequisitionCriteriaPanel from '../components/requisition/RequisitionCriteriaPanel'
 import RequisitionPipelineBoard from '../components/requisition/RequisitionPipelineBoard'

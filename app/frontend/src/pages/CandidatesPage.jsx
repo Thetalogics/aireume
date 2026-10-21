@@ -13,7 +13,7 @@ import ModalOverlay from '../components/motion/ModalOverlay'
 import ScoreBadge from '../components/ScoreBadge'
 import RecommendationBadge from '../components/RecommendationBadge'
 import QuickActions from '../components/QuickActions'
-import { useOnboarding } from '../contexts/OnboardingContext'
+import { useOnboarding } from '../contexts/useOnboarding'
 import useFeatureGuide from '../hooks/useFeatureGuide'
 import FeatureGuideModal from '../components/onboarding/FeatureGuideModal'
 import usePermissions from '../hooks/usePermissions'
@@ -349,21 +349,27 @@ export default function CandidatesPage() {
   const candidatesGuide = useFeatureGuide('candidates')
   const { canWrite } = usePermissions()
   const [searchParams, setSearchParams] = useSearchParams()
-  const initialStatus = searchParams.get('status') || ''
-  const initialNarrativeStatus = searchParams.get('narrative_status') || ''
-  const initialRequisitionId = searchParams.get('requisition_id') || ''
+  const statusFilter = searchParams.get('status') || ''
+  const narrativeStatusFilter = searchParams.get('narrative_status') || ''
+  const requisitionFilter = searchParams.get('requisition_id') || ''
+  const setUrlFilters = (patch) => {
+    const next = new URLSearchParams(searchParams)
+    Object.entries(patch).forEach(([key, value]) => value ? next.set(key, value) : next.delete(key))
+    setSearchParams(next, { replace: true })
+  }
 
   const [candidates, setCandidates] = useState([])
   const [total, setTotal]           = useState(0)
   const [search, setSearch]         = useState('')
-  const [page, setPage]             = useState(1)
+  const [appliedSearch, setAppliedSearch] = useState('')
   const [loading, setLoading]       = useState(true)
   const [loadError, setLoadError]   = useState(null)
   const [selectedId, setSelectedId] = useState(null)
-  const [statusFilter, setStatusFilter] = useState(initialStatus)
-  const [narrativeStatusFilter, setNarrativeStatusFilter] = useState(initialNarrativeStatus)
   const [skillFilter, setSkillFilter] = useState('')
-  const [requisitionFilter, setRequisitionFilter] = useState(initialRequisitionId)
+  const filterKey = JSON.stringify([appliedSearch, statusFilter, narrativeStatusFilter, skillFilter, requisitionFilter])
+  const [pagination, setPagination] = useState({ key: filterKey, page: 1 })
+  const page = pagination.key === filterKey ? pagination.page : 1
+  const setPage = (next) => setPagination({ key: filterKey, page: typeof next === 'function' ? next(page) : next })
   const [toast, setToast]           = useState(null)
   const [selectedIds, setSelectedIds] = useState(new Set())
   const [bulkLoading, setBulkLoading] = useState(false)
@@ -387,15 +393,15 @@ export default function CandidatesPage() {
     if (mode !== 'split') { setSplitSelectedId(null); setSplitProfile(null) }
   }, [])
 
-  const fetchCandidates = async (s = search, p = page, st = statusFilter, ns = narrativeStatusFilter, sk = skillFilter, reqId = requisitionFilter) => {
+  const fetchCandidates = useCallback(async () => {
     setLoading(true)
     setLoadError(null)
     try {
-      const params = { search: s, page: p, page_size: 20 }
-      if (st) params.status = st
-      if (ns) params.narrative_status = ns
-      if (sk) params.skill = sk
-      if (reqId) params.requisition_id = Number(reqId)
+      const params = { search: appliedSearch, page, page_size: 20 }
+      if (statusFilter) params.status = statusFilter
+      if (narrativeStatusFilter) params.narrative_status = narrativeStatusFilter
+      if (skillFilter) params.skill = skillFilter
+      if (requisitionFilter) params.requisition_id = Number(requisitionFilter)
       const data = await getCandidates(params)
       setCandidates(data.candidates)
       setTotal(data.total)
@@ -406,35 +412,15 @@ export default function CandidatesPage() {
     } finally {
       setLoading(false)
     }
-  }
+  }, [appliedSearch, page, statusFilter, narrativeStatusFilter, skillFilter, requisitionFilter])
 
-  useEffect(() => { fetchCandidates() }, [page])
-
-  // Sync URL params when status/narrative_status/requisition filters change
-  useEffect(() => {
-    const params = {}
-    if (statusFilter) params.status = statusFilter
-    if (narrativeStatusFilter) params.narrative_status = narrativeStatusFilter
-    if (requisitionFilter) params.requisition_id = requisitionFilter
-    if (Object.keys(params).length > 0) {
-      setSearchParams(params, { replace: true })
-    } else {
-      setSearchParams({}, { replace: true })
-    }
-    setPage(1)
-    fetchCandidates(search, 1, statusFilter, narrativeStatusFilter, skillFilter, requisitionFilter)
-  }, [statusFilter, narrativeStatusFilter, requisitionFilter])
-
-  // Re-fetch when skill filter changes
-  useEffect(() => {
-    setPage(1)
-    fetchCandidates(search, 1, statusFilter, narrativeStatusFilter, skillFilter)
-  }, [skillFilter])
+  useEffect(() => { fetchCandidates() }, [fetchCandidates])
 
   const handleSearch = (e) => {
     e.preventDefault()
+    if (search === appliedSearch && page === 1) fetchCandidates()
+    setAppliedSearch(search)
     setPage(1)
-    fetchCandidates(search, 1)
   }
 
   const { optimisticUpdate } = useOptimisticUpdate()
@@ -596,7 +582,7 @@ export default function CandidatesPage() {
               </Link>
               <button
                 type="button"
-                onClick={() => setRequisitionFilter('')}
+                onClick={() => setUrlFilters({ requisition_id: '' })}
                 className="inline-flex items-center gap-1 text-slate-500 hover:text-slate-700"
               >
                 <X className="w-4 h-4" />
@@ -638,7 +624,7 @@ export default function CandidatesPage() {
             <span className="text-sm font-semibold text-slate-700">Status:</span>
             <select
               value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value)}
+              onChange={(e) => setUrlFilters({ status: e.target.value })}
               className="px-3 py-1.5 text-xs rounded-lg font-medium bg-slate-100 text-slate-600 border-0 focus:ring-2 focus:ring-brand-500"
             >
               <option value="">All</option>
@@ -698,7 +684,7 @@ export default function CandidatesPage() {
           </div>
           {(statusFilter || narrativeStatusFilter || skillFilter || scoreFilter !== 'all') && (
             <button
-              onClick={() => { setStatusFilter(''); setNarrativeStatusFilter(''); setSkillFilter(''); setScoreFilter('all') }}
+              onClick={() => { setUrlFilters({ status: '', narrative_status: '' }); setSkillFilter(''); setScoreFilter('all') }}
               className="text-xs text-brand-600 hover:text-brand-700 font-bold hover:underline"
             >
               Clear filters

@@ -1,6 +1,5 @@
-import { createContext, useContext, useState, useCallback, useRef } from 'react'
-
-export const NotificationContext = createContext(null)
+import { NotificationContext } from './useNotification'
+import { useState, useCallback, useRef } from 'react'
 
 export function NotificationProvider({ children }) {
   const [analysisProgress, setAnalysisProgress] = useState({
@@ -169,6 +168,14 @@ export function NotificationProvider({ children }) {
 
   const clearNotifications = useCallback(() => setNotifications([]), [])
 
+  const resetProgress = useCallback(() => {
+    if (completeTimeoutRef.current) {
+      clearTimeout(completeTimeoutRef.current)
+      completeTimeoutRef.current = null
+    }
+    setAnalysisProgress({ isActive: false, completed: 0, total: 0, items: [] })
+  }, [])
+
   const completeBatchAnalysis = useCallback(() => {
     setAnalysisProgress((prev) => {
       const errors = prev.items.filter((i) => i.status === 'error').length
@@ -184,23 +191,11 @@ export function NotificationProvider({ children }) {
       })
       return { ...prev, isActive: false, completed: prev.total }
     })
-    completeTimeoutRef.current = setTimeout(() => {
-      resetProgress()
-    }, 3000)
-  }, [addNotification])
-
-  const resetProgress = useCallback(() => {
     if (completeTimeoutRef.current) {
       clearTimeout(completeTimeoutRef.current)
-      completeTimeoutRef.current = null
     }
-    setAnalysisProgress({
-      isActive: false,
-      completed: 0,
-      total: 0,
-      items: [],
-    })
-  }, [])
+    completeTimeoutRef.current = setTimeout(resetProgress, 3000)
+  }, [addNotification, resetProgress])
 
   const unreadCount = notifications.filter((n) => !n.read).length
 
@@ -234,10 +229,4 @@ export function NotificationProvider({ children }) {
       {children}
     </NotificationContext.Provider>
   )
-}
-
-export function useNotification() {
-  const ctx = useContext(NotificationContext)
-  if (!ctx) throw new Error('useNotification must be used within NotificationProvider')
-  return ctx
 }

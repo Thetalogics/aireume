@@ -1,20 +1,8 @@
+import { formatCurrency, formatDate } from './invoiceFormatters'
 import { ChevronDown, ChevronUp, ExternalLink, FileText, Loader2, X } from 'lucide-react'
 import ModalOverlay from '../motion/ModalOverlay'
 
-function formatCurrency(amountCents, currency = 'usd') {
-  const symbols = { usd: '$', eur: '€', gbp: '£' }
-  const symbol = symbols[currency?.toLowerCase()] || '$'
-  return `${symbol}${((amountCents || 0) / 100).toFixed(2)}`
-}
 
-function formatDate(dateStr) {
-  if (!dateStr) return 'N/A'
-  return new Date(dateStr).toLocaleDateString(undefined, {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-  })
-}
 
 const STATUS_STYLES = {
   paid:      'bg-green-100 text-green-700 ring-green-200',
@@ -186,4 +174,4 @@ function InvoiceDetailModal({ invoice, loading, onClose }) {
   )
 }
 
-export { formatCurrency, formatDate, StatusBadge, InvoiceRow, InvoiceCard, InvoiceDetailModal }
+export { StatusBadge, InvoiceRow, InvoiceCard, InvoiceDetailModal }

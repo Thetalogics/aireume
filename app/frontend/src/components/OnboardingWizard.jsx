@@ -17,10 +17,10 @@ import {
   PartyPopper,
 } from 'lucide-react'
 
-import { useOnboarding } from '../contexts/OnboardingContext'
+import { useOnboarding } from '../contexts/useOnboarding'
 import { useSubscription } from '../hooks/useSubscription'
 import { trackOnboardingEvent } from '../lib/onboardingAnalytics'
-import { useAuth } from '../contexts/AuthContext'
+import { useAuth } from '../contexts/useAuth'
 import {
   updateOrganization,
   selectOnboardingPlan,

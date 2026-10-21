@@ -1,8 +1,9 @@
 import { useState } from 'react'
-import { Shield } from 'lucide-react'
+import { Copy, Shield } from 'lucide-react'
+import { QRCodeSVG } from 'qrcode.react'
 import { setupMfa, enableMfa, disableMfa } from '../../lib/api'
 import { showError, showSuccess } from '../../lib/toast'
-import { useAuth } from '../../contexts/AuthContext'
+import { useAuth } from '../../contexts/useAuth'
 import { Toggle } from '../ui'
 
 export default function MfaSettingsPanel() {
@@ -13,6 +14,12 @@ export default function MfaSettingsPanel() {
   const [busy, setBusy] = useState(false)
 
   const enrolled = Boolean(user?.mfa_enabled)
+
+  const clearSetup = () => {
+    setCode('')
+    setSecret('')
+    setOtpauth('')
+  }
 
   const startSetup = async () => {
     setBusy(true)
@@ -32,13 +39,21 @@ export default function MfaSettingsPanel() {
     try {
       await enableMfa(code)
       showSuccess('Authenticator app enabled')
-      setCode('')
-      setSecret('')
+      clearSetup()
       await loadUser?.()
     } catch (err) {
       showError(err.response?.data?.detail || 'Invalid code')
     } finally {
       setBusy(false)
+    }
+  }
+
+  const copySecret = async () => {
+    try {
+      await navigator.clipboard.writeText(secret)
+      showSuccess('Setup key copied')
+    } catch {
+      showError('Could not copy the setup key')
     }
   }
 
@@ -79,10 +94,41 @@ export default function MfaSettingsPanel() {
         </p>
       )}
       {secret && (
-        <div className="p-3 rounded-xl bg-brand-50 ring-1 ring-brand-100 text-sm space-y-2">
-          <p className="font-medium text-brand-900">Scan this secret in your authenticator app</p>
-          <code className="block break-all text-xs">{secret}</code>
-          {otpauth && <p className="text-xs text-slate-500 break-all">{otpauth}</p>}
+        <div className="p-4 rounded-xl bg-brand-50 ring-1 ring-brand-100 text-sm space-y-4">
+          <div>
+            <p className="font-semibold text-brand-900">Scan with your authenticator app</p>
+            <p className="mt-1 text-xs text-slate-600">
+              Google Authenticator, Microsoft Authenticator, and other TOTP apps are supported.
+            </p>
+          </div>
+          {otpauth && (
+            <div className="flex justify-center">
+              <div
+                className="bg-white p-3 rounded-lg ring-1 ring-slate-200"
+                aria-label="Authenticator setup QR code"
+                data-testid="mfa-qr-code"
+              >
+                <QRCodeSVG value={otpauth} size={184} level="M" marginSize={0} />
+              </div>
+            </div>
+          )}
+          <div>
+            <p className="text-xs font-medium text-slate-700">Cannot scan? Enter this setup key manually.</p>
+            <div className="mt-1.5 flex items-center gap-2">
+              <code className="min-w-0 flex-1 break-all rounded-md bg-white px-3 py-2 text-xs text-slate-800 ring-1 ring-slate-200">
+                {secret}
+              </code>
+              <button
+                type="button"
+                onClick={copySecret}
+                className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-slate-600 ring-1 ring-slate-200 hover:bg-white hover:text-brand-700"
+                aria-label="Copy MFA setup key"
+                title="Copy setup key"
+              >
+                <Copy className="h-4 w-4" />
+              </button>
+            </div>
+          </div>
         </div>
       )}
       <div>
@@ -92,9 +138,11 @@ export default function MfaSettingsPanel() {
         <input
           id="mfa-code"
           value={code}
-          onChange={(e) => setCode(e.target.value)}
+          onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
           inputMode="numeric"
           autoComplete="one-time-code"
+          pattern="[0-9]{6}"
+          maxLength={6}
           className="w-full px-4 py-2.5 rounded-xl text-sm ring-1 ring-slate-200 dark:bg-dark-card dark:text-dark-text-primary"
           placeholder="123456"
         />
@@ -103,7 +151,7 @@ export default function MfaSettingsPanel() {
         {!enrolled ? (
           <button
             type="button"
-            disabled={busy || !code}
+            disabled={busy || code.length !== 6}
             onClick={confirmEnable}
             className="px-4 py-2.5 bg-brand-600 text-white text-sm font-semibold rounded-xl disabled:opacity-50"
           >
@@ -112,7 +160,7 @@ export default function MfaSettingsPanel() {
         ) : (
           <button
             type="button"
-            disabled={busy || !code || user?.mfa_required}
+            disabled={busy || code.length !== 6 || user?.mfa_required}
             onClick={confirmDisable}
             className="px-4 py-2.5 bg-red-100 text-red-700 text-sm font-semibold rounded-xl disabled:opacity-50"
           >

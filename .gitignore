@@ -41,6 +41,7 @@ htmlcov/
 
 # Temp files
 .commit-msg.txt
+.superpowers/sdd/
 
 # Test output
 pytest_summary.txt

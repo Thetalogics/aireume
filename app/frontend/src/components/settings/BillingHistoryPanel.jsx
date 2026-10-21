@@ -1,9 +1,8 @@
 import {
   AlertTriangle, ArrowLeft, ArrowRight, Calendar, FileText, Loader2,
 } from 'lucide-react'
-import {
-  formatCurrency, formatDate, StatusBadge, InvoiceRow, InvoiceCard, InvoiceDetailModal,
-} from './InvoiceHistory'
+import { StatusBadge, InvoiceRow, InvoiceCard, InvoiceDetailModal } from './InvoiceHistory'
+import { formatCurrency, formatDate } from './invoiceFormatters'
 import { Section } from './SettingsPrimitives'
 
 export default function BillingHistoryPanel({

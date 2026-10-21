@@ -4,7 +4,7 @@ import {
   Download, Link2, Users, CheckCircle, AlertTriangle, XCircle,
   ArrowLeft, ChevronDown, ChevronUp, FileText, UserCheck,
 } from 'lucide-react'
-import html2pdf from 'html2pdf.js'
+import { printDocument } from '../lib/printDocument'
 import { getHandoffPackage, createHandoffShareLink } from '../lib/api'
 import usePermissions from '../hooks/usePermissions'
 import { safeStr } from '../lib/utils'
@@ -300,37 +300,43 @@ export default function HandoffPackage({ initialData = null, publicMode = false 
   const [data, setData] = useState(initialData)
   const [loading, setLoading] = useState(!initialData)
   const [error, setError] = useState(null)
+  const [printError, setPrintError] = useState('')
   const [copySuccess, setCopySuccess] = useState(false)
   const [linkLoading, setLinkLoading] = useState(false)
 
   useEffect(() => {
-    if (initialData || publicMode) return
+    if (initialData || publicMode) {
+      setData(initialData)
+      setLoading(false)
+      setError(null)
+      return
+    }
     if (!jdId) return
+    let cancelled = false
+    setLoading(true)
+    setError(null)
     const load = async () => {
       try {
         const pkg = await getHandoffPackage(jdId)
-        setData(pkg)
+        if (!cancelled) setData(pkg)
       } catch (err) {
-        setError(err.message || 'Failed to fetch handoff package')
+        if (!cancelled) setError(err.message || 'Failed to fetch handoff package')
       } finally {
-        setLoading(false)
+        if (!cancelled) setLoading(false)
       }
     }
     load()
-  }, [jdId])
+    return () => { cancelled = true }
+  }, [jdId, initialData, publicMode])
 
-  const exportAsPdf = async () => {
+  const exportAsPdf = () => {
     if (!contentRef.current) return
-    const jdName = data?.jd_name || 'JD'
-    const dateStr = new Date().toISOString().slice(0, 10)
-    const opt = {
-      margin: [10, 10, 10, 10],
-      filename: `Handoff_Package_${jdName.replace(/\s+/g, '_')}_${dateStr}.pdf`,
-      image: { type: 'jpeg', quality: 0.98 },
-      html2canvas: { scale: 2, useCORS: true },
-      jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+    try {
+      setPrintError('')
+      printDocument()
+    } catch {
+      setPrintError('Could not open the print dialog. Use the browser print option.')
     }
-    html2pdf().set(opt).from(contentRef.current).save()
   }
 
   const copyLink = async () => {
@@ -426,10 +432,11 @@ export default function HandoffPackage({ initialData = null, publicMode = false 
             className="flex items-center gap-1.5 px-3 py-1.5 bg-brand-600 text-white text-xs font-semibold rounded-lg hover:bg-brand-700 transition-colors"
           >
             <Download className="w-3.5 h-3.5" />
-            Download PDF
+            Print
           </button>
           )}
         </div>
+        {printError && <p className="text-xs text-red-600 mt-2">{printError}</p>}
       </div>
 
       {/* Content (printable) */}

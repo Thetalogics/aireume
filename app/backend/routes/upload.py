@@ -21,9 +21,12 @@ behind Cloudflare's DDoS protection and rate limiting.
 
 import os
 import hashlib
+import json
 import logging
+import re
 import shutil
 import tempfile
+import unicodedata
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional
@@ -43,9 +46,6 @@ CHUNK_STORAGE_DIR = Path(os.getenv("ARIA_CHUNK_STORAGE_DIR", str(Path(tempfile.g
 CHUNK_MAX_AGE_HOURS = 24
 MAX_CHUNK_SIZE = 15 * 1024 * 1024  # 15MB (with buffer for Cloudflare's 100MB limit)
 MAX_FILE_SIZE = 500 * 1024 * 1024  # 500MB total file size limit
-
-# Ensure chunk storage directory exists
-CHUNK_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
 
 
 class ChunkUploadResponse(BaseModel):
@@ -74,49 +74,125 @@ class FinalizeUploadResponse(BaseModel):
     message: Optional[str] = None
 
 
+def _validate_upload_id(upload_id: str) -> str:
+    """Accept NanoIDs and UUID-shaped IDs without rewriting their identity."""
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", upload_id):
+        raise HTTPException(status_code=400, detail="Invalid upload ID")
+    return upload_id
+
+
+def _safe_client_filename(filename: str) -> str:
+    """Keep a bounded display basename; it is never a storage path."""
+    if (
+        not filename.strip()
+        or len(filename) > 255
+        or filename in {".", ".."}
+        or any(char in filename for char in "/\\:")
+        or any(unicodedata.category(char).startswith("C") for char in filename)
+    ):
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    return filename
+
+
+def _contained_path(root: Path, *parts: str) -> Path:
+    """Resolve symlinks and reject paths outside the intended storage root."""
+    try:
+        resolved_root = root.resolve()
+        candidate = resolved_root.joinpath(*parts).resolve()
+        candidate.relative_to(resolved_root)
+        if parts and candidate == resolved_root:
+            raise ValueError("Expected a child path")
+        return candidate
+    except (OSError, ValueError, RuntimeError) as error:
+        raise HTTPException(status_code=400, detail="Invalid upload path") from error
+
+
 def _get_upload_dir(upload_id: str) -> Path:
-    """Get the directory path for a specific upload ID."""
-    return CHUNK_STORAGE_DIR / upload_id
+    return _contained_path(CHUNK_STORAGE_DIR, _validate_upload_id(upload_id))
 
 
 def _get_chunk_path(upload_id: str, chunk_index: int) -> Path:
     """Get the file path for a specific chunk."""
-    return _get_upload_dir(upload_id) / f"chunk_{chunk_index:04d}"
+    return _contained_path(_get_upload_dir(upload_id), f"chunk_{chunk_index:04d}")
 
 
-def _read_upload_metadata(upload_id: str) -> dict | None:
-    meta_path = _get_upload_dir(upload_id) / "metadata.json"
-    if not meta_path.exists():
-        return None
-    import json
+def _get_assembled_path(upload_id: str) -> Path:
+    upload_id = _validate_upload_id(upload_id)
+    return _contained_path(_contained_path(CHUNK_STORAGE_DIR, ".assembled"), f"{upload_id}.bin")
+
+
+def _get_metadata_path(upload_id: str, *, assembled: bool = False) -> Path:
+    upload_id = _validate_upload_id(upload_id)
+    if assembled:
+        return _contained_path(_contained_path(CHUNK_STORAGE_DIR, ".assembled"), f"{upload_id}.json")
+    return _contained_path(_get_upload_dir(upload_id), "metadata.json")
+
+
+def _read_upload_metadata(upload_id: str, *, assembled: bool = False) -> dict | None:
+    meta_path = _get_metadata_path(upload_id, assembled=assembled)
     try:
-        return json.loads(meta_path.read_text())
+        metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+        return metadata if isinstance(metadata, dict) else None
     except (json.JSONDecodeError, OSError):
         return None
 
 
-def assert_upload_owned(upload_id: str, current_user: User) -> dict:
-    """Return upload metadata if it belongs to the current tenant; 404 otherwise."""
-    safe_uid = upload_id.replace("..", "").replace("/", "").replace("\\", "")
-    upload_dir = _get_upload_dir(safe_uid)
-    if not upload_dir.exists():
-        raise HTTPException(status_code=404, detail="Upload not found")
-    meta = _read_upload_metadata(safe_uid)
-    if not meta or int(meta.get("tenant_id") or -1) != int(current_user.tenant_id):
+def assert_upload_owned(upload_id: str, current_user: User, *, assembled_only: bool = False) -> dict:
+    """Return owner metadata, requiring the completed record for completed files."""
+    upload_id = _validate_upload_id(upload_id)
+    meta = None if assembled_only else _read_upload_metadata(upload_id)
+    meta = meta or _read_upload_metadata(upload_id, assembled=True)
+    if not meta or str(meta.get("tenant_id")) != str(current_user.tenant_id):
         raise HTTPException(status_code=404, detail="Upload not found")
     return meta
 
 
+def get_assembled_upload(upload_id: str, current_user: User) -> tuple[Path, str]:
+    """Locate completed bytes and their trusted display name for the owner."""
+    metadata = assert_upload_owned(upload_id, current_user, assembled_only=True)
+    filename = _safe_client_filename(metadata.get("filename") or "")
+    path = _get_assembled_path(upload_id)
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Upload not found")
+    return path, filename
+
+
+def remove_assembled_upload(upload_id: str, current_user: User) -> None:
+    """Remove an owner's completed bytes and the matching ownership record."""
+    assert_upload_owned(upload_id, current_user, assembled_only=True)
+    path = _get_assembled_path(upload_id)
+    metadata_path = _get_metadata_path(upload_id, assembled=True)
+    path.unlink(missing_ok=True)
+    metadata_path.unlink(missing_ok=True)
+
+
 def _cleanup_old_chunks():
-    """Remove chunk directories older than CHUNK_MAX_AGE_HOURS."""
+    """Expire inactive chunks and completed files after CHUNK_MAX_AGE_HOURS."""
     try:
         cutoff_time = datetime.now() - timedelta(hours=CHUNK_MAX_AGE_HOURS)
-        for upload_dir in CHUNK_STORAGE_DIR.iterdir():
+        for entry in _contained_path(CHUNK_STORAGE_DIR).iterdir():
+            try:
+                upload_dir = _get_upload_dir(entry.name)
+            except HTTPException:
+                continue
             if upload_dir.is_dir():
                 dir_mtime = datetime.fromtimestamp(upload_dir.stat().st_mtime)
                 if dir_mtime < cutoff_time:
                     shutil.rmtree(upload_dir, ignore_errors=True)
                     log.info(f"Cleaned up old chunk directory: {upload_dir.name}")
+        assembled_dir = _contained_path(CHUNK_STORAGE_DIR, ".assembled")
+        if assembled_dir.exists():
+            for entry in assembled_dir.iterdir():
+                if entry.suffix not in {".bin", ".json"}:
+                    continue
+                try:
+                    upload_id = _validate_upload_id(entry.stem)
+                    path = (_get_assembled_path(upload_id) if entry.suffix == ".bin"
+                            else _get_metadata_path(upload_id, assembled=True))
+                except HTTPException:
+                    continue
+                if path.is_file() and datetime.fromtimestamp(path.stat().st_mtime) < cutoff_time:
+                    path.unlink()
     except OSError as e:
         log.warning(
             "Non-critical: Chunk cleanup failed: %s", e,
@@ -154,6 +230,8 @@ async def upload_chunk(
         HTTPException: If chunk validation fails or storage error occurs
     """
     # Validate inputs
+    upload_id = _validate_upload_id(upload_id)
+    filename = _safe_client_filename(filename)
     if chunk_index < 0 or chunk_index >= total_chunks:
         raise HTTPException(
             status_code=400,
@@ -184,8 +262,14 @@ async def upload_chunk(
         )
 
     upload_dir = _get_upload_dir(upload_id)
-    metadata_path = upload_dir / "metadata.json"
-    if metadata_path.exists():
+    metadata_path = _get_metadata_path(upload_id)
+    assembled_path = _get_assembled_path(upload_id)
+    assembled_metadata_path = _get_metadata_path(upload_id, assembled=True)
+    chunk_path = _get_chunk_path(upload_id, chunk_index)
+    if assembled_path.exists() or assembled_metadata_path.exists():
+        assert_upload_owned(upload_id, current_user, assembled_only=True)
+        raise HTTPException(status_code=409, detail="Upload already finalized")
+    if upload_dir.exists():
         assert_upload_owned(upload_id, current_user)
 
     upload_dir.mkdir(parents=True, exist_ok=True)
@@ -199,12 +283,10 @@ async def upload_chunk(
             "tenant_id": current_user.tenant_id,
             "started_at": datetime.now().isoformat(),
         }
-        import json
-        with open(metadata_path, 'w') as f:
+        with open(metadata_path, 'w', encoding="utf-8") as f:
             json.dump(metadata, f)
     
     # Write chunk to disk
-    chunk_path = _get_chunk_path(upload_id, chunk_index)
     try:
         with open(chunk_path, 'wb') as f:
             f.write(chunk_data)
@@ -261,8 +343,9 @@ async def finalize_upload(
     Raises:
         HTTPException: If chunks are missing, assembly fails, or validation fails
     """
-    upload_id = request.upload_id
-    assert_upload_owned(upload_id, current_user)
+    upload_id = _validate_upload_id(request.upload_id)
+    filename = _safe_client_filename(request.filename)
+    metadata = assert_upload_owned(upload_id, current_user)
     upload_dir = _get_upload_dir(upload_id)
     
     # Verify upload directory exists
@@ -286,12 +369,12 @@ async def finalize_upload(
         )
     
     # Assemble chunks into final file
-    assembled_dir = CHUNK_STORAGE_DIR / "assembled"
-    assembled_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Use upload_id in filename to avoid collisions
-    safe_filename = f"{upload_id}_{request.filename}"
-    assembled_path = assembled_dir / safe_filename
+    assembled_path = _get_assembled_path(upload_id)
+    assembled_metadata_path = _get_metadata_path(upload_id, assembled=True)
+    if assembled_path.exists() or assembled_metadata_path.exists():
+        assert_upload_owned(upload_id, current_user, assembled_only=True)
+        raise HTTPException(status_code=409, detail="Upload already finalized")
+    assembled_path.parent.mkdir(parents=True, exist_ok=True)
     
     try:
         total_size = 0
@@ -327,14 +410,18 @@ async def finalize_upload(
         # Content validation + optional malware scan before the file is usable.
         try:
             with open(assembled_path, 'rb') as f:
-                validate_and_scan(f.read(), request.filename)
+                validate_and_scan(f.read(), filename)
         except UnsafeFileError as e:
             assembled_path.unlink(missing_ok=True)
             log.warning("Assembled file failed validation: %s", e)
             raise HTTPException(status_code=422, detail="File failed security validation.") from e
         
+        # Keep tenant ownership and the scanned display name after chunk cleanup.
+        metadata["filename"] = filename
+        assembled_metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
         log.info(
-            f"File assembled: upload_id={upload_id}, filename={request.filename}, "
+            f"File assembled: upload_id={upload_id}, filename={filename}, "
             f"size={total_size}, chunks={request.total_chunks}, user={current_user.id}"
         )
         
@@ -350,9 +437,9 @@ async def finalize_upload(
         return FinalizeUploadResponse(
             success=True,
             upload_id=upload_id,
-            filename=request.filename,
+            filename=filename,
             file_size=total_size,
-            message=f"File assembled successfully: {request.filename} ({total_size} bytes)"
+            message=f"File assembled successfully: {filename} ({total_size} bytes)"
         )
         
     except HTTPException:
@@ -392,9 +479,12 @@ async def cancel_upload(
     Returns:
         Success message
     """
+    upload_id = _validate_upload_id(upload_id)
     assert_upload_owned(upload_id, current_user)
     upload_dir = _get_upload_dir(upload_id)
     try:
+        if _get_assembled_path(upload_id).exists() or _get_metadata_path(upload_id, assembled=True).exists():
+            remove_assembled_upload(upload_id, current_user)
         shutil.rmtree(upload_dir, ignore_errors=True)
         log.info(f"Upload cancelled: upload_id={upload_id}, user={current_user.id}")
         return {"success": True, "message": f"Upload {upload_id} cancelled and cleaned up"}

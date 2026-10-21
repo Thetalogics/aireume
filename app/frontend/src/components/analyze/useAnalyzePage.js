@@ -19,11 +19,11 @@ import {
 } from '../../lib/api'
 import { storeJdFile, getJdFile, clearJdFile } from '../../lib/jdFileCache'
 import { useUsageCheck, useSubscription } from '../../hooks/useSubscription'
-import { usePlanLimits } from '../PlanLockedInline'
-import { useNotification } from '../../contexts/NotificationContext'
-import { useOnboarding } from '../../contexts/OnboardingContext'
+import { usePlanLimits } from '../usePlanLimits'
+import { useNotification } from '../../contexts/useNotification'
+import { useOnboarding } from '../../contexts/useOnboarding'
 import useFeatureGuide from '../../hooks/useFeatureGuide'
-import { isValidWeightTotal } from '../UniversalWeightsPanel'
+import { isValidWeightTotal } from '../universalWeights'
 import { showSuccess } from '../../lib/toast'
 import { mergeNarrativePollResult, isNarrativePending, isKitPending, isReportCacheable } from '../../lib/enrichmentUtils'
 import {
@@ -132,6 +132,8 @@ export default function useAnalyzePage() {
   const streamingResultsRef = useRef([])
   const streamingFailedRef = useRef([])
   const sessionRestoredRef = useRef(false)
+  const draftRestoredRef = useRef(false)
+  const [savedDraft] = useState(() => localStorage.getItem('aria_draft_jd'))
 
   // Reset analysis state on fresh mount
   useEffect(() => {
@@ -221,8 +223,11 @@ export default function useAnalyzePage() {
 
   // Restore draft on mount (skip when requisition-first flow is enforced)
   useEffect(() => {
+    if (draftRestoredRef.current) return
     if (hasRequisitions && requiresRequisitionSelection(hasRequisitions, screeningMode)) return
-    const draft = localStorage.getItem('aria_draft_jd')
+    draftRestoredRef.current = true
+    if (location.state?.jd_text || location.state?.jd_mode) return
+    const draft = savedDraft
     if (draft) {
       try {
         const { jd_text, weights: savedWeights, role_category } = JSON.parse(draft)
@@ -233,7 +238,7 @@ export default function useAnalyzePage() {
         console.error('Failed to restore draft:', e)
       }
     }
-  }, [])
+  }, [hasRequisitions, screeningMode, savedDraft, location.state?.jd_text, location.state?.jd_mode])
 
   useEffect(() => {
     if (!hasRequisitions) return
@@ -330,7 +335,7 @@ export default function useAnalyzePage() {
       console.error('Failed to restore session:', e)
     }
     sessionRestoredRef.current = true
-  }, [location.search])
+  }, [location.search, location.state?.from, location.state?.jd_mode, location.state?.jd_text])
 
   // Load JD from location state (from Requisitions or ReportPage)
   useEffect(() => {
@@ -491,13 +496,11 @@ export default function useAnalyzePage() {
         setWeights(WEIGHT_PRESETS['balanced'])
       }
     }
-  }, [jdParseResult])
+  }, [jdParseResult, weightsManuallySet])
 
   // ── Auto-advance from Step 1 to Step 2 when skills are confirmed ──
   useEffect(() => {
-    if (skillsConfirmed && currentStep === 1) {
-      setCurrentStep(2)
-    }
+    if (skillsConfirmed) setCurrentStep(step => step === 1 ? 2 : step)
   }, [skillsConfirmed])
 
   // Handle weights change — marks as manually set
@@ -506,18 +509,18 @@ export default function useAnalyzePage() {
     setWeightsManuallySet(true)
   }
 
-// Poll for narrative completion on batch results
+  useEffect(() => { streamingResultsRef.current = streamingResults }, [streamingResults])
+
+  const pendingEnrichmentIds = JSON.stringify(analysisDone ? streamingResults
+    .filter(item => item.screeningResultId && (isNarrativePending(item.result) || isKitPending(item.result)))
+    .map(item => item.screeningResultId) : [])
+
+  // Poll for narrative completion on batch results
   useEffect(() => {
-    if (!analysisDone || !streamingResults.length) return
-
-    const pendingIds = streamingResults
-      .filter(item => item.screeningResultId && (
-        isNarrativePending(item.result) || isKitPending(item.result)
-      ))
-      .map(item => item.screeningResultId)
-
+    let pendingIds = JSON.parse(pendingEnrichmentIds)
     if (!pendingIds.length) return
-
+    let cancelled = false
+    let timer
     let pollCount = 0
     const maxPolls = 120 // 6 minutes max
 
@@ -533,6 +536,7 @@ export default function useAnalyzePage() {
 
         try {
           const data = await getNarrative(id)
+          if (cancelled) return
           if (data.status === 'ready' || data.status === 'fallback' || data.status === 'failed') {
             const kitStatus = data.interview_kit_status
             const kitPending = kitStatus === 'pending' || kitStatus === 'processing'
@@ -588,14 +592,15 @@ export default function useAnalyzePage() {
         }
       }
 
-      if (stillPending.length && pollCount < maxPolls) {
-        setTimeout(poll, 3000)
+      pendingIds = stillPending
+      if (!cancelled && stillPending.length && pollCount < maxPolls) {
+        timer = setTimeout(poll, 3000)
       }
     }
 
-    const timer = setTimeout(poll, 2000)
-    return () => clearTimeout(timer)
-  }, [analysisDone])
+    timer = setTimeout(poll, 2000)
+    return () => { cancelled = true; clearTimeout(timer) }
+  }, [pendingEnrichmentIds, addNotification, completeEnrichmentJob, updateEnrichmentJob])
 
   // Handle URL extraction
   const handleExtractUrl = async () => {

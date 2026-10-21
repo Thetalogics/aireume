@@ -17,7 +17,6 @@ const IconButton = forwardRef(function IconButton(
   ref
 ) {
   if (!label && process.env.NODE_ENV !== 'production') {
-    // eslint-disable-next-line no-console
     console.error('IconButton requires a `label` prop for accessibility.')
   }
   return (

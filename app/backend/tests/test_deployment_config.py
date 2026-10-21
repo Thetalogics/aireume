@@ -183,6 +183,28 @@ def test_cd_production_requires_successful_ci_workflow_run():
     assert "- production" not in CD.split("workflow_dispatch:", 1)[1].split("concurrency:", 1)[0]
 
 
+def test_production_and_staging_third_party_images_are_digest_pinned():
+    files = [
+        "docker-compose.prod.yml",
+        "docker-compose.staging.yml",
+        "docker-compose.main.staging.yml",
+        "docker-compose.voice.staging.yml",
+        "docker-compose.portainer.yml",
+    ]
+    missing = []
+    for name in files:
+        for line in (ROOT / name).read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if not stripped.startswith("image:"):
+                continue
+            value = stripped.split(":", 1)[1].strip()
+            if value.startswith("${") or value.startswith("revanth2245/"):
+                continue
+            if "@sha256:" not in value:
+                missing.append(f"{name}: {value}")
+    assert missing == []
+
+
 def test_pool_budget_under_safety_fraction():
     uvicorn_workers = 6
     pool = 3

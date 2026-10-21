@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { FileText, Download, CheckCircle, AlertCircle, Send } from 'lucide-react'
-import html2pdf from 'html2pdf.js'
+import { printDocument } from '../lib/printDocument'
 import { getScorecard, saveOverallAssessment } from '../lib/api'
 
 /** Coerce any value to a render-safe string. */
@@ -88,6 +88,7 @@ export default function InterviewScorecard({ resultId, showHeading = false }) {
   const [scorecard, setScorecard] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  const [printError, setPrintError] = useState('')
   const [overall, setOverall] = useState('')
   const [recommendation, setRecommendation] = useState('')
   const [savingOverall, setSavingOverall] = useState(false)
@@ -123,16 +124,15 @@ export default function InterviewScorecard({ resultId, showHeading = false }) {
     setSavingOverall(false)
   }
 
-  const exportAsPdf = async () => {
+  const exportAsPdf = () => {
     if (!scorecardRef.current) return
-    const opt = {
-      margin: [10, 10, 10, 10],
-      filename: `Interview_Scorecard_${scorecard?.candidate_name || 'Candidate'}.pdf`,
-      image: { type: 'jpeg', quality: 0.98 },
-      html2canvas: { scale: 2, useCORS: true },
-      jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+    try {
+      setPrintError('')
+      printDocument()
+    } catch (err) {
+      console.error('Print failed:', err)
+      setPrintError('Could not open the print dialog. Use the browser print option.')
     }
-    html2pdf().set(opt).from(scorecardRef.current).save()
   }
 
   if (loading) return <div className="text-center text-sm text-slate-400 py-8">Loading scorecard...</div>
@@ -166,9 +166,10 @@ export default function InterviewScorecard({ resultId, showHeading = false }) {
           className="flex items-center gap-1.5 px-3 py-1.5 bg-brand-600 text-white text-xs font-semibold rounded-lg hover:bg-brand-700 transition-colors"
         >
           <Download className="w-3.5 h-3.5" />
-          Share with Hiring Manager
+          Print scorecard
         </button>
       </div>
+      {printError && <p className="text-xs text-red-600 mb-3">{printError}</p>}
 
       {/* Printable Scorecard */}
       <div ref={scorecardRef} className="space-y-4 p-6 bg-white rounded-2xl ring-1 ring-slate-200">

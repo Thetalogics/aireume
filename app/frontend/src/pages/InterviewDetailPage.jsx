@@ -191,7 +191,10 @@ export default function InterviewDetailPage() {
       try {
         setLoading(true)
         let sessionData = null
-        let detectedSource = source
+        let detectedSource = sourceParam
+        setDepth(depthParam)
+        setTranscript(null)
+        setScorecard(null)
 
         if (detectedSource === 'voice') {
           sessionData = await getVoiceSession(id)
@@ -257,7 +260,7 @@ export default function InterviewDetailPage() {
       }
     }
     if (id) load()
-  }, [id])
+  }, [id, sourceParam, depthParam])
 
   // Poll scorecard until ready after completed recruiter sessions
   useEffect(() => {

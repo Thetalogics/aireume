@@ -119,13 +119,48 @@ def cache_incr(key: str, ttl_seconds: int = 60) -> int:
         return val
 
 
-def cache_delete(key: str, require_redis: bool = False) -> None:
-    r = _redis_required() if require_redis else _client()
-    if r is not None:
-        r.delete(key)
-        return
+def cache_delete(key: str, require_redis: bool = False) -> bool:
+    """Delete an exact key from Redis and any process-memory fallback."""
     with _lock:
-        _memory.pop(key, None)
+        deleted = _memory.pop(key, None) is not None
+    try:
+        r = _redis_required() if require_redis else _client()
+        if r is not None:
+            deleted = bool(r.delete(key)) or deleted
+    except Exception as exc:
+        if require_redis:
+            raise RedisUnavailable("Redis cache deletion failed") from exc
+        logger.warning("Redis cache deletion failed (%s); cleared in-memory cache", exc)
+    return deleted
+
+
+def cache_delete_prefix(prefix: str, require_redis: bool = False) -> int:
+    """Delete a literal prefix, scanning Redis and deleting at most 100 keys per call.
+
+    The count includes deletions in both Redis and process-memory fallback.
+    """
+    with _lock:
+        local_keys = [key for key in _memory if key.startswith(prefix)]
+        for key in local_keys:
+            del _memory[key]
+    deleted = len(local_keys)
+    # Redis glob syntax must not give a literal prefix wildcard semantics.
+    pattern = "".join("\\" + char if char in "\\*?[]" else char for char in prefix) + "*"
+    try:
+        r = _redis_required() if require_redis else _client()
+        if r is not None:
+            cursor = 0
+            while True:
+                cursor, keys = r.scan(cursor=cursor, match=pattern, count=100)
+                for start in range(0, len(keys), 100):
+                    deleted += int(r.delete(*keys[start:start + 100]))
+                if cursor == 0:
+                    break
+    except Exception as exc:
+        if require_redis:
+            raise RedisUnavailable("Redis prefix deletion failed") from exc
+        logger.warning("Redis prefix deletion failed (%s); cleared in-memory cache", exc)
+    return deleted
 
 
 _GETDEL_LUA = """

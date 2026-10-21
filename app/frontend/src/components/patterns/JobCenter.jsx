@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { Activity, CheckCircle2, Loader2, XCircle, Sparkles, ChevronRight, FileSearch, Mic } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { Sheet } from '../ui'
-import { useNotification } from '../../contexts/NotificationContext'
+import { useNotification } from '../../contexts/useNotification'
 import { useQueuePolling } from '../../hooks/useQueuePolling'
 
 function StatusIcon({ status }) {

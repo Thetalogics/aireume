@@ -1,14 +1,5 @@
-import { createContext, useContext, useState, useEffect, type ReactNode } from 'react'
-
-type Theme = 'light' | 'dark'
-
-type ThemeContextValue = {
-  theme: Theme
-  setTheme: (theme: Theme) => void
-  toggleTheme: () => void
-}
-
-const ThemeContext = createContext<ThemeContextValue | undefined>(undefined)
+import { ThemeContext, type Theme } from './useTheme'
+import { useState, useEffect, type ReactNode } from 'react'
 
 /**
  * ThemeProvider — manages dark mode preference.
@@ -60,12 +51,4 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       {children}
     </ThemeContext.Provider>
   )
-}
-
-export function useTheme(): ThemeContextValue {
-  const context = useContext(ThemeContext)
-  if (!context) {
-    throw new Error('useTheme must be used within a ThemeProvider')
-  }
-  return context
 }

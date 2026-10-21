@@ -5,7 +5,7 @@ import { MemoryRouter } from 'react-router-dom'
 const loginMock = vi.fn()
 const navigateMock = vi.fn()
 
-vi.mock('../contexts/AuthContext', () => ({
+vi.mock('../contexts/useAuth', () => ({
   useAuth: () => ({ login: loginMock }),
 }))
 

@@ -9,7 +9,7 @@ name: aria
 
 services:
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
     container_name: resume-screener-postgres
     # Tuned for 6 GB RAM allocation on a 48 GB server.
     command: >
@@ -43,7 +43,7 @@ services:
       start_period: 30s
 
   redis:
-    image: redis:7-alpine
+    image: redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
     container_name: resume-screener-redis
     command: redis-server --requirepass ${REDIS_PASSWORD:?REDIS_PASSWORD must be set} --appendonly yes
     volumes:
@@ -74,7 +74,7 @@ services:
         condition: service_healthy
 
   db-backup:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
     container_name: resume-screener-db-backup
     profiles: ["backup"]
     entrypoint: ["/bin/sh", "/scripts/backup_postgres.sh"]
@@ -151,7 +151,7 @@ services:
 
   ollama:
     profiles: ["local-ollama"]
-    image: ollama/ollama:latest
+    image: ollama/ollama:latest@sha256:2e6cc92ffa43b4b1a2e70e315407e00ac97ec125afc71277d73c7efe01c4f31b
     container_name: resume-screener-ollama
     environment:
       # CPU inference: use all 8 allocated cores for maximum token throughput.
@@ -320,7 +320,7 @@ services:
   # Exits after warmup — OLLAMA_KEEP_ALIVE=-1 on ollama container keeps model loaded.
   ollama-warmup:
     profiles: ["local-ollama"]
-    image: ollama/ollama:latest
+    image: ollama/ollama:latest@sha256:2e6cc92ffa43b4b1a2e70e315407e00ac97ec125afc71277d73c7efe01c4f31b
     container_name: resume-screener-ollama-warmup
     depends_on:
       ollama:
@@ -367,7 +367,7 @@ services:
   # WATCHTOWER_NOTIFICATION_URL (shoutrrr) to receive update notifications.
   # Monitors only ARIA containers so it doesn't touch other stacks on the VPS.
   watchtower:
-    image: containrrr/watchtower
+    image: containrrr/watchtower@sha256:6dd50763bbd632a83cb154d5451700530d1e44200b268a4e9488fefdfcf2b038
     container_name: resume-screener-watchtower
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
@@ -394,7 +394,7 @@ services:
     restart: unless-stopped
 
   certbot:
-    image: certbot/certbot
+    image: certbot/certbot@sha256:f70ad0adbb7e117f0fe42a63c553f28ea451edabc0148757b6efcd9735acaa20
     container_name: resume-screener-certbot
     volumes:
       - certbot_certs:/etc/letsencrypt
@@ -480,7 +480,7 @@ services:
 
   # Official ClamAV daemon — required by backend CLAMAV_REQUIRED=1
   clamav:
-    image: clamav/clamav:1.4
+    image: clamav/clamav:1.4@sha256:3bba6dd5ac6663d55b80f86a3126e146612d93b593cc2617188d13f637d91260
     container_name: resume-screener-clamav
     restart: unless-stopped
     volumes:

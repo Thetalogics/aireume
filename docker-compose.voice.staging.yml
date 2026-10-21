@@ -13,7 +13,7 @@ name: aria-staging-voice
 
 services:
   livekit-redis:
-    image: redis:7-alpine
+    image: redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
     container_name: staging-livekit-redis
     command: redis-server --maxmemory 48mb --maxmemory-policy allkeys-lru
     healthcheck:
@@ -53,7 +53,7 @@ services:
     restart: unless-stopped
 
   livekit-sip:
-    image: livekit/sip:latest
+    image: livekit/sip:latest@sha256:e675638b7678eadb19d48c7a8865149d1b7c23a95b2e3c6fae173684d70c62fc
     container_name: staging-livekit-sip
     environment:
       SIP_CONFIG_BODY: |
@@ -134,7 +134,7 @@ services:
 
   watchtower:
     # Pin version — default tag fails on Docker Engine API >= 1.40 (client 1.25 too old)
-    image: containrrr/watchtower:1.7.1
+    image: containrrr/watchtower:1.7.1@sha256:6dd50763bbd632a83cb154d5451700530d1e44200b268a4e9488fefdfcf2b038
     container_name: staging-voice-watchtower
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock

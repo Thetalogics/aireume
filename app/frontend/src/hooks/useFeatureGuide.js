@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { FEATURE_GUIDES } from '../lib/featureGuides'
-import { useUserPreferences } from '../contexts/UserPreferencesContext'
+import { useUserPreferences } from '../contexts/useUserPreferences'
 import { useSubscription } from '../hooks/useSubscription'
 import { trackOnboardingEvent } from '../lib/onboardingAnalytics'
 

@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Bell, CheckCheck, X } from 'lucide-react'
-import { useNotification } from '../contexts/NotificationContext'
+import { useNotification } from '../contexts/useNotification'
 
 const TYPE_DOT = {
   success: 'bg-green-500',

@@ -1,6 +1,7 @@
 import NavBar from './NavBar'
 import ToastProvider from './ToastProvider'
-import { LiveScreenModeProvider, useLiveScreenMode } from '../contexts/LiveScreenModeContext'
+import { LiveScreenModeProvider } from '../contexts/LiveScreenModeContext'
+import { useLiveScreenMode } from '../contexts/useLiveScreenMode'
 import { useEffect } from 'react'
 import { showError } from '../lib/toast'
 import { VIEWER_READ_ONLY_MESSAGE } from '../lib/rbac'

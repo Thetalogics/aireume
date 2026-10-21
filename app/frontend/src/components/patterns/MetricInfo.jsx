@@ -1,22 +1,5 @@
-import { useState, useEffect } from 'react'
 import { Info } from 'lucide-react'
-import { getAnalyticsMetrics } from '../../lib/api'
-
-let glossaryCache = null
-
-export function useMetricGlossary() {
-  const [metrics, setMetrics] = useState(glossaryCache || [])
-  useEffect(() => {
-    if (glossaryCache) return
-    getAnalyticsMetrics()
-      .then((data) => {
-        glossaryCache = data.metrics || []
-        setMetrics(glossaryCache)
-      })
-      .catch(() => setMetrics([]))
-  }, [])
-  return metrics
-}
+import { useMetricGlossary } from './useMetricGlossary'
 
 export default function MetricInfo({ metricKey, label, className = '' }) {
   const metrics = useMetricGlossary()

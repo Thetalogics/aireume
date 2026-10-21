@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
-import AnalyticsHub, { VALID_SLICE_IDS } from '../components/patterns/AnalyticsHub'
+import AnalyticsHub from '../components/patterns/AnalyticsHub'
+import { VALID_SLICE_IDS } from '../components/patterns/analyticsConstants'
+import { getAnalyticsHub } from '../lib/api'
 
 vi.mock('../components/patterns/ScreeningTrendsCharts', () => ({
   default: () => null,
@@ -32,6 +34,22 @@ vi.mock('../lib/api', () => ({
 describe('AnalyticsHub', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+  })
+
+  it('uses the latest completion callback without refetching for callback-only renders', async () => {
+    let finish
+    getAnalyticsHub.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    const first = vi.fn()
+    const latest = vi.fn()
+    const { rerender } = render(<MemoryRouter><AnalyticsHub period="last_30_days" onGeneratedAt={first} /></MemoryRouter>)
+    rerender(<MemoryRouter><AnalyticsHub period="last_30_days" onGeneratedAt={latest} /></MemoryRouter>)
+    finish({ generated_at: 'new result', slices: {}, filter_options: {} })
+    await waitFor(() => expect(latest).toHaveBeenCalledWith('new result'))
+    expect(first).not.toHaveBeenCalled()
+    expect(getAnalyticsHub).toHaveBeenCalledTimes(1)
+    rerender(<MemoryRouter><AnalyticsHub period="last_7_days" onGeneratedAt={latest} /></MemoryRouter>)
+    await waitFor(() => expect(getAnalyticsHub).toHaveBeenCalledTimes(2))
+    expect(getAnalyticsHub).toHaveBeenLastCalledWith(expect.objectContaining({ period: 'last_7_days' }))
   })
 
   it('exports valid slice ids including reports', () => {

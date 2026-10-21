@@ -6,7 +6,7 @@ import {
 import { getVoiceSettings, updateVoiceSettings, getRecruiterConfig, updateRecruiterConfig } from '../../lib/api'
 import { Button, Card } from '../ui'
 import { INTERVIEW } from '../../lib/uxLabels'
-import { useOnboarding } from '../../contexts/OnboardingContext'
+import { useOnboarding } from '../../contexts/useOnboarding'
 
 function Section({ title, icon: Icon, children, description }) {
   return (

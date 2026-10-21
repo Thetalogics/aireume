@@ -1,4 +1,5 @@
-import { createContext, useContext, useState, useCallback, useEffect } from 'react'
+import { OnboardingContext } from './useOnboarding'
+import { useState, useCallback, useEffect } from 'react'
 import {
   getOnboardingStatus,
   completeOnboarding as completeOnboardingAPI,
@@ -7,10 +8,8 @@ import {
   dismissOnboardingChecklist,
 } from '../lib/api'
 import { trackOnboardingEvent } from '../lib/onboardingAnalytics'
-import { useAuth } from './AuthContext'
+import { useAuth } from './useAuth'
 import { DEFAULT_READINESS_CHECKLIST } from '../lib/workspaceReadiness'
-
-const OnboardingContext = createContext(null)
 
 const STORAGE_KEY = 'aria_onboarding'
 const CHECKLIST_KEY = 'aria_getting_started'
@@ -178,10 +177,4 @@ export function OnboardingProvider({ children }) {
       {children}
     </OnboardingContext.Provider>
   )
-}
-
-export function useOnboarding() {
-  const ctx = useContext(OnboardingContext)
-  if (!ctx) throw new Error('useOnboarding must be used within OnboardingProvider')
-  return ctx
 }

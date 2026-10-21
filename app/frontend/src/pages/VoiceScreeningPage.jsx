@@ -23,7 +23,8 @@ import usePermissions from '../hooks/usePermissions'
 import useConfirm from '../hooks/useConfirm'
 
 import VoiceSettingsPanel from '../components/VoiceSettingsPanel'
-import { StatusBadge, STATUS_CONFIG } from '../components/VoiceScreeningPrimitives'
+import { StatusBadge } from '../components/VoiceScreeningPrimitives'
+import { STATUS_CONFIG } from '../components/voiceScreeningConstants'
 
 export default function VoiceScreeningPage() {
   const navigate = useNavigate()
@@ -35,7 +36,7 @@ export default function VoiceScreeningPage() {
   const [sessions, setSessions] = useState([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
-  const [sessionsLoading, setSessionsLoading] = useState(false)
+  const [sessionsLoading, setSessionsLoading] = useState(true)
   const [error, setError] = useState(null)
   const [draft, setDraft] = useState(null)
   // Dirty detection: show save bar when any setting has changed
@@ -64,14 +65,12 @@ export default function VoiceScreeningPage() {
   const fetchData = useCallback(async () => {
     try {
       setLoading(true)
-      const [cfg, sess, analyticsData] = await Promise.all([
+      const [cfg, analyticsData] = await Promise.all([
         getVoiceSettings(),
-        getVoiceSessions({ limit: 50 }),
         getVoiceAnalytics().catch(() => null),
       ])
       setSettings(cfg)
       setDraft(cfg)
-      setSessions(sess)
       setAnalytics(analyticsData)
     } catch (err) {
       setError(err.message || 'Failed to load voice settings')
@@ -108,7 +107,7 @@ export default function VoiceScreeningPage() {
       fetchSessions(params)
     }, 300)
     return () => clearTimeout(timeout)
-  }, [searchQuery, statusFilter])
+  }, [searchQuery, statusFilter, fetchSessions])
 
   async function handleSave() {
     try {

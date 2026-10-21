@@ -3,7 +3,8 @@ import { render, screen, fireEvent, act } from '@testing-library/react'
 import { renderHook } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import NotificationBell from '../components/NotificationBell'
-import { NotificationProvider, useNotification } from '../contexts/NotificationContext'
+import { NotificationProvider } from '../contexts/NotificationContext'
+import { useNotification } from '../contexts/useNotification'
 
 function Harness() {
   const { addNotification } = useNotification()

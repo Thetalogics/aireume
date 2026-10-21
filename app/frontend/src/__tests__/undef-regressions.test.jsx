@@ -45,7 +45,7 @@ vi.mock('../hooks/usePrefetch', () => ({
   usePrefetch: () => ({ prefetchCandidate: vi.fn(), cancelPrefetch: vi.fn() }),
 }))
 
-vi.mock('../contexts/OnboardingContext', () => ({
+vi.mock('../contexts/useOnboarding', () => ({
   useOnboarding: () => ({
     isOnboardingComplete: false,
     markOnboardingComplete: vi.fn(),
@@ -66,7 +66,7 @@ vi.mock('../hooks/useConfirm', () => ({
   default: () => ({ confirm: vi.fn(), dialog: null }),
 }))
 
-vi.mock('../contexts/AuthContext', () => ({
+vi.mock('../contexts/useAuth', () => ({
   useAuth: () => ({ tenant: { name: 'Acme' } }),
 }))
 

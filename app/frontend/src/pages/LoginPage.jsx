@@ -3,7 +3,7 @@ import { Link, useNavigate, useSearchParams, useLocation } from 'react-router-do
 import { Sparkles, Eye, EyeOff, AlertCircle, ArrowRight, Building2 } from 'lucide-react'
 import { trackOnboardingEvent } from '../lib/onboardingAnalytics'
 import { TRUST } from '../lib/uxLabels'
-import { useAuth } from '../contexts/AuthContext'
+import { useAuth } from '../contexts/useAuth'
 import OAuthButtons from '../components/OAuthButtons'
 import { FloatingInput } from '../components/ui'
 import { getSSOConfig } from '../lib/api'

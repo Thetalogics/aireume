@@ -5,7 +5,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, waitFor, act } from '@testing-library/react'
 import { createContext, useContext } from 'react'
-import { SubscriptionProvider, useSubscription, useUsageCheck } from '../useSubscription'
+import { useSubscription, useUsageCheck } from '../useSubscription'
+import { SubscriptionProvider } from '../SubscriptionProvider'
 import * as api from '../../lib/api'
 
 // Mock the API module
@@ -32,7 +33,7 @@ function MockAuthProvider({ children }) {
 }
 
 // Mock the AuthContext module
-vi.mock('../../contexts/AuthContext', () => ({
+vi.mock('../../contexts/useAuth', () => ({
   useAuth: () => useContext(MockAuthContext),
 }))
 

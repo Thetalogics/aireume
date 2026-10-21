@@ -750,6 +750,8 @@ async def test_voice_llm_uses_external_ai_boundary(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_training_modelfile_redacts_feedback_before_provider(monkeypatch):
+    import httpx
+
     from app.backend.routes import training
     from app.backend.db import database
 
@@ -768,6 +770,7 @@ async def test_training_modelfile_redacts_feedback_before_provider(monkeypatch):
 
         async def post(self, _url, *, json):
             captured["modelfile"] = json["modelfile"]
+            return httpx.Response(200, json={"status": "success"}, request=httpx.Request("POST", _url))
 
     monkeypatch.setattr(database, "SessionLocal", lambda: FakeDb())
     monkeypatch.setattr(training, "_upsert_run", lambda *_args, **_kwargs: None)

@@ -14,6 +14,24 @@ from dataclasses import dataclass
 logger = logging.getLogger(__name__)
 
 
+def _operator_config_type():
+    """Presidio's OperatorConfig when the package is installed.
+
+    The unit test drives this path with a fake anonymizer and only requires
+    operator_name. Supported CI installs the real package; a machine without
+    it still has to build the same operator map.
+    """
+    try:
+        from presidio_anonymizer.entities import OperatorConfig
+        return OperatorConfig
+    except ImportError:
+        class OperatorConfig:
+            def __init__(self, operator_name, params=None):
+                self.operator_name = operator_name
+                self.params = params or {}
+        return OperatorConfig
+
+
 @dataclass
 class RedactionResult:
     """Result of PII redaction operation."""
@@ -77,7 +95,7 @@ class PIIRedactionService:
     def _redact_with_presidio(self, text: str) -> RedactionResult:
         """Redact using Presidio (enterprise-grade)."""
         try:
-            from presidio_anonymizer.entities import OperatorConfig
+            OperatorConfig = _operator_config_type()
 
             requested_entities = {
                 "PERSON", "EMAIL_ADDRESS", "PHONE_NUMBER", "LOCATION",

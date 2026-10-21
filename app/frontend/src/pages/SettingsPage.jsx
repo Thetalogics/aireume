@@ -19,9 +19,9 @@ import {
   Palette,
   ListChecks,
 } from 'lucide-react'
-import { useAuth } from '../contexts/AuthContext'
-import { useOnboarding } from '../contexts/OnboardingContext'
-import { useUserPreferences } from '../contexts/UserPreferencesContext'
+import { useAuth } from '../contexts/useAuth'
+import { useOnboarding } from '../contexts/useOnboarding'
+import { useUserPreferences } from '../contexts/useUserPreferences'
 import { trackOnboardingEvent } from '../lib/onboardingAnalytics'
 import { useSubscription } from '../hooks/useSubscription'
 import { adminResetUsage, adminChangePlan, getUserFriendlyError, getInvoices, getInvoice, getTenantBranding, updateTenantBranding, changePassword } from '../lib/api'
@@ -122,7 +122,7 @@ export default function SettingsPage() {
     if (activeTab === 'billing' && isAdmin) {
       fetchInvoices(0)
     }
-  }, [activeTab, fetchInvoices])
+  }, [activeTab, isAdmin, fetchInvoices])
 
   useEffect(() => {
     if (activeTab === 'subscription' && isAdmin) {

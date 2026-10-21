@@ -100,9 +100,7 @@ export default function SSOPage() {
       const data = await getAdminTenants()
       const items = data.items || data.tenants || data || []
       setTenants(items)
-      if (items.length > 0 && !selectedTenantId) {
-        setSelectedTenantId(items[0].id)
-      }
+      if (items.length > 0) setSelectedTenantId(current => current ?? items[0].id)
     } catch (err) {
       console.error('Failed to load tenants:', err)
       setError(err.response?.data?.detail || 'Failed to load tenants.')

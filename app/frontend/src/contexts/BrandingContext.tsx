@@ -1,8 +1,7 @@
-import { createContext, useContext, useEffect, useState, useCallback } from 'react'
-import { useAuth } from './AuthContext'
+import { BrandingContext } from './useBranding'
+import { useEffect, useState, useCallback } from 'react'
+import { useAuth } from './useAuth'
 import { getTenantBranding } from '../lib/api'
-
-const BrandingContext = createContext({ branding: null, loading: false })
 
 async function resolveHostBranding() {
   const host = window.location.hostname
@@ -75,8 +74,4 @@ export function BrandingProvider({ children }) {
       {children}
     </BrandingContext.Provider>
   )
-}
-
-export function useBranding() {
-  return useContext(BrandingContext)
 }

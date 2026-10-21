@@ -3,7 +3,7 @@ import { render, screen } from '@testing-library/react'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import MFAEnrollGate from '../components/MFAEnrollGate'
 
-vi.mock('../contexts/AuthContext', () => ({
+vi.mock('../contexts/useAuth', () => ({
   useAuth: () => ({
     user: { mfa_required: true, mfa_enabled: false },
     loading: false,

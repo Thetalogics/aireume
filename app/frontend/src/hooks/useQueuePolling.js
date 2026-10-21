@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { getJobStatus } from '../lib/api'
-import { useNotification } from '../contexts/NotificationContext'
+import { useNotification } from '../contexts/useNotification'
 
 const TERMINAL = new Set(['completed', 'failed', 'cancelled'])
 

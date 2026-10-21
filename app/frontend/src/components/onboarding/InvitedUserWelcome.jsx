@@ -1,7 +1,7 @@
 import { Link } from 'react-router-dom'
 import { Users, Eye, LayoutTemplate, ArrowRight } from 'lucide-react'
 import ModalOverlay from '../motion/ModalOverlay'
-import { useUserPreferences } from '../../contexts/UserPreferencesContext'
+import { useUserPreferences } from '../../contexts/useUserPreferences'
 import usePermissions from '../../hooks/usePermissions'
 import { trackOnboardingEvent } from '../../lib/onboardingAnalytics'
 

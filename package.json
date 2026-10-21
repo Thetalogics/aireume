@@ -1,13 +1,14 @@
 {
   "name": "resume-ai-by-thetalogics",
-  "version": "1.0.0",
+  "version": "2.2.0",
   "description": "<p align=\"center\">\r   <img src=\"https://img.shields.io/badge/version-2.0.0-blue.svg\" alt=\"Version\">\r   <img src=\"https://img.shields.io/badge/python-3.11-blue.svg\" alt=\"Python\">\r   <img src=\"https://img.shields.io/badge/react-18.3.1-61dafb.svg\" alt=\"React\">\r   <img src=\"https://img.shields.io/badge/fastapi-0.115.6-009688.svg\" alt=\"FastAPI\">\r   <img src=\"https://img.shields.io/badge/license-MIT-green.svg\" alt=\"License\">\r </p>",
   "main": "index.js",
   "directories": {
     "doc": "docs"
   },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "node scripts/verify.mjs --fast",
+    "verify": "node scripts/verify.mjs --full",
     "test:e2e": "npx playwright test",
     "test:e2e:ui": "npx playwright test --ui",
     "test:e2e:headed": "npx playwright test --headed"
