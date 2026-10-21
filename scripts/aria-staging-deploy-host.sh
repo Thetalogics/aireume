@@ -76,8 +76,24 @@ docker run --rm \
   -v "$docker_config:/config.json:ro" \
   -e DOCKER_API_VERSION="$docker_min_api" \
   "$watchtower_image" \
-  --run-once --cleanup --rolling-restart \
+  --run-once --cleanup --rolling-restart --include-restarting --revive-stopped \
   "${services[@]}"
+
+# Watchtower skips containers that are restarting or stopped. A backend that
+# crash-loops on the previous image would otherwise stay on that image while
+# this command still exits 0. Require each named container to be running the
+# candidate that was just pulled.
+for index in "${!services[@]}"; do
+  container="${services[$index]}"
+  repository="${image_repositories[$index]}"
+  expected_id="$(docker image inspect "$repository:staging" --format '{{.Id}}')"
+  actual_id="$(docker inspect "$container" --format '{{.Image}}')"
+  running="$(docker inspect "$container" --format '{{.State.Running}}')"
+  if [[ "$actual_id" != "$expected_id" || "$running" != "true" ]]; then
+    echo "Container $container is not running the candidate image." >&2
+    exit 68
+  fi
+done
 
 restore_monitor
 trap - EXIT
