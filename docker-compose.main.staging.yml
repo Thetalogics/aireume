@@ -96,6 +96,12 @@ services:
           cpus: '3'
           memory: 4G
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/ready"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
 
   frontend:
     image: revanth2245/resume-frontend:staging
@@ -140,7 +146,7 @@ services:
       staging-frontend
       staging-nginx
     environment:
-      - WATCHTOWER_INCLUDE_STOPPED=false
+      - WATCHTOWER_INCLUDE_STOPPED=true
       - WATCHTOWER_NO_PULL=false
     deploy:
       resources:
