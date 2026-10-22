@@ -16,6 +16,13 @@ export async function gotoAnalyze(page: Page) {
   await page.waitForLoadState('networkidle');
 }
 
+export async function dismissFeatureGuideIfPresent(page: Page) {
+  const gotIt = page.getByRole('button', { name: /got it/i }).first();
+  if (await gotIt.isVisible({ timeout: 3000 }).catch(() => false)) {
+    await gotIt.click();
+  }
+}
+
 export async function expectRequisitionPicker(page: Page) {
   await expect(page.getByText(/select an opening to start/i).first()).toBeVisible({
     timeout: 15000,
@@ -52,6 +59,7 @@ export async function enableAdHocScreeningIfAvailable(page: Page): Promise<boole
  */
 export async function prepareAnalyzeJob(page: Page): Promise<'requisition' | 'ad-hoc'> {
   await gotoAnalyze(page);
+  await dismissFeatureGuideIfPresent(page);
 
   const selected = await selectFirstRequisitionOnAnalyze(page);
   if (selected) {
