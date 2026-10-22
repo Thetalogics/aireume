@@ -79,10 +79,36 @@ docker run --rm \
   --run-once --cleanup --rolling-restart --include-restarting --revive-stopped \
   "${services[@]}"
 
-# Watchtower skips containers that are restarting or stopped. A backend that
-# crash-loops on the previous image would otherwise stay on that image while
-# this command still exits 0. Require each named container to be running the
-# candidate that was just pulled.
+# Watchtower can still skip a container that is crash-looping too quickly or
+# that it considers already up-to-date. Discover the compose project from the
+# backend container labels and force-recreate any service that is not running
+# the candidate image.
+compose_file=""
+if compose_files="$(docker inspect staging-backend --format '{{index .Config.Labels "com.docker.compose.project.config_files"}}' 2>/dev/null || true)"; then
+  if [[ -n "$compose_files" ]]; then
+    compose_file="${compose_files%%,*}"
+  fi
+fi
+
+for index in "${!services[@]}"; do
+  container="${services[$index]}"
+  repository="${image_repositories[$index]}"
+  expected_id="$(docker image inspect "$repository:staging" --format '{{.Id}}')"
+  actual_id="$(docker inspect "$container" --format '{{.Image}}')"
+  running="$(docker inspect "$container" --format '{{.State.Running}}')"
+  if [[ "$actual_id" != "$expected_id" || "$running" != "true" ]]; then
+    if [[ -n "$compose_file" && -f "$compose_file" ]]; then
+      service_name="${container#staging-}"
+      echo "Forcing recreation of $container via docker compose ($compose_file)." >&2
+      docker compose -f "$compose_file" up -d --pull always "$service_name"
+    else
+      echo "Container $container is not running the candidate image." >&2
+      exit 68
+    fi
+  fi
+done
+
+# Re-verify after any forced recreation.
 for index in "${!services[@]}"; do
   container="${services[$index]}"
   repository="${image_repositories[$index]}"

@@ -109,6 +109,8 @@ def test_release_manifest_requires_exact_sha_staging_e2e():
     assert "E2E_EXPECTED_SHA" in E2E_STAGING
     assert 'READY_STATUS="$(printf' in E2E_STAGING
     assert '[ "$READY_STATUS" = "ready" ]' in E2E_STAGING
+    assert "for attempt in $(seq 1 48)" in E2E_STAGING
+    assert "sleep 15" in E2E_STAGING
     assert "vars.E2E_BASE_URL" in E2E_STAGING
     assert "secrets.E2E_EMAIL" in E2E_STAGING
     assert "secrets.E2E_PASSWORD" in E2E_STAGING
@@ -136,6 +138,9 @@ def test_staging_deploy_is_explicit_and_fail_closed():
     assert "ssh-keyscan" not in DEPLOY_STAGING
     assert "StrictHostKeyChecking=yes" in DEPLOY_STAGING
     assert "BatchMode=yes" in DEPLOY_STAGING
+    assert "Wait for healthy staging deployment at the expected SHA" in DEPLOY_STAGING
+    assert "for attempt in $(seq 1 48)" in DEPLOY_STAGING
+    assert "sleep 15" in DEPLOY_STAGING
     host_command = (ROOT / "scripts" / "aria-staging-deploy-host.sh").read_text(
         encoding="utf-8"
     )
@@ -151,6 +156,9 @@ def test_staging_deploy_is_explicit_and_fail_closed():
     assert '-e DOCKER_API_VERSION="$docker_min_api"' in host_command
     assert "--run-once --cleanup --rolling-restart --include-restarting --revive-stopped" in host_command
     assert "Container $container is not running the candidate image." in host_command
+    assert "docker compose" in host_command
+    assert "up -d --pull always" in host_command
+    assert "com.docker.compose.project.config_files" in host_command
     assert "staging-backend staging-frontend staging-nginx" in host_command.replace(
         "\n", " "
     )

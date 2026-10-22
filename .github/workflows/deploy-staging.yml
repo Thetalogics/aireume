@@ -132,6 +132,29 @@ jobs:
             -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
             "$VPS_USERNAME@$VPS_HOST" deploy-staging
 
+      - name: Wait for healthy staging deployment at the expected SHA
+        if: ${{ inputs.target_environment != 'production' }}
+        env:
+          E2E_BASE_URL: ${{ vars.E2E_BASE_URL }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          set -euo pipefail
+          BASE_URL="${E2E_BASE_URL%/}"
+          for attempt in $(seq 1 48); do
+            READY="$(curl --fail --silent --show-error "$BASE_URL/ready" 2>/dev/null || true)"
+            VERSION="$(curl --fail --silent --show-error "$BASE_URL/api/version" 2>/dev/null || true)"
+            READY_STATUS="$(printf '%s' "$READY" | jq -r '.status // empty' 2>/dev/null || true)"
+            ACTUAL_SHA="$(printf '%s' "$VERSION" | jq -r '.build_id // empty' 2>/dev/null || true)"
+            if [ "$READY_STATUS" = "ready" ] && { [ -z "$EXPECTED_SHA" ] || [ "$ACTUAL_SHA" = "$EXPECTED_SHA" ]; }; then
+              echo "Staging is ready at build ${ACTUAL_SHA:-unversioned}."
+              exit 0
+            fi
+            echo "Waiting for staging build ${EXPECTED_SHA:-any}; currently ${ACTUAL_SHA:-unavailable} (attempt $attempt/48)."
+            sleep 15
+          done
+          echo "Staging did not become ready at expected build '$EXPECTED_SHA'." >&2
+          exit 1
+
       - name: Remove SSH material
         if: ${{ always() && inputs.target_environment != 'production' && steps.transport.outputs.transport == 'ssh' }}
         run: rm -f "$HOME/.ssh/aria_deploy" "$HOME/.ssh/aria_deploy.pub" "$HOME/.ssh/known_hosts"
