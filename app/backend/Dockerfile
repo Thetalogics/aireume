@@ -34,10 +34,8 @@ RUN pip install --no-cache-dir --require-hashes -r requirements.lock
 # Download spaCy model for NER name extraction (~12MB)
 RUN python -m spacy download en_core_web_sm
 
-# Copy application code
+# Copy application code. app/backend/VERSION ships with this tree.
 COPY app/ ./app/
-# version.py resolves parents[2]/VERSION. In this image that path is /app/VERSION.
-COPY VERSION ./VERSION
 RUN rm -rf /app/app/backend/services/wip
 
 # Alembic (migrations run in entrypoint for PostgreSQL)

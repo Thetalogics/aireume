@@ -159,9 +159,13 @@ def test_staging_deploy_is_explicit_and_fail_closed():
     assert "|| echo" not in DEPLOY_STAGING
 
 
-def test_backend_image_copies_the_product_version_file():
-    """version.py reads parents[2]/VERSION at import. The image layout makes that /app/VERSION."""
-    assert "COPY VERSION ./VERSION" in DOCKERFILE
+def test_backend_image_ships_the_product_version_with_the_application():
+    """version.py reads the VERSION file beside itself. COPY app/ includes that file."""
+    source = (ROOT / "app" / "backend" / "version.py").read_text(encoding="utf-8")
+    assert (ROOT / "app" / "backend" / "VERSION").is_file()
+    assert 'parent / "VERSION"' in source
+    assert "parents[2]" not in source
+    assert "COPY app/ ./app/" in DOCKERFILE
 
 
 def test_backend_dependencies_are_hash_locked_and_used_everywhere():
