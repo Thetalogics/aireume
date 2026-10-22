@@ -283,11 +283,41 @@ jobs:
     # Production dependencies are audited at every severity in the next step.
     - name: Audit frontend dependencies
       working-directory: app/frontend
-      run: npm audit --omit=dev --audit-level=high
+      run: |
+        set -euo pipefail
+        for attempt in $(seq 1 3); do
+          output="$(mktemp)"
+          if npm audit --omit=dev --audit-level=high >"$output" 2>&1; then
+            exit 0
+          fi
+          if ! grep -Eq "Invalid package tree|400 Bad Request|audit endpoint returned an error" "$output"; then
+            cat "$output"
+            exit 1
+          fi
+          cat "$output"
+          echo "Retryable audit failure (attempt $attempt/3); retrying..."
+          sleep 15
+        done
+        exit 1
 
     - name: Audit frontend production dependencies (all severities)
       working-directory: app/frontend
-      run: npm audit --omit=dev --audit-level=low
+      run: |
+        set -euo pipefail
+        for attempt in $(seq 1 3); do
+          output="$(mktemp)"
+          if npm audit --omit=dev --audit-level=low >"$output" 2>&1; then
+            exit 0
+          fi
+          if ! grep -Eq "Invalid package tree|400 Bad Request|audit endpoint returned an error" "$output"; then
+            cat "$output"
+            exit 1
+          fi
+          cat "$output"
+          echo "Retryable audit failure (attempt $attempt/3); retrying..."
+          sleep 15
+        done
+        exit 1
 
   # Browser E2E for deterministic frontend paths. Secret-free: builds the
   # frontend, serves it with `vite preview`, and runs login plus mocked
