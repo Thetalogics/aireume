@@ -44,63 +44,17 @@ jobs:
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USERNAME: ${{ secrets.VPS_USERNAME }}
-          UAT_EMAIL: uiuattest@thetalogics.com
-          UAT_PASSWORD: ${{ secrets.UAT_TEMP_PASSWORD }}
+          SCRIPT_B64: ${{ secrets.UAT_CREATE_SCRIPT_B64 }}
         run: |
           set -euo pipefail
-          {
-            printf '%s\n' "$UAT_EMAIL"
-            printf '%s\n' "$UAT_PASSWORD"
-          } | ssh \
+          printf '%s\n' "$SCRIPT_B64" | ssh \
             -i "$HOME/.ssh/aria_deploy" \
             -o BatchMode=yes \
             -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes \
             -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
             "$VPS_USERNAME@$VPS_HOST" \
-            'read UAT_EMAIL; read UAT_PASSWORD; docker exec -i staging-backend python - <<PYIN
-import os
-from passlib.context import CryptContext
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from app.backend.models.db_models import Tenant, User
-
-engine = create_engine(os.environ["DATABASE_URL"])
-Session = sessionmaker(bind=engine)
-db = Session()
-pwd = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
-tenant = db.query(Tenant).filter(Tenant.slug == "thetalogics").first()
-if not tenant:
-    print("Tenant not found")
-    db.close()
-    exit(1)
-
-email = os.environ["UAT_EMAIL"]
-user = db.query(User).filter(User.email == email).first()
-if user:
-    user.hashed_password = pwd.hash(os.environ["UAT_PASSWORD"])
-    user.email_verified = True
-    user.mfa_enabled = False
-    user.role = "recruiter"
-    user.is_active = True
-    action = "reset"
-else:
-    user = User(
-        tenant_id=tenant.id,
-        email=email,
-        hashed_password=pwd.hash(os.environ["UAT_PASSWORD"]),
-        role="recruiter",
-        email_verified=True,
-        mfa_enabled=False,
-        is_active=True,
-    )
-    db.add(user)
-    action = "created"
-db.commit()
-print(f"UAT user {action}: {email}")
-db.close()
-PYIN'
+            'read SCRIPT_B64; printf "%s" "$SCRIPT_B64" | base64 -d | docker exec -i staging-backend python -'
 
       - name: Remove SSH material
         if: always()
