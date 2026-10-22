@@ -95,6 +95,9 @@ MFA_ENROLL_ALLOWED_PREFIXES = (
 def _mfa_enrollment_blocking(user: User) -> bool:
     if os.getenv("TESTING", "").lower() in {"1", "true", "yes"}:
         return False
+    # Temporary: skip MFA enrollment enforcement in staging for UI audit access.
+    if os.getenv("ENVIRONMENT", "").lower() == "staging":
+        return False
     if getattr(user, "mfa_enabled", False):
         return False
     return (
