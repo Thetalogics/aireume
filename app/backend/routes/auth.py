@@ -916,8 +916,10 @@ def mfa_disable(
 def test_verify_email_by_address(request_data: dict, db: Session = Depends(get_db)):
     """E2E only: verify a user by email when E2E_TEST_MODE=1 or TESTING=1."""
     import os
+    # Temporary: allow test email verification in staging for UI audit account creation.
     if os.environ.get("E2E_TEST_MODE", "").lower() not in ("1", "true") and \
-       os.environ.get("TESTING", "").lower() not in ("1", "true"):
+       os.environ.get("TESTING", "").lower() not in ("1", "true") and \
+       os.environ.get("ENVIRONMENT", "").lower() != "staging":
         raise HTTPException(status_code=404, detail="Not found")
 
     email = request_data.get("email", "").strip().lower()

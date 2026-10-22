@@ -77,7 +77,6 @@ services:
       - LIVEKIT_API_KEY=${LIVEKIT_API_KEY:?LIVEKIT_API_KEY must be set}
       - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET:?LIVEKIT_API_SECRET must be set}
       - LIVEKIT_AGENT_NAME=${LIVEKIT_AGENT_NAME:-ARIA}
-      - E2E_TEST_MODE=1
       - ARIA_BACKEND_URL=${ARIA_BACKEND_URL:-https://airesume-staging.thetalogics.com}
       - BACKEND_INTERNAL_URL=http://backend:8000
       - SIP_TRUNK_ID=${SIP_TRUNK_ID:-twilio-aria}
