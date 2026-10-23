@@ -21,7 +21,8 @@
     "react-dropzone": "^14.3.5",
     "react-hot-toast": "^2.6.0",
     "react-router-dom": "^7.14.0",
-    "recharts": "^3.8.1"
+    "recharts": "^3.8.1",
+    "three": "^0.186.1"
   },
   "devDependencies": {
     "@eslint/js": "^9.17.0",

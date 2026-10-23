@@ -107,7 +107,7 @@ export default function RegisterPage() {
                   required
                   minLength={10}
                   autoComplete="new-password"
-                  placeholder="Min. 10 characters"
+                  placeholder="At least 10 characters"
                   className="w-full px-4 py-2.5 pr-11 rounded-xl ring-1 ring-brand-200 focus:ring-2 focus:ring-brand-500 bg-white text-sm text-slate-800 placeholder-slate-400 transition-shadow"
                 />
                 <button
@@ -120,6 +120,7 @@ export default function RegisterPage() {
                   {showPw ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                 </button>
               </div>
+              <p className="mt-1.5 text-xs text-slate-500">At least 10 characters, with an uppercase letter, a lowercase letter, and a number.</p>
             </div>
             <button
               type="submit"
@@ -140,9 +141,9 @@ export default function RegisterPage() {
             </button>
             <p className="text-[11px] leading-relaxed text-slate-500 text-center">
               By creating a workspace, you agree to ARIA&apos;s{' '}
-              <a href="/legal/terms" className="font-semibold text-brand-600 hover:text-brand-700">Terms</a>
+              <a href="/legal/terms" className="inline-flex items-center min-h-6 font-semibold text-brand-600 hover:text-brand-700">Terms</a>
               {' '}and{' '}
-              <a href="/legal/privacy" className="font-semibold text-brand-600 hover:text-brand-700">Privacy Notice</a>.
+              <a href="/legal/privacy" className="inline-flex items-center min-h-6 font-semibold text-brand-600 hover:text-brand-700">Privacy Notice</a>.
               Candidate data is processed for your tenant workspace and is not used to train public models.
             </p>
           </form>

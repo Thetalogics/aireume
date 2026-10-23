@@ -179,7 +179,11 @@ test.describe('Authenticated CI smoke', () => {
 
     await expect(page).toHaveURL(/\/$/);
     await expect(page.getByRole('navigation').first()).toBeVisible({ timeout: 15000 });
+    await expect(page.getByRole('link', { name: 'Interviews', exact: true }).first()).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Pipeline', exact: true }).first()).toBeVisible();
     await expect(page.getByText(/welcome back, recruiter/i)).toBeVisible();
+    await expect(page.getByText('Taylor Morgan')).toBeVisible();
+    await expect(page.getByText('Advance').first()).toBeVisible();
     await expect(page.getByRole('button', { name: /pending review/i })).toBeVisible();
     await expect(page.getByRole('button', { name: /in progress/i })).toBeVisible();
     await expect(page.getByRole('button', { name: /shortlisted view candidates/i })).toBeVisible();

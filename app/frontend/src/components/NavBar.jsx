@@ -12,7 +12,7 @@ function isPrimaryNavActive(pathname, itemPath) {
   if (itemPath === '/requisitions') return pathname.startsWith('/requisitions')
   if (itemPath === '/candidates') return pathname.startsWith('/candidates')
   if (itemPath === '/analyze') {
-    return pathname.startsWith('/analyze') || pathname === '/report'
+    return pathname.startsWith('/analyze')
   }
   return pathname === itemPath || pathname.startsWith(`${itemPath}/`)
 }
@@ -34,6 +34,8 @@ const PRIMARY_NAV_RECRUITER = [
   { label: NAV.requisitions, path: '/requisitions', icon: Briefcase, feature: 'requisitions' },
   { label: NAV.analyze, path: '/analyze', icon: ScanSearch },
   { label: NAV.candidates, path: '/candidates', icon: Users },
+  { label: NAV.interviews, path: '/ai-interviews', icon: Mic, feature: 'ai_interviews' },
+  { label: NAV.pipeline, path: '/pipeline', icon: Columns, feature: 'pipeline' },
 ]
 
 const PRIMARY_NAV_HM = [
@@ -42,9 +44,7 @@ const PRIMARY_NAV_HM = [
 ]
 
 const USER_MENU_LINKS = [
-  { label: NAV.interviews, path: '/ai-interviews', icon: Mic, feature: 'ai_interviews' },
   { label: NAV.compare, path: '/compare', icon: GitCompare, feature: 'compare' },
-  { label: NAV.pipeline, path: '/pipeline', icon: Columns, feature: 'pipeline' },
   { label: NAV.analytics, path: '/analytics', icon: BarChart3, feature: 'analytics' },
   { label: REQUISITIONS.openRequestsNav, path: '/requisitions/open-requests', icon: Briefcase, feature: 'requisitions', assignOnly: true },
   { label: NAV.team, path: '/team', icon: Users2 },
@@ -179,8 +179,8 @@ function MobileTabBar({ location, canWrite, primaryNav, menuLinks }) {
                 key={tab.path}
                 to={tab.path}
                 aria-current={active ? 'page' : undefined}
-                className={`relative flex flex-col items-center gap-0.5 px-3 py-1.5 rounded-lg transition-colors ${
-                  active ? 'text-brand-600' : 'text-slate-400'
+                className={`relative flex flex-col items-center gap-0.5 px-2 py-1.5 rounded-lg transition-colors ${
+                  active ? 'text-brand-600' : 'text-slate-500'
                 }`}
               >
                 <motion.div
@@ -189,7 +189,7 @@ function MobileTabBar({ location, canWrite, primaryNav, menuLinks }) {
                 >
                   <tab.icon className="w-5 h-5" />
                 </motion.div>
-                <span className="text-[10px] font-medium">{tab.label}</span>
+                <span className="text-xs font-medium">{tab.label}</span>
                 {active && (
                   <motion.span
                     layoutId="mobile-tab-indicator"
@@ -206,12 +206,12 @@ function MobileTabBar({ location, canWrite, primaryNav, menuLinks }) {
             aria-expanded={moreOpen}
             aria-controls="mobile-more-sheet"
             onClick={() => setMoreOpen(v => !v)}
-            className={`flex flex-col items-center gap-0.5 px-3 py-1.5 rounded-lg transition-colors ${
-              moreOpen ? 'text-brand-600' : 'text-slate-400'
+            className={`flex flex-col items-center gap-0.5 px-2 py-1.5 rounded-lg transition-colors ${
+              moreOpen ? 'text-brand-600' : 'text-slate-500'
             }`}
           >
             <MoreHorizontal className="w-5 h-5" />
-            <span className="text-[10px] font-medium">More</span>
+            <span className="text-xs font-medium">More</span>
           </button>
         </div>
       </nav>
@@ -338,7 +338,7 @@ export default function NavBar() {
               </div>
             )}
             <span className="text-lg font-bold text-brand-900 tracking-tight">{brandName}</span>
-            {tenant && (
+            {tenant?.name && tenant.name.trim().toLowerCase() !== brandName.trim().toLowerCase() && (
               <span className="hidden sm:inline text-xs text-brand-600 border border-brand-200 bg-brand-50 rounded-full px-2.5 py-0.5 ml-1 font-medium">
                 {tenant.name}
               </span>

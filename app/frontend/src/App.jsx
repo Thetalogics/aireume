@@ -31,6 +31,7 @@ const PublicHandoffPage = lazy(() => import('./pages/PublicHandoffPage'))
 // Existing pages
 const ReportPage   = lazy(() => import('./pages/ReportPage'))
 const LoginPage    = lazy(() => import('./pages/LoginPage'))
+const LandingPage  = lazy(() => import('./pages/LandingPage'))
 const RegisterPage = lazy(() => import('./pages/RegisterPage'))
 const ForgotPasswordPage = lazy(() => import('./pages/ForgotPasswordPage'))
 const ResetPasswordPage = lazy(() => import('./pages/ResetPasswordPage'))
@@ -109,8 +110,22 @@ function LegacyHandoffRedirect() {
 function HomePage() {
   const { user, loading } = useAuth()
   const { isHiringManager, isViewer } = usePermissions()
-  if (!loading && user && isHiringManager) return <Navigate to="/requisitions" replace />
-  if (!loading && user && isViewer) return <Navigate to="/candidates" replace />
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-surface flex items-center justify-center">
+        <Spinner />
+      </div>
+    )
+  }
+  if (!user) {
+    return (
+      <Suspense fallback={<div className="min-h-screen bg-surface" />}>
+        <LandingPage />
+      </Suspense>
+    )
+  }
+  if (isHiringManager) return <Navigate to="/requisitions" replace />
+  if (isViewer) return <Navigate to="/candidates" replace />
   return (
     <Shell>
       <OnboardingGate>
@@ -156,6 +171,21 @@ function OnboardingGate({ children }) {
   }
 
   return children
+}
+
+function NotFoundPage() {
+  const { user } = useAuth()
+  const body = (
+    <div className="min-h-[50vh] flex items-center justify-center p-6">
+      <div className="text-center max-w-md">
+        <p className="text-sm font-semibold text-brand-600">404</p>
+        <h1 className="text-2xl font-bold text-slate-800 dark:text-white mt-2">Page not found</h1>
+        <p className="text-slate-500 mt-2 text-sm">That page is not in this workspace.</p>
+        <Link to={user ? '/' : '/login'} className="btn-brand mt-6 inline-flex">{user ? 'Go home' : 'Sign in'}</Link>
+      </div>
+    </div>
+  )
+  return user ? <Shell>{body}</Shell> : body
 }
 
 function App() {
@@ -253,14 +283,7 @@ function App() {
               <Route path="/dashboard-old" element={<Navigate to="/" replace />} />
               
               {/* Catch all */}
-              <Route path="*" element={
-                <div className="flex flex-col items-center justify-center min-h-[60vh] text-slate-500">
-                  <h1 className="text-6xl font-bold text-slate-300 mb-4">404</h1>
-                  <p className="text-lg font-medium mb-2">Page not found</p>
-                  <p className="text-sm mb-4">The page you're looking for doesn't exist.</p>
-                  <Link to="/" className="px-4 py-2 bg-brand-500 text-white rounded-lg hover:bg-brand-600">Go Home</Link>
-                </div>
-              } />
+              <Route path="*" element={<NotFoundPage />} />
               </Routes>
               </Suspense>
             </ErrorBoundary>

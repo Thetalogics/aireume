@@ -1,5 +1,6 @@
 import { Loader2, Sparkles, MessageSquare, Mic } from 'lucide-react'
 import { getGenerationMode } from '../lib/enrichmentUtils'
+import { recommendationLabel } from '../lib/constants'
 
 export function FitBadge({ score }) {
   if (score == null)
@@ -17,7 +18,7 @@ export function RecommendBadge({ rec }) {
     Reject:    'bg-red-50 text-red-700 ring-red-200',
     Pending:   'bg-slate-50 text-slate-600 ring-slate-200',
   }
-  return <span className={`px-2.5 py-0.5 rounded-full text-xs font-bold ring-1 ${styles[rec] || 'bg-slate-50 text-slate-600 ring-slate-200'}`}>{rec || '—'}</span>
+  return <span className={`px-2.5 py-0.5 rounded-full text-xs font-bold ring-1 ${styles[rec] || 'bg-slate-50 text-slate-600 ring-slate-200'}`}>{recommendationLabel(rec)}</span>
 }
 
 export function NarrativeStatusBadge({ result }) {

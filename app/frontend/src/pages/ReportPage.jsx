@@ -11,13 +11,13 @@ import ResultCard from '../components/ResultCard'
 import InterviewScorecard from '../components/InterviewScorecard'
 import Timeline from '../components/Timeline'
 import { labelTrainingExample, updateResultStatus, updateCandidateName, getCandidateAuditLog, viewCandidateResume, downloadCandidateResume, downloadPdfReport, getScreeningResult, getInterviewSessions, getInterviewScorecard, downloadAdverseAction, submitScoreFeedback } from '../lib/api'
-import AnimatedScore from '../components/AnimatedScore'
 import StreamingText from '../components/StreamingText'
 import Skeleton from '../components/Skeleton'
 import EvaluationChecklist from '../components/EvaluationChecklist'
 import InterviewInitiateModal from '../components/InterviewInitiateModal'
-import { EnrichmentBanner, ReportActionBar, AnalysisStageTracker, RescoreSheet, LiveScreenCallShell, LiveScreenKitReadinessGate, ConsolidatedScoreHero } from '../components/patterns'
+import { EnrichmentBanner, ReportActionBar, AnalysisStageTracker, RescoreSheet, LiveScreenCallShell, LiveScreenKitReadinessGate, ConsolidatedScoreHero, ReportFitGraphic } from '../components/patterns'
 import { useLiveScreenMode } from '../contexts/useLiveScreenMode'
+import { personLabel } from '../lib/personName'
 import { useEnrichmentPolling } from '../hooks/useEnrichmentPolling'
 import { useNotification } from '../contexts/useNotification'
 import { useOnboarding } from '../contexts/useOnboarding'
@@ -25,7 +25,7 @@ import usePermissions from '../hooks/usePermissions'
 import { useSubscription } from '../hooks/useSubscription'
 import { ViewerReadOnlyBanner } from '../components/RequireWriteAccess'
 import { showSuccess, showError } from '../lib/toast'
-import { getFitTierLabel, getScoreHexColor } from '../lib/constants'
+import { recommendationLabel } from '../lib/constants'
 import { getKitReadiness, resolveInterviewKit } from '../lib/liveScreenKitUtils'
 import { hasNarrativeContent, needsEnrichmentRefetch, isReportCacheable } from '../lib/enrichmentUtils'
 import { INTERVIEW } from '../lib/uxLabels'
@@ -462,11 +462,12 @@ export default function ReportPage() {
   const [resumeText, setResumeText] = useState('')
 
   /** Resolve name from all possible result paths — returns null if unknown */
-  const resolveName = (r) =>
+  const resolveName = (r) => personLabel(
     (r?.candidate_name || '').trim() ||
     (r?.contact_info?.name || '').trim() ||
-    (r?.candidate_profile?.name || '').trim() ||
-    null
+    (r?.candidate_profile?.name || '').trim(),
+    r?.contact_info?.email || r?.candidate_email,
+  )
 
   // Initialize candidate name from result
   const [candidateName, setCandidateName] = useState(resolveName(location.state?.result))
@@ -912,7 +913,6 @@ export default function ReportPage() {
   // ── Phone Screen split-view layout ────────────────────────────────────────
   const interviewQs = interviewQsForKit
   const fitScore = result?.fit_score ?? null
-  const fitTier = getFitTierLabel(fitScore)
 
   const handleStartLiveScreen = () => {
     if (kitReadiness.state === 'loading' || kitReadiness.state === 'empty') {
@@ -978,7 +978,7 @@ export default function ReportPage() {
                 navigate(destination, { state: { from: '/analyze' } })
               }
             } else {
-              window.history.length > 1 ? navigate(-1) : navigate('/')
+              navigate('/candidates')
             }
           }}
           className="flex items-center gap-2 text-sm font-medium text-slate-500 hover:text-brand-700 transition-colors self-start"
@@ -987,9 +987,10 @@ export default function ReportPage() {
           {(() => {
             const searchParams = new URLSearchParams(location.search)
             const fromParam = searchParams.get('from')
-            return location.state?.from === '/batch' || fromParam === 'batch'
-              ? 'Back to Batch Results'
-              : 'Back to Results'
+            const fromState = location.state?.from
+            if (fromState === '/batch' || fromParam === 'batch') return 'Back to Batch Results'
+            if (fromParam === 'analyze' || fromState === '/analyze') return 'Back to Screen'
+            return 'Back to Candidates'
           })()}
         </button>
 
@@ -1274,6 +1275,10 @@ export default function ReportPage() {
           )}
 
           {hasDeterministicData && (
+            <ReportFitGraphic result={result} />
+          )}
+
+          {hasDeterministicData && (
             <ConsolidatedScoreHero
               analysisScore={result?.deterministic_score ?? result?.fit_score}
               callScore={result?.call_fit_score}
@@ -1286,43 +1291,11 @@ export default function ReportPage() {
           {/* Score Summary — resume-only view; hero covers screened candidates */}
           {!hasDeterministicData ? (
             <Skeleton variant="card" />
-          ) : result?.call_fit_score == null ? (
-            <div className="bg-white/90 backdrop-blur-md rounded-2xl ring-1 ring-brand-100 shadow-brand-sm p-5 flex items-center gap-6">
-              <div className="flex flex-col items-center justify-center w-24 h-24 rounded-full bg-brand-50 ring-4 ring-brand-100 shrink-0">
-                <AnimatedScore score={result.fit_score} size="lg" animate={!isReportComplete} />
-                <span className="text-[10px] font-bold text-brand-400 uppercase tracking-wider">/ 100</span>
-              </div>
-              <div className="flex-1">
-                <div className="flex items-center gap-2 mb-1">
-                  <span
-                    className="px-3 py-1 rounded-full text-xs font-bold text-white"
-                    style={{ backgroundColor: getScoreHexColor(result.fit_score) }}
-                  >
-                    {fitTier.label}
-                  </span>
-                  {result.final_recommendation && (
-                    <span className="px-3 py-1 rounded-full text-xs font-bold bg-brand-100 text-brand-700 ring-1 ring-brand-200">
-                      {safeStr(result.final_recommendation)}
-                    </span>
-                  )}
-                  {result.risk_level && (
-                    <span className={`px-3 py-1 rounded-full text-xs font-bold ${
-                      result.risk_level === 'Low' ? 'bg-green-100 text-green-700' :
-                      result.risk_level === 'Medium' ? 'bg-amber-100 text-amber-700' :
-                      'bg-red-100 text-red-700'
-                    }`}>
-                      {safeStr(result.risk_level)} Risk
-                    </span>
-                  )}
-                </div>
-                <p className="text-sm text-slate-500">Overall fit score based on skills, experience, education, and timeline analysis.</p>
-              </div>
-            </div>
-          ) : (
+          ) : result?.call_fit_score != null ? (
             <div className="bg-white/90 backdrop-blur-md rounded-2xl ring-1 ring-brand-100 shadow-brand-sm p-5 flex flex-wrap items-center gap-2">
               {result.final_recommendation && (
                 <span className="px-3 py-1 rounded-full text-xs font-bold bg-brand-100 text-brand-700 ring-1 ring-brand-200">
-                  {safeStr(result.final_recommendation)}
+                  {recommendationLabel(result.final_recommendation)}
                 </span>
               )}
               {result.risk_level && (
@@ -1335,7 +1308,7 @@ export default function ReportPage() {
                 </span>
               )}
             </div>
-          )}
+          ) : null}
 
           {/* Loading skeletons for narrative and skills areas */}
           {!hasDeterministicData && (
@@ -1348,7 +1321,7 @@ export default function ReportPage() {
           )}
 
           {/* Candidate Information Section - Visible in both screen and print */}
-          <div className="mb-6 pb-4 border-b-2 border-brand-200 bg-white/90 backdrop-blur-md rounded-2xl ring-1 ring-brand-100 shadow-brand-sm p-5 print:shadow-none print:ring-0 print:bg-transparent print:rounded-none">
+          <div className="hidden print:block mb-6 pb-4 border-b-2 border-brand-200 bg-white/90 backdrop-blur-md rounded-2xl ring-1 ring-brand-100 shadow-brand-sm p-5 print:shadow-none print:ring-0 print:bg-transparent print:rounded-none">
             <div className="flex items-start justify-between mb-3">
               <div>
                 <span className="text-xs font-bold text-brand-600 uppercase tracking-widest">Screening Report</span>

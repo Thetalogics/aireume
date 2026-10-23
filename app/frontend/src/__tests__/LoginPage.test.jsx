@@ -56,6 +56,19 @@ describe('LoginPage', () => {
     expect(await screen.findByText(/invalid email or password/i)).toBeInTheDocument()
   })
 
+  it('renders an object login error as text', async () => {
+    loginMock.mockRejectedValue({ response: { data: { detail: { message: 'Workspace not found' } } } })
+    renderPage()
+
+    fireEvent.change(screen.getByPlaceholderText('your-company'), { target: { value: 'acme' } })
+    fireEvent.change(screen.getByLabelText(/^email$/i), { target: { value: 'hr@acme.com' } })
+    fireEvent.change(screen.getByPlaceholderText('••••••••'), { target: { value: 'wrong' } })
+    fireEvent.click(screen.getByRole('button', { name: /sign in/i }))
+
+    expect(await screen.findByText('Workspace not found')).toBeInTheDocument()
+    expect(screen.queryByText('[object Object]')).not.toBeInTheDocument()
+  })
+
   it('toggles password visibility', () => {
     renderPage()
     const pw = screen.getByPlaceholderText('••••••••')

@@ -1,4 +1,4 @@
-import { getRecommendation, getScoreColor } from '../lib/constants'
+import { getRecommendation, getScoreColor, recommendationLabel } from '../lib/constants'
 
 /**
  * Pill-shaped recommendation badge.
@@ -18,7 +18,7 @@ export default function RecommendationBadge({
   const rec = getRecommendation(score)
   const colorConfig = getScoreColor(score)
 
-  const label = recommendation || rec.label
+  const label = recommendationLabel(recommendation || rec.label)
   const Icon = rec.icon
 
   const sizeClasses = {

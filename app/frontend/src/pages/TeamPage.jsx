@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { Link } from 'react-router-dom'
 import { Users2, UserPlus, Shield, AlertCircle, Check, X } from 'lucide-react'
 import EmptyState from '../components/EmptyState'
 import { getTeamMembers, inviteTeamMember, startTraining, getTrainingStatus, getTenantAuditLogs } from '../lib/api'
@@ -233,6 +234,7 @@ export default function TeamPage() {
           <div>
             <h2 className="text-3xl font-extrabold text-brand-900 tracking-tight">Team</h2>
             <p className="text-slate-500 text-sm mt-1 font-medium">Manage your workspace members and ARIA prompt personalization.</p>
+            <Link to="/team-skills" className="inline-flex items-center mt-2 text-sm font-semibold text-brand-700 hover:text-brand-800">Team skills</Link>
           </div>
           {isAdmin && (
             <button

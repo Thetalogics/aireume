@@ -119,7 +119,7 @@ export default function SubscriptionSettingsPanel({
                     </div>
 
                     {/* Admin Controls */}
-                    {user?.role === 'admin' && (
+                    {import.meta.env.DEV && user?.role === 'admin' && (
                       <>
                         <h5 className="font-bold text-slate-800 text-sm mt-6 mb-3 flex items-center gap-2">
                           <Sparkles className="w-4 h-4 text-brand-600" />

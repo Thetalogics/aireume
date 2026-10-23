@@ -32,7 +32,7 @@ const mockResult = {
 describe('ResultCard', () => {
   it('renders the recommendation badge', () => {
     render(<ResultCard result={mockResult} />)
-    expect(screen.getByText('Shortlist')).toBeInTheDocument()
+    expect(screen.getByText('Advance')).toBeInTheDocument()
   })
 
   it('displays strengths', () => {
@@ -59,7 +59,7 @@ describe('ResultCard', () => {
 
   it('shows correct colors for different recommendations', () => {
     const { rerender } = render(<ResultCard result={{ ...mockResult, final_recommendation: 'Reject' }} />)
-    expect(screen.getByText('Reject')).toBeInTheDocument()
+    expect(screen.getByText('Not a fit')).toBeInTheDocument()
 
     rerender(<ResultCard result={{ ...mockResult, final_recommendation: 'Consider' }} />)
     expect(screen.getByText('Consider')).toBeInTheDocument()

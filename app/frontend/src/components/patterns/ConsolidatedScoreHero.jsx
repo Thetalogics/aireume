@@ -7,8 +7,8 @@ const RECOMMENDATION_STYLES = {
   strong_advance: { label: 'Strong Advance', color: 'emerald' },
   advance: { label: 'Advance', color: 'green' },
   hold: { label: 'Hold', color: 'amber' },
-  reject: { label: 'Reject', color: 'red' },
-  strong_reject: { label: 'Strong Reject', color: 'red' },
+  reject: { label: 'Not a fit', color: 'red' },
+  strong_reject: { label: 'Not a fit', color: 'red' },
 }
 
 function scoreColor(score) {

@@ -267,6 +267,13 @@ export default function InterviewPage() {
           )}
         />
 
+        <div className="flex flex-wrap gap-2 mb-6">
+          <Link to="/voice-screening" className="px-3 py-2 rounded-xl ring-1 ring-brand-200 text-sm font-semibold text-brand-700 hover:bg-brand-50">Voice screening</Link>
+          <Link to="/recruiter-interviews" className="px-3 py-2 rounded-xl ring-1 ring-brand-200 text-sm font-semibold text-brand-700 hover:bg-brand-50">Recruiter interviews</Link>
+          <Link to="/video" className="px-3 py-2 rounded-xl ring-1 ring-brand-200 text-sm font-semibold text-brand-700 hover:bg-brand-50">Interview review</Link>
+          <Link to="/transcript" className="px-3 py-2 rounded-xl ring-1 ring-brand-200 text-sm font-semibold text-brand-700 hover:bg-brand-50">Transcript analysis</Link>
+        </div>
+
         <div className="flex flex-wrap items-center gap-3 mb-6">
           <SegmentedControl
             options={[

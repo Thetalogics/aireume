@@ -18,6 +18,7 @@ vi.mock('../hooks/useEnrichmentPolling', () => ({ useEnrichmentPolling: () => {}
 vi.mock('../components/patterns', () => ({
   EnrichmentBanner: () => null, ReportActionBar: () => null, AnalysisStageTracker: () => null, RescoreSheet: () => null,
   ConsolidatedScoreHero: ({ result }) => <div>{result.candidate_name}</div>,
+  ReportFitGraphic: () => null,
   LiveScreenCallShell: ({ resumeBlobUrl, resumeText, onExit }) => <div><output>{resumeBlobUrl || resumeText}</output><button onClick={onExit}>Exit screen</button></div>,
   LiveScreenKitReadinessGate: ({ open, onStartWithFallback }) => open && <button onClick={onStartWithFallback}>Use fallback</button>,
 }))

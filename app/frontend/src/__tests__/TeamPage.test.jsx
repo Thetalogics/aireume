@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
 import TeamPage from '../pages/TeamPage'
 import { getTeamMembers, getTenantAuditLogs, getTrainingStatus } from '../lib/api'
 
@@ -25,20 +26,21 @@ describe('Team prompt personalization', () => {
   })
 
   it('explains how labeled hiring outcomes personalize the prompt', async () => {
-    render(<TeamPage />)
+    render(<MemoryRouter><TeamPage /></MemoryRouter>)
 
     expect(await screen.findByRole('heading', { name: 'Prompt personalization' })).toBeInTheDocument()
     expect(screen.getByText(/hired.*rejected.*report page/i)).toBeInTheDocument()
     expect(screen.getByText(/up to 50.*Ollama Modelfile SYSTEM prompt/i)).toBeInTheDocument()
     expect(screen.getByText(/model weights stay unchanged/i)).toBeInTheDocument()
     expect(screen.queryByText(/fine.tune|train custom model|custom ai training|learn your company/i)).not.toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Team skills' })).toHaveAttribute('href', '/team-skills')
   })
 
   it.each([9, 10])('requires at least 10 labeled outcomes (%i available)', async (count) => {
     getTrainingStatus.mockResolvedValue({
       labeled_count: count, trained: false, model_name: null, last_trained: null,
     })
-    render(<TeamPage />)
+    render(<MemoryRouter><TeamPage /></MemoryRouter>)
 
     const button = await screen.findByRole('button', { name: 'Personalize ARIA' })
     if (count < 10) expect(button).toBeDisabled()
@@ -52,7 +54,7 @@ describe('Team prompt personalization', () => {
     getTrainingStatus.mockResolvedValue({
       labeled_count: 10, trained, model_name: 'aria-42', last_trained: trained ? '2026-10-21T00:00:00Z' : null,
     })
-    render(<TeamPage />)
+    render(<MemoryRouter><TeamPage /></MemoryRouter>)
 
     expect(await screen.findByText(description)).toBeInTheDocument()
     expect(screen.getByText('aria-42')).toBeInTheDocument()

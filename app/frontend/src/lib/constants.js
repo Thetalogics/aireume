@@ -128,6 +128,14 @@ export const RECOMMENDATION_LABELS = {
   poor:   'Not Recommended',
 }
 
+/** Display label for a stored recommendation. Status "Rejected" stays a status. */
+export function recommendationLabel(value) {
+  if (value === 'Reject') return 'Not a fit'
+  if (value === 'Shortlist') return 'Advance'
+  if (value == null || value === '') return '—'
+  return String(value)
+}
+
 /**
  * Returns the color configuration for a given numeric score.
  *

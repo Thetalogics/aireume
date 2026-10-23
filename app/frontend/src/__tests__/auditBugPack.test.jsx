@@ -65,6 +65,7 @@ vi.mock('../components/patterns', () => ({
   LiveScreenCallShell: () => null,
   LiveScreenKitReadinessGate: () => null,
   ConsolidatedScoreHero: ({ result }) => <div>{result?.candidate_name || result?.contact_info?.name}</div>,
+  ReportFitGraphic: () => null,
 }))
 vi.mock('../components/OAuthButtons', () => ({ default: () => null }))
 vi.mock('../contexts/useAuth', async (original) => ({
@@ -288,5 +289,6 @@ describe('BUG-019 register password copy', () => {
     )
     const input = document.getElementById('register-password')
     expect(input).toHaveAttribute('minLength', '10')
+    expect(screen.getByText(/at least 10 characters, with an uppercase letter, a lowercase letter, and a number/i)).toBeInTheDocument()
   })
 })

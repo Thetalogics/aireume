@@ -13,6 +13,6 @@ describe('ScoreBadge a11y', () => {
 describe('RecommendationBadge a11y', () => {
   it('exposes an aria-label with the recommendation', () => {
     render(<RecommendationBadge score={82} recommendation="Shortlist" />)
-    expect(screen.getByLabelText(/recommendation:\s*shortlist/i)).toBeInTheDocument()
+    expect(screen.getByLabelText(/recommendation:\s*advance/i)).toBeInTheDocument()
   })
 })

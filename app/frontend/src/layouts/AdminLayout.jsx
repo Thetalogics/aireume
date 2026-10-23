@@ -28,6 +28,7 @@ const NAV_GROUPS = [
       { label: 'Webhooks',      path: '/admin/webhooks',    icon: '⬡' },
       { label: 'Rate Limits',   path: '/admin/rate-limits', icon: '⬡' },
       { label: 'Email Settings',path: '/admin/email',       icon: '⬡' },
+      { label: 'SSO',           path: '/admin/sso',         icon: '⬡' },
     ],
   },
   {

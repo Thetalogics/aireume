@@ -1,4 +1,5 @@
 import { Check, AlertTriangle } from 'lucide-react'
+import { personLabel } from '../lib/personName'
 import ScoreBadge from './ScoreBadge'
 import RecommendationBadge from './RecommendationBadge'
 import QuickActions from './QuickActions'
@@ -82,7 +83,7 @@ export default function CandidateCard({
             <div className="flex items-start justify-between gap-2 min-h-[52px]">
               <div>
                 <h3 className="text-base font-semibold text-slate-900 truncate">
-                  {name || 'Unknown Candidate'}
+                  {personLabel(name, email)}
                 </h3>
                 {title && (
                   <p className="text-sm text-slate-500 mt-0.5">{title}</p>

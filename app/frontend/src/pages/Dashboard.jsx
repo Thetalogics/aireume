@@ -16,7 +16,8 @@ import { PlanLockedButton, PlanUpgradeCard, PlanUsageMeter } from '../components
 
 import { getDashboardSummary, getDashboardActivity, getInterviewAnalytics } from '../lib/api'
 import { safeStr } from '../lib/utils'
-import { getScoreColor, getScoreHexColor } from '../lib/constants'
+import { getScoreColor, getScoreHexColor, recommendationLabel } from '../lib/constants'
+import { personLabel } from '../lib/personName'
 import Skeleton from '../components/Skeleton'
 import GettingStarted from '../components/GettingStarted'
 import { StaggerContainer, StaggerItem } from '../components/motion'
@@ -139,7 +140,7 @@ function RecommendationTag({ recommendation }) {
   }
   return (
     <span className={`px-2 py-0.5 rounded-full text-xs font-semibold ring-1 ${bg}`}>
-      {safeStr(recommendation) || '—'}
+      {recommendationLabel(recommendation)}
     </span>
   )
 }
@@ -153,7 +154,7 @@ function getActionInfo(item) {
     return { label: 'Shortlisted', Icon: UserCheck, colorCls: 'text-green-600 bg-green-50' }
   }
   if (rec.includes('reject') || rec.includes('not recommend') || rec.includes('weak')) {
-    return { label: 'Rejected', Icon: XCircle, colorCls: 'text-red-600 bg-red-50' }
+    return { label: 'Screened', Icon: XCircle, colorCls: 'text-red-600 bg-red-50' }
   }
   return { label: 'Analyzed', Icon: FileText, colorCls: 'text-brand-600 bg-brand-50' }
 }
@@ -671,7 +672,7 @@ function DashboardContent() {
                               {actionLabel}
                             </span>
                             <span className="text-sm font-semibold text-slate-900 dark:text-dark-text-primary truncate">
-                              {safeStr(item.candidate_name) || 'Candidate'}
+                              {personLabel(item.candidate_name, item.candidate_email || item.email)}
                             </span>
                             {item.fit_score != null && (
                               <span className={`shrink-0 px-2 py-0.5 rounded-full text-xs font-bold ring-1 ${scoreBadgeClasses(item.fit_score)}`}>

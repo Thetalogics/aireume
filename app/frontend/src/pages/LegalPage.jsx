@@ -73,9 +73,9 @@ export default function LegalPage() {
         </div>
 
         <div className="mt-8 flex flex-wrap gap-x-5 gap-y-2 text-sm font-semibold">
-          <Link to="/legal/terms" className="text-brand-700 hover:text-brand-800">Terms</Link>
-          <Link to="/legal/privacy" className="text-brand-700 hover:text-brand-800">Privacy</Link>
-          <Link to="/legal/subprocessors" className="text-brand-700 hover:text-brand-800">Subprocessors</Link>
+          <Link to="/legal/terms" className="inline-flex items-center min-h-6 text-brand-700 hover:text-brand-800">Terms</Link>
+          <Link to="/legal/privacy" className="inline-flex items-center min-h-6 text-brand-700 hover:text-brand-800">Privacy</Link>
+          <Link to="/legal/subprocessors" className="inline-flex items-center min-h-6 text-brand-700 hover:text-brand-800">Subprocessors</Link>
           <a href="mailto:support@thetalogics.com" className="text-brand-700 hover:text-brand-800">support@thetalogics.com</a>
         </div>
       </div>

@@ -5,6 +5,8 @@ import { getHistory, compareResults, exportCsv, getTeamProfiles, getTeamGapAnaly
 import ComparisonMatrix from '../components/ComparisonMatrix'
 import EmptyState from '../components/EmptyState'
 import { safeStr, toScoreNumber } from '../lib/utils'
+import { personLabel } from '../lib/personName'
+import { recommendationLabel } from '../lib/constants'
 
 function ScoreCell({ value, isWinner, color = 'brand' }) {
   const colors = {
@@ -189,7 +191,10 @@ export default function ComparePage() {
                       {selected.includes(r.id) && <Check className="w-3 h-3 text-white" />}
                     </div>
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm font-semibold text-brand-900">{safeStr(r.candidate_name) || `Result #${r.id}`}</p>
+                      <p className="text-sm font-semibold text-brand-900 truncate">{personLabel(r.candidate_name, r.candidate_email || r.email) || `Result #${r.id}`}</p>
+                      {(r.candidate_email || r.email) && personLabel(r.candidate_name, r.candidate_email || r.email) !== (r.candidate_email || r.email) && (
+                        <p className="text-xs text-slate-500 truncate">{r.candidate_email || r.email}</p>
+                      )}
                       <p className="text-xs text-slate-400 font-medium">
                         {r.job_role && <span>{r.job_role} · </span>}
                         {new Date(r.timestamp).toLocaleDateString()}
@@ -206,7 +211,7 @@ export default function ComparePage() {
                         r.final_recommendation === 'Shortlist' ? 'text-green-700' :
                         r.final_recommendation === 'Reject'    ? 'text-red-700'   :
                         r.final_recommendation === 'Pending'   ? 'text-slate-400' : 'text-amber-700'
-                      }`}>{safeStr(r.final_recommendation)}</span>
+                      }`}>{recommendationLabel(r.final_recommendation)}</span>
                     </div>
                   </button>
                 ))}
@@ -243,7 +248,7 @@ export default function ComparePage() {
                     <th className="px-4 py-3.5 text-left text-xs font-bold text-brand-700 uppercase tracking-wide w-36">Category</th>
                     {comparison.candidates.map(c => (
                       <th key={c.id} className="px-4 py-3.5 text-center text-xs font-bold text-brand-900">
-                        <div>{safeStr(c.candidate_name)}</div>
+                        <div>{personLabel(c.candidate_name, c.candidate_email)}</div>
                         {c.winners?.overall && (
                           <div className="flex items-center justify-center gap-1 text-amber-600 mt-0.5">
                             <Trophy className="w-3 h-3" /> Best Overall
@@ -297,7 +302,7 @@ export default function ComparePage() {
                                 val === 'Shortlist' ? 'text-green-700' :
                                 val === 'Reject'    ? 'text-red-700'   :
                                 val === 'Pending'   ? 'text-slate-400' : 'text-amber-700'
-                              }`}>{val || '—'}</span>
+                              }`}>{recommendationLabel(val)}</span>
                             )}
                           </td>
                         )
@@ -326,7 +331,7 @@ export default function ComparePage() {
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 pt-4">
                 {comparison.candidates.map(c => (
                   <div key={c.id} className="bg-brand-50/50 rounded-xl p-4 ring-1 ring-brand-100">
-                    <h5 className="text-sm font-bold text-brand-900 mb-3">{c.candidate_name}</h5>
+                    <h5 className="text-sm font-bold text-brand-900 mb-3">{personLabel(c.candidate_name, c.candidate_email)}</h5>
                     <div className="space-y-3">
                       <div>
                         <p className="text-xs font-semibold text-green-700 mb-1.5 flex items-center gap-1">
@@ -371,7 +376,7 @@ export default function ComparePage() {
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 pt-4">
                 {comparison.candidates.map(c => (
                   <div key={c.id} className="bg-brand-50/50 rounded-xl p-4 ring-1 ring-brand-100">
-                    <h5 className="text-sm font-bold text-brand-900 mb-3">{c.candidate_name}</h5>
+                    <h5 className="text-sm font-bold text-brand-900 mb-3">{personLabel(c.candidate_name, c.candidate_email)}</h5>
                     <div className="space-y-2">
                       {c.interview_questions_preview?.length > 0 ? (
                         c.interview_questions_preview.map((q, i) => (
@@ -394,7 +399,7 @@ export default function ComparePage() {
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 pt-4">
                 {comparison.candidates.map(c => (
                   <div key={c.id} className="bg-brand-50/50 rounded-xl p-4 ring-1 ring-brand-100">
-                    <h5 className="text-sm font-bold text-brand-900 mb-2">{c.candidate_name}</h5>
+                    <h5 className="text-sm font-bold text-brand-900 mb-2">{personLabel(c.candidate_name, c.candidate_email)}</h5>
                     {c.fit_summary ? (
                       <p className="text-xs text-slate-700 leading-relaxed">{safeStr(c.fit_summary)}</p>
                     ) : (
@@ -416,7 +421,7 @@ export default function ComparePage() {
                 {comparison.candidates.map(c => (
                   <div key={c.id} className="bg-brand-50/50 rounded-xl p-4 ring-1 ring-brand-100">
                     <div className="flex items-center justify-between mb-3">
-                      <h5 className="text-sm font-bold text-brand-900">{c.candidate_name}</h5>
+                      <h5 className="text-sm font-bold text-brand-900">{personLabel(c.candidate_name, c.candidate_email)}</h5>
                       <VerdictBadge
                         verdict={c.hiring_decision?.verdict}
                         confidence={c.hiring_decision?.confidence}
@@ -449,7 +454,7 @@ export default function ComparePage() {
                       ) : (
                         <Check className="w-4 h-4 text-green-600" />
                       )}
-                      <h5 className="text-sm font-bold text-brand-900">{c.candidate_name}</h5>
+                      <h5 className="text-sm font-bold text-brand-900">{personLabel(c.candidate_name, c.candidate_email)}</h5>
                     </div>
                     {c.dealbreakers?.length > 0 ? (
                       <ul className="space-y-1">
@@ -475,7 +480,7 @@ export default function ComparePage() {
                   <div key={c.id} className="bg-amber-50/50 rounded-xl p-4 ring-1 ring-amber-200">
                     <div className="flex items-center gap-2 mb-2">
                       <Zap className="w-4 h-4 text-amber-600" />
-                      <h5 className="text-sm font-bold text-brand-900">{c.candidate_name}</h5>
+                      <h5 className="text-sm font-bold text-brand-900">{personLabel(c.candidate_name, c.candidate_email)}</h5>
                     </div>
                     {c.differentiators?.length > 0 ? (
                       <ul className="space-y-1">
@@ -499,7 +504,7 @@ export default function ComparePage() {
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 pt-4">
                 {comparison.candidates.map(c => (
                   <div key={c.id} className="bg-brand-50/50 rounded-xl p-4 ring-1 ring-brand-100">
-                    <h5 className="text-sm font-bold text-brand-900 mb-3">{c.candidate_name}</h5>
+                    <h5 className="text-sm font-bold text-brand-900 mb-3">{personLabel(c.candidate_name, c.candidate_email)}</h5>
                     <div className="flex flex-wrap gap-2">
                       {c.adjacent_skills?.length > 0 ? (
                         c.adjacent_skills.map((skill, i) => (

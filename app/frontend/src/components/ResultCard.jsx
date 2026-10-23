@@ -14,6 +14,7 @@ import {
   needsNarrativeHydration,
 } from '../lib/enrichmentUtils'
 import { safeStr } from '../lib/utils'
+import { recommendationLabel } from '../lib/constants'
 import { usePlanFeature, useHasSubscriptionContext } from '../hooks/useSubscription'
 import { PlanLockedButton } from './PlanLockedInline'
 import {
@@ -244,7 +245,7 @@ export default memo(function ResultCard({ result, defaultExpandEducation = false
             {risk_level && !isPending && <RiskBadge level={risk_level} />}
             <span className={`flex items-center gap-1.5 px-4 py-1.5 rounded-full text-sm font-bold ring-1 ${badgeColor}`}>
               <BadgeIcon className="w-4 h-4" />
-              {safeStr(final_recommendation)}
+              {recommendationLabel(final_recommendation)}
             </span>
             {canEmail ? (
             <button

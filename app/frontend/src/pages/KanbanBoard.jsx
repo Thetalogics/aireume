@@ -4,6 +4,7 @@ import { Columns, User, Briefcase, ChevronDown, ChevronRight, Inbox } from 'luci
 import EmptyState from '../components/EmptyState'
 import { getCandidatePipeline, updateResultStatus } from '../lib/api'
 import { getScoreColor, PIPELINE_STAGES } from '../lib/constants'
+import { personLabel } from '../lib/personName'
 import usePermissions from '../hooks/usePermissions'
 import useFeatureGuide from '../hooks/useFeatureGuide'
 import FeatureGuideModal from '../components/onboarding/FeatureGuideModal'
@@ -361,7 +362,7 @@ export default function KanbanBoard() {
                           <div className="flex items-start justify-between gap-2 mb-2">
                             <div className="min-w-0">
                               <p className="text-sm font-bold text-brand-900 truncate">
-                                {safeStr(candidate.name) || 'Unknown'}
+                                {personLabel(candidate.name, candidate.email)}
                               </p>
                               {candidate.current_role && (
                                 <p className="text-xs text-slate-500 font-medium truncate flex items-center gap-1 mt-0.5">

@@ -76,8 +76,27 @@ test.describe('Auth workflow (login page)', () => {
       .toBeVisible({ timeout: 15000 });
   });
 
+  test('an object login error is shown as text', async ({ page }) => {
+    await page.unroute('**/api/auth/login');
+    await page.route('**/api/auth/login', async (route) => {
+      await route.fulfill({
+        status: 401,
+        contentType: 'application/json',
+        body: JSON.stringify({ detail: { message: 'Workspace not found' } }),
+      });
+    });
+    await page.goto('/login');
+    await page.getByPlaceholder('your-company').fill('missing-co');
+    await page.getByLabel('Email').fill('nobody@example.com');
+    await page.getByPlaceholder('••••••••').fill('WrongPassword123!');
+    await page.getByRole('button', { name: /sign in/i }).click();
+
+    await expect(page.getByText('Workspace not found')).toBeVisible({ timeout: 15000 });
+    await expect(page.getByText('[object Object]')).toHaveCount(0);
+  });
+
   test('offers a link to create a workspace', async ({ page }) => {
     await page.goto('/login');
-    await expect(page.getByRole('link', { name: /create workspace/i })).toBeVisible();
+    await expect(page.getByRole('main').getByRole('link', { name: /create workspace/i })).toBeVisible();
   });
 });

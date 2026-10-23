@@ -1,12 +1,21 @@
 import { useState, useEffect } from 'react'
 import { Link, useNavigate, useSearchParams, useLocation } from 'react-router-dom'
-import { Sparkles, Eye, EyeOff, AlertCircle, ArrowRight, Building2 } from 'lucide-react'
+import { Eye, EyeOff, AlertCircle, ArrowRight, Building2 } from 'lucide-react'
 import { trackOnboardingEvent } from '../lib/onboardingAnalytics'
 import { TRUST } from '../lib/uxLabels'
 import { useAuth } from '../contexts/useAuth'
 import OAuthButtons from '../components/OAuthButtons'
 import { FloatingInput } from '../components/ui'
 import { getSSOConfig } from '../lib/api'
+
+function loginErrorMessage(detail) {
+  if (typeof detail === 'string' && detail.trim()) return detail
+  if (detail && typeof detail === 'object') {
+    if (typeof detail.message === 'string' && detail.message.trim()) return detail.message
+    if (typeof detail.msg === 'string' && detail.msg.trim()) return detail.msg
+  }
+  return 'Invalid email or password'
+}
 
 export default function LoginPage() {
   const navigate = useNavigate()
@@ -81,7 +90,7 @@ export default function LoginPage() {
         setNeedsMfa(true)
         setError(detail)
       } else {
-        setError(detail || 'Invalid email or password')
+        setError(loginErrorMessage(detail))
       }
     } finally {
       setLoading(false)
@@ -101,23 +110,26 @@ export default function LoginPage() {
   const ssoEnabled = ssoState?.enabled === true
 
   return (
-    <div className="min-h-screen bg-surface flex items-center justify-center p-4">
-      <div className="w-full max-w-md card-animate">
-        {/* Logo */}
-        <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-gradient-to-br from-brand-600 to-brand-500 shadow-brand-lg mb-4">
-            <Sparkles className="w-7 h-7 text-white" />
+    <div className="min-h-screen bg-surface text-brand-900">
+      <header className="h-16 px-5 sm:px-8 flex items-center justify-between">
+        <Link to="/" className="text-lg font-extrabold tracking-tight">ARIA</Link>
+        <Link to="/register" className="text-sm font-semibold text-brand-600">Create workspace</Link>
+      </header>
+      <main className="max-w-6xl mx-auto px-5 sm:px-8 pb-12 grid lg:grid-cols-[1.05fr_0.95fr] gap-8 items-center">
+        <section className="order-2 lg:order-1">
+          <h1 className="text-4xl sm:text-5xl font-extrabold tracking-tight leading-[0.95] max-w-[12ch]">Sign in to the workspace</h1>
+          <p className="mt-4 text-lg leading-relaxed max-w-[36ch]">Four claims land. The missing one stays in the frame.</p>
+          <div className="mt-8 max-w-sm">
+            <p className="text-3xl font-extrabold tracking-tight leading-none">Python</p>
+            <p className="mt-1 text-3xl font-extrabold tracking-tight leading-none">FastAPI</p>
+            <p className="mt-1 text-3xl font-extrabold tracking-tight leading-none text-amber-800">Kubernetes</p>
+            <p className="mt-3 text-sm leading-relaxed">Example. Senior Backend Engineer. Kubernetes is the one that does not land.</p>
           </div>
-          <h1 className="text-3xl font-extrabold text-brand-900 tracking-tight">
-            <span className="text-gradient">ARIA</span>
-          </h1>
-          <p className="text-slate-500 text-sm mt-1">AI Resume Intelligence by ThetaLogics</p>
-        </div>
+        </section>
 
-        {/* Card */}
-        <div className="bg-white/90 backdrop-blur-md rounded-3xl ring-1 ring-brand-100 shadow-brand-xl p-8">
-          <h2 className="text-2xl font-bold text-brand-900 mb-1 tracking-tight">Welcome back</h2>
-          <p className="text-slate-500 text-sm mb-6">Sign in to your workspace</p>
+        <section className="order-1 lg:order-2 bg-white rounded-2xl p-6 sm:p-8">
+          <h2 className="text-2xl font-extrabold tracking-tight">Welcome back</h2>
+          <p className="text-brand-800 text-sm mt-1 mb-6">Sign in to your workspace</p>
 
           {(error || oauthError) && (
             <div role="alert" className="mb-5 p-3.5 bg-red-50 ring-1 ring-red-200 rounded-2xl flex items-center gap-2.5">
@@ -206,7 +218,7 @@ export default function LoginPage() {
                 <button
                   type="submit"
                   disabled={loading}
-                  className="w-full py-3 rounded-2xl font-bold text-white text-sm flex items-center justify-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed btn-brand shadow-brand mt-2"
+                  className="w-full min-h-11 py-3 rounded-xl font-bold text-white text-sm flex items-center justify-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed bg-brand-600 hover:bg-brand-700 mt-2"
                 >
                   {loading ? (
                     <>
@@ -256,19 +268,17 @@ export default function LoginPage() {
               Create workspace
             </Link>
           </p>
-        </div>
 
-        <p className="text-center text-xs text-slate-400 mt-6">
-          {TRUST.authFooter}
-        </p>
-        <div className="mt-3 flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-xs text-slate-400">
+        <p className="text-sm text-brand-800 mt-6">{TRUST.authFooter}</p>
+        <div className="mt-3 flex flex-wrap gap-x-3 gap-y-1 text-sm">
           {TRUST.legalLinks.map((link) => (
-            <a key={link.label} href={link.href} className="hover:text-brand-600">
+            <a key={link.label} href={link.href} className="inline-flex items-center min-h-6 text-brand-700 hover:text-brand-600">
               {link.label}
             </a>
           ))}
         </div>
-      </div>
+        </section>
+      </main>
     </div>
   )
 }

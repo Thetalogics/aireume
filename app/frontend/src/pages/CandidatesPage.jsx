@@ -4,6 +4,7 @@ import { Search, Users, ChevronRight, X, FileText, Eye, Filter, ChevronDown, Che
 import EmptyState from '../components/EmptyState'
 import { getCandidates, getCandidate, viewCandidateResume, downloadCandidateResume, updateResultStatus } from '../lib/api'
 import { STATUS_OPTIONS, STATUS_CONFIG, getScoreColor } from '../lib/constants'
+import { personLabel } from '../lib/personName'
 import Skeleton from '../components/Skeleton'
 import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts'
 import { useOptimisticUpdate } from '../hooks/useOptimisticUpdate'
@@ -766,7 +767,7 @@ export default function CandidatesPage() {
             {viewMode === 'table' && (
             <div className="bg-white/90 dark:bg-slate-800/90 backdrop-blur-md rounded-3xl ring-1 ring-brand-100 dark:ring-slate-700 shadow-brand overflow-hidden card-animate">
             <div className="overflow-x-auto">
-            <table className="w-full text-sm min-w-[1100px]">
+            <table className="w-full text-sm">
               <thead className="bg-brand-50 border-b border-brand-100">
                 <tr>
                   <th className="px-4 py-3 text-left w-10">
@@ -783,24 +784,24 @@ export default function CandidatesPage() {
                   >
                     Name <SortIcon column="name" />
                   </th>
-                  <th className="px-4 py-3 text-left text-xs font-bold text-brand-700 uppercase tracking-wide">Email</th>
-                  <th className="px-4 py-3 text-left text-xs font-bold text-brand-700 uppercase tracking-wide">Status</th>
-                  <th
-                    onClick={() => handleSort('result_count')}
-                    className={`px-4 py-3 text-left text-xs uppercase tracking-wide cursor-pointer hover:text-brand-600 select-none ${sortBy === 'result_count' ? 'font-extrabold text-brand-600' : 'font-bold text-brand-700'}`}
-                  >
-                    Applications <SortIcon column="result_count" />
-                  </th>
                   <th
                     onClick={() => handleSort('best_score')}
                     className={`px-4 py-3 text-left text-xs uppercase tracking-wide cursor-pointer hover:text-brand-600 select-none ${sortBy === 'best_score' ? 'font-extrabold text-brand-600' : 'font-bold text-brand-700'}`}
                   >
                     Best Score <SortIcon column="best_score" />
                   </th>
-                  <th className="px-4 py-3 text-left text-xs font-bold text-brand-700 uppercase tracking-wide max-w-[200px]">Top Skills</th>
+                  <th className="px-4 py-3 text-left text-xs font-bold text-brand-700 uppercase tracking-wide hidden lg:table-cell">Email</th>
+                  <th className="px-4 py-3 text-left text-xs font-bold text-brand-700 uppercase tracking-wide">Status</th>
+                  <th
+                    onClick={() => handleSort('result_count')}
+                    className={`px-4 py-3 text-left text-xs uppercase tracking-wide cursor-pointer hover:text-brand-600 select-none hidden lg:table-cell ${sortBy === 'result_count' ? 'font-extrabold text-brand-600' : 'font-bold text-brand-700'}`}
+                  >
+                    Applications <SortIcon column="result_count" />
+                  </th>
+                  <th className="px-4 py-3 text-left text-xs font-bold text-brand-700 uppercase tracking-wide max-w-[200px] hidden lg:table-cell">Top Skills</th>
                   <th
                     onClick={() => handleSort('created_at')}
-                    className={`px-4 py-3 text-left text-xs uppercase tracking-wide whitespace-nowrap min-w-[100px] cursor-pointer hover:text-brand-600 select-none ${sortBy === 'created_at' ? 'font-extrabold text-brand-600' : 'font-bold text-brand-700'}`}
+                    className={`px-4 py-3 text-left text-xs uppercase tracking-wide whitespace-nowrap min-w-[100px] cursor-pointer hover:text-brand-600 select-none hidden lg:table-cell ${sortBy === 'created_at' ? 'font-extrabold text-brand-600' : 'font-bold text-brand-700'}`}
                   >
                     Added <SortIcon column="created_at" />
                   </th>
@@ -832,15 +833,21 @@ export default function CandidatesPage() {
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2.5">
-                        <span className={`w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-bold shrink-0 ${getAvatarColor(c.name)}`}>
-                          {getInitials(c.name)}
+                        <span className={`w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-bold shrink-0 ${getAvatarColor(personLabel(c.name, c.email))}`}>
+                          {getInitials(personLabel(c.name, c.email))}
                         </span>
                         <span className="font-bold text-brand-900 hover:text-brand-700 transition-colors">
-                          {c.name || '—'}
+                          {personLabel(c.name, c.email)}
                         </span>
                       </div>
                     </td>
-                    <td className="px-4 py-3 text-slate-500 font-medium">{c.email || '—'}</td>
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-2">
+                        <ScoreBadge score={c.best_score} size="sm" />
+                        <RecommendationBadge score={c.best_score} size="sm" />
+                      </div>
+                    </td>
+                    <td className="px-4 py-3 text-slate-500 font-medium hidden lg:table-cell">{c.email || '—'}</td>
                     <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
                       {c.latest_result_id ? (
                         <QuickActions
@@ -854,16 +861,10 @@ export default function CandidatesPage() {
                         <span className="text-xs text-slate-400">—</span>
                       )}
                     </td>
-                    <td className="px-4 py-3">
+                    <td className="px-4 py-3 hidden lg:table-cell">
                       <span className="text-brand-700 font-bold">{c.result_count}</span>
                     </td>
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-2">
-                        <ScoreBadge score={c.best_score} size="sm" />
-                        <RecommendationBadge score={c.best_score} size="sm" />
-                      </div>
-                    </td>
-                    <td className="px-4 py-3 max-w-[200px] overflow-hidden">
+                    <td className="px-4 py-3 max-w-[200px] overflow-hidden hidden lg:table-cell">
                       {c.matched_skills && c.matched_skills.length > 0 ? (
                         <div className="flex flex-wrap gap-1 max-h-[2.5rem] overflow-hidden">
                           {c.matched_skills.slice(0, 2).map((skill, i) => (
@@ -881,7 +882,7 @@ export default function CandidatesPage() {
                         <span className="text-xs text-slate-400">—</span>
                       )}
                     </td>
-                    <td className="px-4 py-3 text-slate-400 text-xs font-medium whitespace-nowrap min-w-[100px]">
+                    <td className="px-4 py-3 text-slate-400 text-xs font-medium whitespace-nowrap min-w-[100px] hidden lg:table-cell">
                       {c.created_at
                         ? new Date(c.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
                         : '—'}
@@ -982,11 +983,11 @@ export default function CandidatesPage() {
                           isActive ? 'bg-brand-50 border-l-brand-600' : 'border-l-transparent hover:bg-gray-50'
                         } ${selectedIndex === idx ? 'ring-2 ring-inset ring-brand-500' : ''}` }
                       >
-                        <span className={`w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-bold shrink-0 ${getAvatarColor(c.name)}`}>
-                          {getInitials(c.name)}
+                        <span className={`w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-bold shrink-0 ${getAvatarColor(personLabel(c.name, c.email))}`}>
+                          {getInitials(personLabel(c.name, c.email))}
                         </span>
                         <div className="flex-1 min-w-0">
-                          <p className="font-bold text-gray-900 truncate text-sm">{c.name || '—'}</p>
+                          <p className="font-bold text-gray-900 truncate text-sm">{personLabel(c.name, c.email)}</p>
                         </div>
                         <ScoreBadge score={c.best_score} size="sm" />
                         <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${statusDotColor}`} title={statusCfg.label} />
