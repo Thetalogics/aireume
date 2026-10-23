@@ -119,7 +119,7 @@ function UserMenu({ user, tenant, logout, onClose, menuLinks }) {
       {/* Logout */}
       <button
         role="menuitem"
-        onClick={() => { onClose(); logout() }}
+        onClick={() => { onClose(); logout(); navigate('/login') }}
         className="popover-item text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 hover:text-red-700 dark:hover:text-red-300"
       >
         <LogOut className="w-4 h-4 shrink-0" />
@@ -264,7 +264,7 @@ function MobileMoreSheet({ onNavigate, menuLinks }) {
 
       <div className="mt-4 pt-3 border-t border-brand-50 dark:border-white/10">
         <button
-          onClick={() => { onNavigate(); logout() }}
+          onClick={() => { onNavigate(); logout(); navigate('/login') }}
           className="w-full flex items-center justify-center gap-2 px-4 py-2.5 text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 rounded-xl transition-colors"
         >
           <LogOut className="w-4 h-4" />
